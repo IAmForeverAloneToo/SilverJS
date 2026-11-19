@@ -23,6 +23,7 @@
 
 mod expr;
 mod func;
+mod module;
 mod pattern;
 mod scope;
 mod stmt;
@@ -200,11 +201,13 @@ impl<'s> Parser<'s> {
 
     pub(crate) fn program(mut self) -> Result<Program, SyntaxError> {
         let start = self.tok.start;
-        if self.module {
-            return Err(self.error("Modules are not supported yet", self.tok_span()));
-        }
-        let (body, strict, _) = self.directives_and_body(|p| p.at_eof(), true)?;
-        self.cx.strict = strict;
+        let body = if self.module {
+            self.module_body()?
+        } else {
+            let (body, strict, _) = self.directives_and_body(|p| p.at_eof(), true)?;
+            self.cx.strict = strict;
+            body
+        };
         self.scopes.finish_top()?;
         Ok(Program {
             ast: self.ast,
@@ -508,4 +511,9 @@ pub(crate) fn is_strict_reserved(name: &str) -> bool {
             | "static"
             | "yield"
     )
+}
+
+/// A UTF-16 string as Rust text, lone surrogates replaced.
+pub(crate) fn utf16_text(units: &[u16]) -> String {
+    String::from_utf16_lossy(units)
 }

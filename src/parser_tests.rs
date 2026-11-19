@@ -1,5 +1,5 @@
 //! The parser's tests: sources that must parse, and sources each early
-//! error must refuse, in scripts and strict code.
+//! error must refuse, in scripts, strict code and modules.
 
 use crate::ast::{Expr, Stmt};
 use crate::parser::{Goal, parse, parse_with_stack};
@@ -7,6 +7,18 @@ use crate::parser::{Goal, parse, parse_with_stack};
 fn ok(source: &str) {
     if let Err(e) = parse(source, Goal::Script) {
         panic!("{source:?} should parse: {e} at {}", e.start);
+    }
+}
+
+fn ok_module(source: &str) {
+    if let Err(e) = parse(source, Goal::Module) {
+        panic!("{source:?} should parse as a module: {e} at {}", e.start);
+    }
+}
+
+fn err_module(source: &str) {
+    if parse(source, Goal::Module).is_ok() {
+        panic!("{source:?} should be a SyntaxError in a module");
     }
 }
 
@@ -249,8 +261,40 @@ fn rules_test262_held_us_to() {
 }
 
 #[test]
-fn what_later_steps_bring_is_refused_for_now() {
-    assert!(parse("1;", Goal::Module).is_err());
+fn modules() {
+    ok_module("import a, { b as c, 'd' as e } from 'm'; import * as ns from 'm'; import 'm';");
+    ok_module(
+        "export var a; export { a as b, a as 'c' }; export * from 'm'; export * as d from 'm';",
+    );
+    ok_module("export default function () {} export function f() {}");
+    ok_module("export default class {}");
+    ok_module("export default 1 + 2;");
+    ok_module("import x from 'm' with { type: 'json' };");
+    err_module("import x from 'm' with { type: 'json', type: 'json' };");
+    err_module("export { a };");
+    err_module("var a; export { a, a };");
+    err_module("var a; export { a as b }; export { a as b };");
+    err_module("export { 'a' };");
+    ok_module("export { 'a' } from 'm';");
+    // A string or keyword names no local binding to export.
+    let message = |s: &str| parse(s, Goal::Module).map(|_| ()).unwrap_err().message;
+    assert_eq!(message("var a; export { 'a' };"), "Unexpected string");
+    assert_eq!(message("export { if };"), "Unexpected token 'if'");
+    err_module("export * as '\\uD800' from 'm';");
+    ok_module("export * as '\\uD83D\\uDE00' from 'm';");
+    err_module("import { 'a' } from 'm';");
+    ok_module("import { 'a' as b } from 'm';");
+    err_module("{ import a from 'm'; }");
+    err_module("await: ;");
+    ok_module("await 1;");
+    ok_module("import.meta;");
+    err("import.meta;");
+    err("import a from 'm';");
+    ok("import('m'); import('m', { with: {} });");
+    err_module("import { a } from 'm'; let a;");
+    err_module("function f() {} var f;");
+    err_module("010;");
+    err_module("<!-- a");
 }
 
 #[test]

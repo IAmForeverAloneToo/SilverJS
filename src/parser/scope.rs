@@ -87,6 +87,14 @@ impl Scopes {
         Ok(())
     }
 
+    /// Whether the top scope declares `name` (a module's exports name
+    /// only what it declares, section 16.2.1.1).
+    pub(crate) fn top_declares(&self, name: &str) -> bool {
+        self.stack
+            .first()
+            .is_some_and(|s| s.lexical.contains(name) || s.vars.contains(name))
+    }
+
     fn current(&mut self) -> Option<&mut Scope> {
         self.stack.last_mut()
     }

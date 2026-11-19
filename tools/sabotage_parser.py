@@ -22,6 +22,7 @@ P = 'src/parser/pattern.rs'
 C = 'src/parser/scope.rs'
 M = 'src/parser/mod.rs'
 K = 'src/stack.rs'
+D = 'src/parser/module.rs'
 cases = [
     (S, "if !self.cx.return_ {", "if false {"),
     (S, "None if !self.in_loop =>", "None if false =>"),
@@ -82,6 +83,16 @@ cases = [
     (E, "self.use_private(&name)?;\n            self.advance()?;\n            return Ok(MemberProp::Private(name));",
         "self.advance()?;\n            return Ok(MemberProp::Private(name));"),
     (E, "&& !(name != \"async\" && next.is(Punct::Star));", ";"),
+    # Modules.
+    (D, "if exports.names.iter().take(i).any(|(n, _)| n == name) {", "if false {"),
+    (D, "if !self.scopes.top_declares(&local.name) {", "if false {"),
+    (D, "if attributes.iter().any(|a| a.key == key) {", "if false {"),
+    (D, "if char::decode_utf16(value.iter().copied()).any(|c| c.is_err()) {", "if false {"),
+    (D, "if is_string || name_tok.kind != TokenKind::Identifier {", "if false {"),
+    (D, "if is_string || tok.kind != TokenKind::Identifier {", "if false {"),
+    (M, "            strict: module,\n", "            strict: false,\n"),
+    (M, "            await_: module,\n", "            await_: false,\n"),
+    (E, "                if !self.module {\n", "                if false {\n"),
 ]
 env = dict(os.environ, CARGO_BUILD_JOBS='4')
 quiet = os.environ.get('QUIET_SH')
