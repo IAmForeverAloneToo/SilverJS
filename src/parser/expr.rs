@@ -16,8 +16,7 @@ enum BinOp {
     Logical(LogicalOp),
 }
 
-/// Relational operators' precedence: a private name may stand only as
-/// the left of `in`, at this level.
+/// Relational operators' precedence.
 const RELATIONAL: u8 = 8;
 
 /// An operand of the precedence parser: an expression, or `#x` waiting
@@ -273,7 +272,7 @@ impl Parser<'_> {
     /// Binary and logical operators by precedence, in a loop with stacks
     /// of its own: `a + b + c ...` of any length never recurses.
     fn binary(&mut self, cover: &mut Cover) -> Result<ExprId, SyntaxError> {
-        let first = self.binary_operand(cover, 0)?;
+        let first = self.binary_operand(cover)?;
         if let Operand::Expr(e) = &first
             && (self.is_bare_arrow(*e) || self.binary_op().is_none())
         {
@@ -310,7 +309,7 @@ impl Parser<'_> {
             self.advance()?;
             ops.push((op, prec));
             let mut inner = Cover::default();
-            let operand = self.binary_operand(&mut inner, prec)?;
+            let operand = self.binary_operand(&mut inner)?;
             self.check_cover(&inner)?;
             if let Operand::Expr(e) = &operand
                 && self.is_bare_arrow(*e)
@@ -333,11 +332,13 @@ impl Parser<'_> {
     }
 
     /// One operand of the precedence parser: a unary expression, or a
-    /// private name standing before `in` where nothing tighter binds it.
-    fn binary_operand(&mut self, cover: &mut Cover, after: u8) -> Result<Operand, SyntaxError> {
+    /// private name standing before `in`. Where an operator before it
+    /// binds tighter, [`Parser::reduce`] refuses it as that operator's
+    /// operand.
+    fn binary_operand(&mut self, cover: &mut Cover) -> Result<Operand, SyntaxError> {
         if self.tok.kind == TokenKind::PrivateName {
             let next = self.peek()?;
-            if next.kind == TokenKind::Keyword(Keyword::In) && self.cx.in_ && after < RELATIONAL {
+            if next.kind == TokenKind::Keyword(Keyword::In) && self.cx.in_ {
                 let name = Ident {
                     name: self.tok_name().into(),
                     span: self.tok_span(),
@@ -1525,15 +1526,21 @@ impl Parser<'_> {
     }
 
     /// The private name `name` is used here: it must be declared by an
-    /// enclosing class, and classes come in the next step of J1.
+    /// enclosing class, which the class's end checks.
     pub(super) fn use_private(&mut self, name: &Ident) -> Result<(), SyntaxError> {
-        Err(self.error(
-            format!(
-                "Private field '#{}' must be declared in an enclosing class",
-                name.name
-            ),
-            name.span,
-        ))
+        match self.classes.last_mut() {
+            Some(class) => {
+                class.used.push(name.clone());
+                Ok(())
+            }
+            None => Err(self.error(
+                format!(
+                    "Private field '#{}' must be declared in an enclosing class",
+                    name.name
+                ),
+                name.span,
+            )),
+        }
     }
 }
 

@@ -3,15 +3,13 @@
 //! constructors and private names.
 
 use super::scope::ScopeKind;
-use super::{Parser, is_strict_reserved};
+use super::{ClassScope, Parser, PrivateKind, is_strict_reserved};
 use crate::SyntaxError;
 use crate::ast::{
-    Body, Expr, ExprId, FuncId, FuncKind, Function, Ident, Pat, PatElem, PatId, Span, Stmt, StmtId,
+    Body, Class, ClassId, ClassMember, Expr, ExprId, FuncId, FuncKind, Function, Ident, MemberKind,
+    Pat, PatElem, PatId, PropKey, Span, Stmt, StmtId,
 };
-use crate::lexer::{Keyword, Punct};
-
-/// What a class is refused with until classes are parsed.
-const CLASSES_LATER: &str = "Classes are not supported yet";
+use crate::lexer::{Keyword, Punct, TokenKind};
 
 /// A function's parameter list as parsed.
 struct Params {
@@ -458,16 +456,376 @@ impl Parser<'_> {
             .add_expr(Expr::Arrow(f), Span::new(start, self.prev_end)))
     }
 
-    /// A class declaration: classes come in the next step of J1.
-    pub(super) fn class_declaration(
-        &mut self,
-        _name_optional: bool,
-    ) -> Result<StmtId, SyntaxError> {
-        Err(self.error(CLASSES_LATER, self.tok_span()))
+    /// `class Name ...` as a declaration (`name_optional` for `export
+    /// default`).
+    pub(super) fn class_declaration(&mut self, name_optional: bool) -> Result<StmtId, SyntaxError> {
+        let start = self.tok.start;
+        self.advance()?;
+        let name = if self.at_identifier() {
+            let name = self.with_context(|cx| cx.strict = true, |p| p.identifier(true))?;
+            self.scopes.declare_lexical(&name.name, name.span)?;
+            Some(name)
+        } else if name_optional {
+            None
+        } else {
+            return Err(self.unexpected());
+        };
+        let class = self.class_rest(start, name)?;
+        Ok(self
+            .ast
+            .add_stmt(Stmt::Class(class), Span::new(start, self.prev_end)))
     }
 
-    /// A class expression: classes come in the next step of J1.
     pub(super) fn class_expression(&mut self) -> Result<ExprId, SyntaxError> {
-        Err(self.error(CLASSES_LATER, self.tok_span()))
+        let start = self.tok.start;
+        self.enter()?;
+        let result = (|| {
+            self.advance()?;
+            let name = if self.at_identifier() {
+                Some(self.with_context(|cx| cx.strict = true, |p| p.identifier(true))?)
+            } else {
+                None
+            };
+            self.class_rest(start, name)
+        })();
+        self.leave();
+        let class = result?;
+        Ok(self
+            .ast
+            .add_expr(Expr::Class(class), Span::new(start, self.prev_end)))
+    }
+
+    /// A class's heritage and body, all strict code (section 15.7).
+    fn class_rest(&mut self, start: u32, name: Option<Ident>) -> Result<ClassId, SyntaxError> {
+        let saved = self.cx;
+        self.cx.strict = true;
+        let result = self.class_parts(start, name);
+        self.cx = saved;
+        result
+    }
+
+    fn class_parts(&mut self, start: u32, name: Option<Ident>) -> Result<ClassId, SyntaxError> {
+        let extends = if self.eat_keyword(Keyword::Extends)? {
+            let mut cover = super::Cover::default();
+            let e = self.left_hand_side(&mut cover)?;
+            self.check_cover(&cover)?;
+            if self.is_bare_arrow(e) {
+                let span = self.ast.expr(e).span;
+                return Err(self.error("Malformed arrow function parameter list", span));
+            }
+            Some(e)
+        } else {
+            None
+        };
+        self.expect(Punct::LBrace)?;
+        self.classes.push(ClassScope::default());
+        let result = self.class_body(extends.is_some());
+        let scope = self.classes.pop().unwrap_or_default();
+        let (constructor, members) = result?;
+        self.resolve_privates(scope)?;
+        Ok(self.ast.add_class(Class {
+            name,
+            extends,
+            constructor,
+            members,
+            span: Span::new(start, self.prev_end),
+        }))
+    }
+
+    /// Hands the private names a class used but did not declare to the
+    /// class around it, or refuses them at the outermost.
+    fn resolve_privates(&mut self, scope: ClassScope) -> Result<(), SyntaxError> {
+        for used in scope.used {
+            if scope.declared.iter().any(|(n, _)| *n == used.name) {
+                continue;
+            }
+            match self.classes.last_mut() {
+                Some(outer) => outer.used.push(used),
+                None => {
+                    return Err(self.error(
+                        format!(
+                            "Private field '#{}' must be declared in an enclosing class",
+                            used.name
+                        ),
+                        used.span,
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn class_body(
+        &mut self,
+        derived: bool,
+    ) -> Result<(Option<FuncId>, Vec<ClassMember>), SyntaxError> {
+        let mut constructor = None;
+        let mut members = Vec::new();
+        while !self.eat(Punct::RBrace)? {
+            if self.eat(Punct::Semicolon)? {
+                continue;
+            }
+            if self.at_eof() {
+                return Err(self.unexpected());
+            }
+            let start = self.tok.start;
+            let mut is_static = false;
+            if self.at_contextual("static") {
+                let next = self.peek()?;
+                if next.is(Punct::LBrace) {
+                    self.advance()?;
+                    let block = self.static_block(start)?;
+                    members.push(ClassMember {
+                        kind: MemberKind::StaticBlock,
+                        is_static: true,
+                        key: PropKey::Ident(Ident {
+                            name: "".into(),
+                            span: Span::new(start, start),
+                        }),
+                        value: Some(block),
+                        span: Span::new(start, self.prev_end),
+                    });
+                    continue;
+                }
+                if !matches!(
+                    next.kind,
+                    TokenKind::Punct(Punct::LParen | Punct::Eq | Punct::Semicolon | Punct::RBrace)
+                        | TokenKind::Eof
+                ) {
+                    is_static = true;
+                    self.advance()?;
+                }
+            }
+            let (is_async, is_generator, accessor) = self.method_modifiers()?;
+            let key_span = self.tok_span();
+            let key = self.property_key(true)?;
+            let key_name = static_key_name(&key);
+            if let PropKey::Private(p) = &key
+                && &*p.name == "constructor"
+            {
+                return Err(self.error(
+                    "Classes may not have a private field named '#constructor'",
+                    key_span,
+                ));
+            }
+            if self.at(Punct::LParen) {
+                let is_constructor = !is_static && key_name == Some("constructor");
+                if is_constructor {
+                    let what = if accessor.is_some() {
+                        Some("Class constructor may not be an accessor")
+                    } else if is_generator {
+                        Some("Class constructor may not be a generator")
+                    } else if is_async {
+                        Some("Class constructor may not be an async method")
+                    } else {
+                        None
+                    };
+                    if let Some(what) = what {
+                        return Err(self.error(what, key_span));
+                    }
+                    if constructor.is_some() {
+                        return Err(self.error("A class may only have one constructor", key_span));
+                    }
+                }
+                if is_static && key_name == Some("prototype") {
+                    return Err(self.error(
+                        "Classes may not have a static property named 'prototype'",
+                        key_span,
+                    ));
+                }
+                let (func_kind, member_kind, private_kind) = if is_constructor {
+                    (
+                        FuncKind::Constructor { derived },
+                        MemberKind::Method,
+                        PrivateKind::Method,
+                    )
+                } else {
+                    match accessor {
+                        Some(true) => (
+                            FuncKind::Getter,
+                            MemberKind::Getter,
+                            PrivateKind::Getter { is_static },
+                        ),
+                        Some(false) => (
+                            FuncKind::Setter,
+                            MemberKind::Setter,
+                            PrivateKind::Setter { is_static },
+                        ),
+                        None => (FuncKind::Method, MemberKind::Method, PrivateKind::Method),
+                    }
+                };
+                if let PropKey::Private(p) = &key {
+                    self.declare_private(p, private_kind)?;
+                }
+                self.enter()?;
+                let f = self.function_rest(func_kind, is_async, is_generator, None, start);
+                self.leave();
+                let f = f?;
+                if is_constructor {
+                    constructor = Some(f);
+                } else {
+                    members.push(ClassMember {
+                        kind: member_kind,
+                        is_static,
+                        key,
+                        value: Some(f),
+                        span: Span::new(start, self.prev_end),
+                    });
+                }
+                continue;
+            }
+            // A field.
+            if is_async || is_generator || accessor.is_some() {
+                return Err(self.unexpected());
+            }
+            if key_name == Some("constructor") {
+                return Err(
+                    self.error("Classes may not have a field named 'constructor'", key_span)
+                );
+            }
+            if is_static && key_name == Some("prototype") {
+                return Err(self.error(
+                    "Classes may not have a static property named 'prototype'",
+                    key_span,
+                ));
+            }
+            if let PropKey::Private(p) = &key {
+                self.declare_private(p, PrivateKind::Field)?;
+            }
+            let value = if self.eat(Punct::Eq)? {
+                Some(self.field_initializer(start)?)
+            } else {
+                None
+            };
+            self.semicolon()?;
+            members.push(ClassMember {
+                kind: MemberKind::Field,
+                is_static,
+                key,
+                value,
+                span: Span::new(start, self.prev_end),
+            });
+        }
+        Ok((constructor, members))
+    }
+
+    /// A private name declared in the class being parsed: twice only as a
+    /// getter and a setter of the same placement.
+    fn declare_private(&mut self, name: &Ident, kind: PrivateKind) -> Result<(), SyntaxError> {
+        let Some(class) = self.classes.last_mut() else {
+            return Ok(());
+        };
+        if let Some(entry) = class.declared.iter_mut().find(|(n, _)| *n == name.name) {
+            let pair = match (entry.1, kind) {
+                (PrivateKind::Getter { is_static: a }, PrivateKind::Setter { is_static: b })
+                | (PrivateKind::Setter { is_static: a }, PrivateKind::Getter { is_static: b }) => {
+                    a == b
+                }
+                _ => false,
+            };
+            if !pair {
+                return Err(SyntaxError {
+                    message: format!("Identifier '#{}' has already been declared", name.name),
+                    start: name.span.start,
+                    end: name.span.end,
+                });
+            }
+            entry.1 = PrivateKind::Both;
+            return Ok(());
+        }
+        class.declared.push((name.name.clone(), kind));
+        Ok(())
+    }
+
+    /// The context of a field's initializer or a static block: a method
+    /// of the class, where `arguments` is refused.
+    fn class_function_context(&mut self, static_block: bool) {
+        self.cx.yield_ = false;
+        self.cx.await_ = false;
+        self.cx.return_ = false;
+        self.cx.super_call = false;
+        self.cx.super_prop = true;
+        self.cx.new_target = true;
+        self.cx.class_field = true;
+        self.cx.static_block = static_block;
+        self.cx.in_ = true;
+    }
+
+    fn field_initializer(&mut self, start: u32) -> Result<FuncId, SyntaxError> {
+        let saved_cx = self.cx;
+        let saved_labels = std::mem::take(&mut self.labels);
+        let saved_marks = (self.yield_at, self.await_at, self.await_ident_at);
+        self.class_function_context(false);
+        self.scopes.push(ScopeKind::Function);
+        let result = self.assignment();
+        self.scopes.pop();
+        self.cx = saved_cx;
+        self.labels = saved_labels;
+        (self.yield_at, self.await_at, self.await_ident_at) = saved_marks;
+        let e = result?;
+        Ok(self.ast.add_func(Function {
+            kind: FuncKind::ClassField,
+            name: None,
+            params: Vec::new(),
+            rest: None,
+            body: Body::Expr(e),
+            is_async: false,
+            is_generator: false,
+            strict: true,
+            simple_params: true,
+            span: Span::new(start, self.prev_end),
+        }))
+    }
+
+    /// `static { ... }`, from its `{`.
+    fn static_block(&mut self, start: u32) -> Result<FuncId, SyntaxError> {
+        let saved_cx = self.cx;
+        let saved_labels = std::mem::take(&mut self.labels);
+        let saved_jumps = (self.in_loop, self.in_breakable);
+        let saved_marks = (self.yield_at, self.await_at, self.await_ident_at);
+        self.class_function_context(true);
+        self.in_loop = false;
+        self.in_breakable = false;
+        self.scopes.push(ScopeKind::Function);
+        self.enter()?;
+        let result = self.expect(Punct::LBrace).and_then(|_| self.block_rest());
+        self.leave();
+        self.scopes.pop();
+        self.cx = saved_cx;
+        self.labels = saved_labels;
+        (self.in_loop, self.in_breakable) = saved_jumps;
+        (self.yield_at, self.await_at, self.await_ident_at) = saved_marks;
+        let body = result?;
+        Ok(self.ast.add_func(Function {
+            kind: FuncKind::StaticBlock,
+            name: None,
+            params: Vec::new(),
+            rest: None,
+            body: Body::Block(body),
+            is_async: false,
+            is_generator: false,
+            strict: true,
+            simple_params: true,
+            span: Span::new(start, self.prev_end),
+        }))
+    }
+}
+
+/// A class element's name when it is spelled literally (an identifier or
+/// a string, not computed): what the constructor and `prototype` rules
+/// look at (section 15.7.1's PropName).
+fn static_key_name(key: &PropKey) -> Option<&str> {
+    match key {
+        PropKey::Ident(i) => Some(&i.name),
+        PropKey::String(s) => {
+            if s.iter().copied().eq("constructor".encode_utf16()) {
+                Some("constructor")
+            } else if s.iter().copied().eq("prototype".encode_utf16()) {
+                Some("prototype")
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }

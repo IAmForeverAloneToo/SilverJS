@@ -250,10 +250,53 @@ fn rules_test262_held_us_to() {
 
 #[test]
 fn what_later_steps_bring_is_refused_for_now() {
-    err("class C {}");
-    err("(class {});");
-    err("this.#a;");
     assert!(parse("1;", Goal::Module).is_err());
+}
+
+#[test]
+fn classes_and_private_names() {
+    ok(
+        "class C extends B { constructor() { super(); } #a; get #b() {} set #b(v) {} m() { this.#a; #a in this; } static { this; } }",
+    );
+    err("class C { constructor() { super(); } }");
+    err("class C { constructor() {} constructor() {} }");
+    err("class C { get constructor() {} }");
+    err("class C { *constructor() {} }");
+    err("class C { async constructor() {} }");
+    ok("class C { static constructor() {} }");
+    ok("class C { constructor() {} static constructor() {} static get constructor() {} }");
+    err("class C { static prototype() {} }");
+    err("class C { constructor = 1; }");
+    err("class C { #constructor; }");
+    err("class C { #a; #a; }");
+    err("class C { get #a() {} static set #a(v) {} }");
+    err("class C { m() { this.#b; } }");
+    ok("class C { #a; m() { class D { n() { this.#a; } } } }");
+    err("this.#a;");
+    err("class C { #a; m() { delete this.#a; } }");
+    err("class C { x = arguments; }");
+    err("class C { static { arguments; } }");
+    err("class C { static { await; } }");
+    err("class C { m() { with (a) {} } }");
+    err("class let {}");
+    ok("class C { static async *m() {} get() {} set() {} static() {} async() {} }");
+    ok("class C { a\n b }");
+    err("class C { a b }");
+    err("class C { #a; m() { 1 + #a in this; } }");
+}
+
+#[test]
+fn class_rules_test262_held_us_to() {
+    err("class C { static { return; } }");
+    // An arrow is no class heritage.
+    err("class C extends () => {} {}");
+    // `super.x?.y` is fine; only `super?.` is not.
+    ok("class C extends B { m() { super.a?.c; super.m?.(); } }");
+    err("class C extends B { m() { super?.a; } }");
+    // `get` on its own line before a generator is a field.
+    ok("class C { get\n *a() {} static set\n *b() {} }");
+    // A label named arguments in a class field's arrow.
+    ok("class C { x = () => { arguments: for (;;) break arguments; }; }");
 }
 
 #[test]

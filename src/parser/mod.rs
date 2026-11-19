@@ -114,6 +114,25 @@ struct Label {
     is_loop: bool,
 }
 
+/// A class body being parsed, for its private names (section 15.7.1:
+/// every `#x` used must be declared by an enclosing class).
+#[derive(Debug, Default)]
+struct ClassScope {
+    /// Declared names and what declared them, to refuse duplicates.
+    declared: Vec<(Box<str>, PrivateKind)>,
+    /// Names used and not yet declared in this class, with where.
+    used: Vec<Ident>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivateKind {
+    Field,
+    Method,
+    Getter { is_static: bool },
+    Setter { is_static: bool },
+    Both,
+}
+
 pub(crate) struct Parser<'s> {
     source: &'s str,
     lexer: Lexer<'s>,
@@ -130,6 +149,7 @@ pub(crate) struct Parser<'s> {
     /// Whether a `break` without a label has a target, and a `continue`.
     in_breakable: bool,
     in_loop: bool,
+    classes: Vec<ClassScope>,
     /// The first `yield` or `await` expression, and `await` read as an
     /// identifier, since the last reset: arrow parameters may have none
     /// of them (sections 15.3.1 and 15.9.1).
@@ -169,6 +189,7 @@ impl<'s> Parser<'s> {
             labels: Vec::new(),
             in_breakable: false,
             in_loop: false,
+            classes: Vec::new(),
             yield_at: None,
             await_at: None,
             await_ident_at: None,

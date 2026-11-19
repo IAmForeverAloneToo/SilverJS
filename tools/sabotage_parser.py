@@ -62,6 +62,26 @@ cases = [
     (M, "if self.at(Punct::RBrace) || self.at_eof() || self.tok.newline_before {",
         "if self.at(Punct::RBrace) || self.at_eof() {"),
     (K, "here().abs_diff(self.base) > self.budget", "false"),
+    # Classes and private names.
+    (F, "self.cx.super_call = matches!(kind, FuncKind::Constructor { derived: true });",
+        "self.cx.super_call = matches!(kind, FuncKind::Constructor { .. });"),
+    (F, "let saved = self.cx;\n        self.cx.strict = true;\n        let result = self.class_parts",
+        "let saved = self.cx;\n        let result = self.class_parts"),
+    (F, "            if self.is_bare_arrow(e) {\n                let span = self.ast.expr(e).span;\n                return Err(self.error(\"Malformed arrow function parameter list\", span));\n            }\n            Some(e)",
+        "            Some(e)"),
+    (F, "if scope.declared.iter().any(|(n, _)| *n == used.name) {", "if true {"),
+    (F, "&& &*p.name == \"constructor\"", "&& false"),
+    (F, "let is_constructor = !is_static && key_name == Some(\"constructor\");",
+        "let is_constructor = key_name == Some(\"constructor\");"),
+    (F, "Some(\"Class constructor may not be an accessor\")", "None"),
+    (F, "if constructor.is_some() {", "if false {"),
+    (F, "if key_name == Some(\"constructor\") {", "if false {"),
+    (F, "                    a == b\n", "                    true\n"),
+    (F, "self.cx.class_field = true;", "self.cx.class_field = false;"),
+    (F, "self.cx.static_block = static_block;", "self.cx.static_block = false;"),
+    (E, "self.use_private(&name)?;\n            self.advance()?;\n            return Ok(MemberProp::Private(name));",
+        "self.advance()?;\n            return Ok(MemberProp::Private(name));"),
+    (E, "&& !(name != \"async\" && next.is(Punct::Star));", ";"),
 ]
 env = dict(os.environ, CARGO_BUILD_JOBS='4')
 quiet = os.environ.get('QUIET_SH')
