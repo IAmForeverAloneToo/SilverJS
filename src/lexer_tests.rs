@@ -568,8 +568,8 @@ fn html_like_comments_in_scripts_not_modules() {
             TokenKind::Identifier,
         ]
     );
-    // Not at the source's start (Annex B.1.1 asks a line terminator).
-    assert_eq!(kinds("-->").len(), 2);
+    // At the source's start too (Annex B.1.1's first line).
+    assert!(kinds("--> a").is_empty());
     // In a module neither is a comment.
     assert_eq!(tokens_of("a <!-- b", true).len(), 5);
     assert_eq!(tokens_of("a\n--> b", true).len(), 4);

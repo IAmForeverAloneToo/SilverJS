@@ -392,8 +392,9 @@ impl<'s> Lexer<'s> {
         let mut newline = false;
         // Whether only white space and comments on one line have come
         // since a line terminator: where `-->` begins a comment (Annex
-        // B.1.1's SingleLineHTMLCloseComment). Not at the source's start.
-        let mut line_start = false;
+        // B.1.1's SingleLineHTMLCloseComment), or the source's start
+        // (Annex B's HTMLCloseComment at the start of the input).
+        let mut line_start = self.pos == 0;
         while let Some(b) = self.peek() {
             match b {
                 b' ' | b'\t' | 0x0B | 0x0C => self.pos += 1,
