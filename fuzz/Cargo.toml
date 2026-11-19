@@ -1,0 +1,30 @@
+# SilverJS's fuzz targets (docs/design.md section 1.5). Not a member of
+# the engine's workspace: libFuzzer needs the nightly toolchain, and the
+# engine's build must not.
+#   cargo +nightly fuzz run silverjs_parse fuzz/corpus/silverjs_parse \
+#     fuzz/seeds/silverjs_parse -- -dict=fuzz/silverjs_parse.dict
+# CI runs each target for a minute on every push.
+
+[package]
+name = "silverjs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MPL-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+silverjs = { path = ".." }
+
+[[bin]]
+name = "silverjs_parse"
+path = "fuzz_targets/silverjs_parse.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

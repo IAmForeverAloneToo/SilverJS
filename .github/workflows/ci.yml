@@ -32,8 +32,56 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all -- --check
+      # The fuzz targets are a crate of their own, outside the workspace.
+      - run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked --no-fail-fast
+
+  fuzz:
+    # Each target runs a minute on every push, from the seeds and the
+    # corpus the last run grew (kept in the actions cache).
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The repository pins a stable compiler; RUSTUP_TOOLCHAIN wins over
+    # that file, so cargo-fuzz's -Z flags get the nightly it needs. Its
+    # prebuilt binary defaults to a musl target, so the target is named.
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+      FUZZ_TARGET_TRIPLE: x86_64-unknown-linux-gnu
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [silverjs_parse]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
+        with:
+          toolchain: nightly
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        with:
+          tool: cargo-fuzz@0.13.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: fuzz
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Fuzz
+        shell: bash
+        run: |
+          mkdir -p fuzz/corpus/${{ matrix.target }}
+          cargo fuzz run --target "$FUZZ_TARGET_TRIPLE" ${{ matrix.target }} \
+            fuzz/corpus/${{ matrix.target }} fuzz/seeds/${{ matrix.target }} \
+            -- -max_total_time=60 -max_len=4096 -rss_limit_mb=2048 -timeout=30 \
+            -dict=fuzz/${{ matrix.target }}.dict
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: fuzz-${{ matrix.target }}-crash
+          path: fuzz/artifacts
 
   audit:
     name: advisories + licenses
