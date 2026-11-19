@@ -1,0 +1,7 @@
+# The compiler every build uses, pinned to an exact version rather than
+# "stable", so that two builds a month apart use the same rustc. It is
+# the one Silver Browser pins, SilverJS's first embedder, so that what
+# passes here builds there. Moved by hand, in a commit of its own.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]

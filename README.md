@@ -19,9 +19,19 @@ own by any other program that needs to run JavaScript.
 
 ## Status
 
-Early. The design is written; the lexer is the first piece in progress.
-Silver Browser runs QuickJS-ng today and moves to SilverJS once SilverJS
-handles real sites at least as well.
+Early. The design is written (`docs/design.md`); the lexer is the first
+piece in progress. Silver Browser runs QuickJS-ng today and moves to
+SilverJS once SilverJS handles real sites at least as well.
+
+## Building
+
+The engine is one crate at the repository's root, with no dependencies
+outside the Rust standard library:
+
+    cargo test
+    cargo clippy --all-targets -- -D warnings
+
+The compiler version is pinned in `rust-toolchain.toml`.
 
 ## Licence
 

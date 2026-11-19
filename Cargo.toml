@@ -1,0 +1,20 @@
+[package]
+# SilverJS, the Silver Suite's own JavaScript engine (docs/design.md).
+# It depends on nothing outside `std`; a dependency is argued in a
+# commit of its own.
+name = "silverjs"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+license = "MPL-2.0"
+description = "A JavaScript engine written from scratch in safe Rust"
+repository = "https://github.com/IAmForeverAloneToo/SilverJS"
+publish = false
+
+# The engine crate is the repository's root, and its own workspace: the
+# fuzz crate (fuzz/, cargo-fuzz's, on the nightly toolchain) is a crate
+# of its own and not a member, so that `cargo test` here never needs it.
+[workspace]
+exclude = ["fuzz"]
+
+[dependencies]
