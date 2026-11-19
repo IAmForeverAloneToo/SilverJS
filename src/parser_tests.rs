@@ -298,6 +298,56 @@ fn modules() {
 }
 
 #[test]
+fn regexp_literals() {
+    ok("/(?<a>x)|(?<a>y)/;");
+    err("/(?<a>x)(?<a>y)/;");
+    ok("/\\k<a>(?<a>x)/;");
+    err("/(?<a>x)\\k<b>/;");
+    ok("/\\k/;");
+    err("/\\k/u;");
+    ok("/{/; /a{/; /a{1/;");
+    err("/{/u;");
+    err("/a{2,1}/;");
+    err("/+/;");
+    ok("/(?=a)*/;");
+    err("/(?=a)*/u;");
+    err("/(?<=a)*/;");
+    ok("/[a-b]/;");
+    err("/[b-a]/;");
+    // Outside Unicode mode an astral character is two code units: it
+    // reads (it once looped), and a range across two is out of order.
+    ok("/\u{20BB7}/; /\\\u{20BB7}/; /[\u{1F600}-\u{1F603}]/u;");
+    err("/[\u{1F600}-\u{1F603}]/;");
+    ok("/[\\d-a]/;");
+    err("/[\\d-a]/u;");
+    ok("/\\p{L}\\p{Script=Greek}\\P{ASCII}/u;");
+    err("/\\p{Lx}/u;");
+    err("/\\p{Script=Nope}/u;");
+    ok("/\\p{L}/;");
+    ok("/[\\p{L}--\\p{Lu}]/v; /[[a-z]&&[aeiou]]/v; /[\\q{abc|d}]/v;");
+    err("/[^\\q{abc}]/v;");
+    err("/[a&&&b]/v;");
+    err("/[(]/v;");
+    ok("/\\p{RGI_Emoji}/v;");
+    err("/\\P{RGI_Emoji}/v;");
+    err("/\\p{RGI_Emoji}/u;");
+    ok("/(?i:a)(?-s:b)(?m-i:c)/;");
+    err("/(?ii:a)/;");
+    err("/(?-:a)/;");
+    ok("/\\1(a)/; /\\8/;");
+    err("/\\2(a)/u;");
+    ok("/a/dgimsy; /a/v;");
+    err("/a/uv;");
+    // Unicode mode escapes only syntax characters and `/`, and has no
+    // lone `]`; `v` mode refuses a doubled punctuator in a class.
+    ok("/\\a/; /]/;");
+    err("/\\a/u;");
+    err("/]/u;");
+    ok("/[a!b]/v;");
+    err("/[a!!b]/v;");
+}
+
+#[test]
 fn classes_and_private_names() {
     ok(
         "class C extends B { constructor() { super(); } #a; get #b() {} set #b(v) {} m() { this.#a; #a in this; } static { this; } }",

@@ -1,4 +1,4 @@
-"""SilverJS's parser sabotage: one break at a time, `cargo test`,
+"""SilverJS's parser and RegExp sabotage: one break at a time, `cargo test`,
 restored byte for byte. Prints which tests each break fails, then every
 test no break failed (which must be none).
 
@@ -23,6 +23,8 @@ C = 'src/parser/scope.rs'
 M = 'src/parser/mod.rs'
 K = 'src/stack.rs'
 D = 'src/parser/module.rs'
+R = 'src/regexp.rs'
+RP = 'src/regexp/properties.rs'
 cases = [
     (S, "if !self.cx.return_ {", "if false {"),
     (S, "None if !self.in_loop =>", "None if false =>"),
@@ -93,6 +95,27 @@ cases = [
     (M, "            strict: module,\n", "            strict: false,\n"),
     (M, "            await_: module,\n", "            await_: false,\n"),
     (E, "                if !self.module {\n", "                if false {\n"),
+    # RegExp patterns' early errors.
+    (R, "if seen & 32 != 0 && seen & 128 != 0 {", "if false {"),
+    (R, "if !checker.names.iter().any(|(n, _)| n == name) {", "if false {"),
+    (R, "if self.quantifier()? && !quantifiable {", "if self.quantifier()? && false {"),
+    (R, "if max.is_some_and(|max| max < min) {", "if false {"),
+    (R, "            !self.unicode\n", "            true\n"),
+    (R, "if clash {", "if false {"),
+    (R, "if n <= u64::from(self.groups) {", "if true {"),
+    (R, "if is_syntax_char(ch(c)) || c == '/' {", "if true {"),
+    (R, "(ClassAtom::Char(a), ClassAtom::Char(b)) if a > b =>",
+        "(ClassAtom::Char(a), ClassAtom::Char(b)) if false =>"),
+    (R, "_ if self.unicode => return Err(\"Invalid character class\".to_owned()),",
+        "_ if false => return Err(\"Invalid character class\".to_owned()),"),
+    (R, "if negated && strings {", "if false {"),
+    (R, "None if self.sets && !negated && properties::string_property(&name) => Ok(true),",
+        "None if properties::string_property(&name) => Ok(true),"),
+    (R, "'}' | ']' if self.unicode =>", "'}' | ']' if false =>"),
+    (R, "if \"&!#$%*+,.:;<=>?@^`~\".contains(ch_) && self.peek_at(1) == Some(c) {", "if false {"),
+    (R, "':' if any => return Ok(()),", "':' => return Ok(()),"),
+    (RP, "\"Script\" | \"sc\" | \"Script_Extensions\" | \"scx\" => SCRIPT.binary_search(&value).is_ok(),",
+        "\"Script\" | \"sc\" | \"Script_Extensions\" | \"scx\" => true,"),
 ]
 env = dict(os.environ, CARGO_BUILD_JOBS='4')
 quiet = os.environ.get('QUIET_SH')
