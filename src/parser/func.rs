@@ -536,7 +536,7 @@ impl Parser<'_> {
     /// class around it, or refuses them at the outermost.
     fn resolve_privates(&mut self, scope: ClassScope) -> Result<(), SyntaxError> {
         for used in scope.used {
-            if scope.declared.iter().any(|(n, _)| *n == used.name) {
+            if scope.declared.contains_key(&used.name) {
                 continue;
             }
             match self.classes.last_mut() {
@@ -715,8 +715,8 @@ impl Parser<'_> {
         let Some(class) = self.classes.last_mut() else {
             return Ok(());
         };
-        if let Some(entry) = class.declared.iter_mut().find(|(n, _)| *n == name.name) {
-            let pair = match (entry.1, kind) {
+        if let Some(entry) = class.declared.get_mut(&name.name) {
+            let pair = match (*entry, kind) {
                 (PrivateKind::Getter { is_static: a }, PrivateKind::Setter { is_static: b })
                 | (PrivateKind::Setter { is_static: a }, PrivateKind::Getter { is_static: b }) => {
                     a == b
@@ -730,10 +730,10 @@ impl Parser<'_> {
                     end: name.span.end,
                 });
             }
-            entry.1 = PrivateKind::Both;
+            *entry = PrivateKind::Both;
             return Ok(());
         }
-        class.declared.push((name.name.clone(), kind));
+        class.declared.insert(name.name.clone(), kind);
         Ok(())
     }
 

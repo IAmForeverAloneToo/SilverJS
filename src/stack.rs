@@ -35,8 +35,13 @@ impl StackGuard {
         }
     }
 
+    /// The stack in use since the guard was made, in bytes.
+    pub(crate) fn used(&self) -> usize {
+        here().abs_diff(self.base)
+    }
+
     /// Whether more than the budget is in use since the guard was made.
     pub(crate) fn exceeded(&self) -> bool {
-        here().abs_diff(self.base) > self.budget
+        self.used() > self.budget
     }
 }

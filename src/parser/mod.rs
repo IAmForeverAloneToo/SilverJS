@@ -28,7 +28,7 @@ mod pattern;
 mod scope;
 mod stmt;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::SyntaxError;
 use crate::ast::{Ast, ExprId, Ident, Program, Span, keyword_text};
@@ -66,9 +66,32 @@ pub fn parse_with_stack(
     goal: Goal,
     stack_budget: usize,
 ) -> Result<Program, SyntaxError> {
-    let mut parser = Parser::new(source, goal)?;
+    parse_with_stats(source, goal, stack_budget).0
+}
+
+/// What a parse used: the deepest nesting it reached (levels of
+/// brackets, functions, statements and right-associative operators) and
+/// the most stack it took past its entry, in bytes. An embedder sizes its
+/// stack budget from these.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ParseStats {
+    pub max_depth: u32,
+    pub peak_stack: usize,
+}
+
+/// Parses as [`parse_with_stack`] does, and says what the parse used.
+pub fn parse_with_stats(
+    source: &str,
+    goal: Goal,
+    stack_budget: usize,
+) -> (Result<Program, SyntaxError>, ParseStats) {
+    let mut parser = match Parser::new(source, goal) {
+        Ok(parser) => parser,
+        Err(e) => return (Err(e), ParseStats::default()),
+    };
     parser.stack = StackGuard::new(stack_budget);
-    parser.program()
+    let result = parser.program();
+    (result, parser.stats)
 }
 
 /// Positions where a cover grammar was read the way that only one of
@@ -119,8 +142,9 @@ struct Label {
 /// every `#x` used must be declared by an enclosing class).
 #[derive(Debug, Default)]
 struct ClassScope {
-    /// Declared names and what declared them, to refuse duplicates.
-    declared: Vec<(Box<str>, PrivateKind)>,
+    /// Declared names and what declared them, to refuse duplicates (a
+    /// map: a class may declare thousands).
+    declared: HashMap<Box<str>, PrivateKind>,
     /// Names used and not yet declared in this class, with where.
     used: Vec<Ident>,
 }
@@ -162,6 +186,7 @@ pub(crate) struct Parser<'s> {
     rest_not_last: HashSet<ExprId>,
     /// The stack used since the parse began, checked at each level.
     stack: StackGuard,
+    stats: ParseStats,
 }
 
 const UNEXPECTED_END: &str = "Unexpected end of input";
@@ -196,10 +221,11 @@ impl<'s> Parser<'s> {
             await_ident_at: None,
             rest_not_last: HashSet::new(),
             stack: StackGuard::new(DEFAULT_STACK_BUDGET),
+            stats: ParseStats::default(),
         })
     }
 
-    pub(crate) fn program(mut self) -> Result<Program, SyntaxError> {
+    pub(crate) fn program(&mut self) -> Result<Program, SyntaxError> {
         let start = self.tok.start;
         let body = if self.module {
             self.module_body()?
@@ -210,7 +236,7 @@ impl<'s> Parser<'s> {
         };
         self.scopes.finish_top()?;
         Ok(Program {
-            ast: self.ast,
+            ast: std::mem::take(&mut self.ast),
             body,
             module: self.module,
             strict: self.cx.strict,
@@ -368,6 +394,9 @@ impl<'s> Parser<'s> {
     /// with [`Parser::leave`].
     fn enter(&mut self) -> Result<(), SyntaxError> {
         self.depth += 1;
+        let used = self.stack.used();
+        self.stats.max_depth = self.stats.max_depth.max(self.depth);
+        self.stats.peak_stack = self.stats.peak_stack.max(used);
         if self.depth > MAX_DEPTH || self.stack.exceeded() {
             return Err(self.error("Maximum call stack size exceeded", self.tok_span()));
         }

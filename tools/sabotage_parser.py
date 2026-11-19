@@ -64,7 +64,7 @@ cases = [
     (M, '"arguments" | "eval" if binding && self.cx.strict =>', '"arguments" | "eval" if false =>'),
     (M, "if self.at(Punct::RBrace) || self.at_eof() || self.tok.newline_before {",
         "if self.at(Punct::RBrace) || self.at_eof() {"),
-    (K, "here().abs_diff(self.base) > self.budget", "false"),
+    (K, "self.used() > self.budget", "false"),
     # Classes and private names.
     (F, "self.cx.super_call = matches!(kind, FuncKind::Constructor { derived: true });",
         "self.cx.super_call = matches!(kind, FuncKind::Constructor { .. });"),
@@ -72,7 +72,7 @@ cases = [
         "let saved = self.cx;\n        let result = self.class_parts"),
     (F, "            if self.is_bare_arrow(e) {\n                let span = self.ast.expr(e).span;\n                return Err(self.error(\"Malformed arrow function parameter list\", span));\n            }\n            Some(e)",
         "            Some(e)"),
-    (F, "if scope.declared.iter().any(|(n, _)| *n == used.name) {", "if true {"),
+    (F, "if scope.declared.contains_key(&used.name) {", "if true {"),
     (F, "&& &*p.name == \"constructor\"", "&& false"),
     (F, "let is_constructor = !is_static && key_name == Some(\"constructor\");",
         "let is_constructor = key_name == Some(\"constructor\");"),
@@ -86,7 +86,7 @@ cases = [
         "self.advance()?;\n            return Ok(MemberProp::Private(name));"),
     (E, "&& !(name != \"async\" && next.is(Punct::Star));", ";"),
     # Modules.
-    (D, "if exports.names.iter().take(i).any(|(n, _)| n == name) {", "if false {"),
+    (D, "if !seen.insert(name) {", "if false {"),
     (D, "if !self.scopes.top_declares(&local.name) {", "if false {"),
     (D, "if attributes.iter().any(|a| a.key == key) {", "if false {"),
     (D, "if char::decode_utf16(value.iter().copied()).any(|c| c.is_err()) {", "if false {"),

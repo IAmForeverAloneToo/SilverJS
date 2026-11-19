@@ -38,8 +38,9 @@ impl Parser<'_> {
             };
             body.push(item);
         }
-        for (i, (name, span)) in exports.names.iter().enumerate() {
-            if exports.names.iter().take(i).any(|(n, _)| n == name) {
+        let mut seen: std::collections::HashSet<&ModuleString> = std::collections::HashSet::new();
+        for (name, span) in &exports.names {
+            if !seen.insert(name) {
                 return Err(
                     self.error(format!("Duplicate export of '{}'", utf16_text(name)), *span)
                 );
