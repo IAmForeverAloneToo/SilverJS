@@ -2,8 +2,9 @@
 //! It depends on nothing outside `std`, and everything browser-shaped is
 //! its embedder's.
 //!
-//! J1 so far: the lexer (ECMA-262 section 12), the parser and its early
-//! errors (sections 13 to 17), and RegExp's pattern syntax.
+//! J1: the lexer (ECMA-262 section 12), the parser and its early errors
+//! (sections 13 to 17), and RegExp's pattern syntax. J2 so far: values,
+//! the heap and its collector, and handles.
 
 // No module needs `unsafe` before the replacement (section 1.5). It turns
 // to `deny` with the first reviewed module that does, in a commit of its
@@ -13,19 +14,25 @@
 // panic on any input is a bug the fuzzers hunt.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::unwrap_used))]
 
+pub mod agent;
 pub mod ast;
+mod heap;
 pub mod lexer;
 pub mod parser;
 mod regexp;
 mod stack;
 mod unicode;
 mod unicode_tables;
+pub mod value;
 
+#[cfg(test)]
+mod heap_tests;
 #[cfg(test)]
 mod lexer_tests;
 #[cfg(test)]
 mod parser_tests;
 
+pub use heap::HeapStats;
 pub use unicode_tables::UNICODE_VERSION;
 
 /// An early error (ECMA-262 section 17): a source that does not parse,

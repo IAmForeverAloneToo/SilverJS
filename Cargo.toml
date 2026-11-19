@@ -17,4 +17,9 @@ publish = false
 [workspace]
 exclude = ["fuzz"]
 
+[features]
+# Collect at every allocation and check every local, so that a rooting
+# bug fails the first test that reaches it (docs/design.md section 1.4).
+gc-stress = []
+
 [dependencies]
