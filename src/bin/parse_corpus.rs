@@ -1,7 +1,7 @@
 //! Parses every script of a directory and reports what SilverJS made of
 //! them: real pages' bundles, beside Test262's tests of the standard.
 //!
-//!     cargo run --release --bin parse_corpus -- <dir> [--top <n>] [--context]
+//!     cargo run --release --bin parse_corpus -- <dir> [--top <n>] [--context] [--compile]
 //!
 //! Where the directory has an `index.tsv` (lines of file name, `script`
 //! or `module`, and the URL the page ran it from), it says each file's
@@ -17,7 +17,12 @@
 //! - the deepest nesting met, the most stack a parse took, and the stack
 //!   per level they imply, beside the default budget
 //!   (`DEFAULT_STACK_BUDGET`) and the files that would not fit it;
-//! - parse time for the largest files, a median of seven parses.
+//! - parse time for the largest files, a median of seven parses;
+//! - with `--compile`, what the compiler made of every script that
+//!   parsed: how many compiled into a unit that validates, how many it
+//!   refused and for what (what J2 does not run yet), and any other
+//!   failure, which is a bug; then the compile time of the largest that
+//!   compiled, beside their parse time.
 //!
 //! The corpus is third-party code: it is read where it lies and never
 //! copied into the repository, and a failure is reported by host and
@@ -28,6 +33,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use silverjs::compiler::{CompileError, compile_with_stack};
 use silverjs::lexer::LineIndex;
 use silverjs::parser::{DEFAULT_STACK_BUDGET, Goal, ParseStats, parse_with_stats};
 
@@ -192,7 +198,7 @@ fn goal_name(goal: Goal) -> &'static str {
     }
 }
 
-fn run(dir: PathBuf, top: usize, show_context: bool) {
+fn run(dir: PathBuf, top: usize, show_context: bool, compile: bool) {
     let mut files = Vec::new();
     collect(&dir, &mut files);
     let index = read_index(&dir);
@@ -264,6 +270,79 @@ fn run(dir: PathBuf, top: usize, show_context: bool) {
             o.name
         );
     }
+    if compile {
+        compile_all(&outcomes, top);
+    }
+}
+
+/// The median time of `runs` parses and compiles of `source`, in seconds.
+fn time_compile(source: &str, goal: Goal, runs: usize) -> f64 {
+    let mut times: Vec<f64> = (0..runs)
+        .map(|_| {
+            let start = Instant::now();
+            let result = compile_with_stack(source, goal, BUDGET);
+            std::hint::black_box(&result);
+            start.elapsed().as_secs_f64()
+        })
+        .collect();
+    times.sort_by(f64::total_cmp);
+    times.get(times.len() / 2).copied().unwrap_or(0.0)
+}
+
+fn compile_all(outcomes: &[Outcome], top: usize) {
+    let mut compiled = Vec::new();
+    let mut refused: HashMap<&'static str, usize> = HashMap::new();
+    let mut broken = Vec::new();
+    for o in outcomes.iter().filter(|o| o.error.is_none()) {
+        let bytes = std::fs::read(&o.path).unwrap_or_default();
+        let source = String::from_utf8_lossy(&bytes);
+        match compile_with_stack(&source, o.goal, BUDGET) {
+            Ok(unit) => match unit.validate() {
+                Ok(()) => compiled.push(o),
+                Err(e) => broken.push(format!("{}: an invalid unit: {e}", o.name)),
+            },
+            Err(CompileError::Unsupported { feature, .. }) => {
+                *refused.entry(feature).or_default() += 1
+            }
+            Err(CompileError::Syntax(e)) => {
+                broken.push(format!("{}: {} at byte {}", o.name, e.message, e.start));
+            }
+        }
+    }
+    let mut refused: Vec<_> = refused.into_iter().collect();
+    refused.sort_by_key(|(f, n)| (std::cmp::Reverse(*n), *f));
+    println!(
+        "
+compile: {} compiled into valid units, {} refused, {} broken",
+        compiled.len(),
+        refused.iter().map(|(_, n)| n).sum::<usize>(),
+        broken.len()
+    );
+    for (feature, n) in &refused {
+        println!("  refused for {feature}: {n}");
+    }
+    for b in &broken {
+        println!("BROKEN {b}");
+    }
+    compiled.sort_by_key(|o| std::cmp::Reverse(o.bytes));
+    println!(
+        "
+parse and compile time of the largest that compiled (median of 7):"
+    );
+    for o in compiled.iter().take(top) {
+        let bytes = std::fs::read(&o.path).unwrap_or_default();
+        let source = String::from_utf8_lossy(&bytes);
+        let parse = time_parse(&o.path, o.goal, 7);
+        let both = time_compile(&source, o.goal, 7);
+        println!(
+            "  {:>9} bytes parse {:>8.2} ms, parse and compile {:>8.2} ms ({:.2}x)  {}",
+            o.bytes,
+            parse * 1e3,
+            both * 1e3,
+            both / parse.max(1e-9),
+            o.name
+        );
+    }
 }
 
 fn main() {
@@ -271,20 +350,22 @@ fn main() {
     let mut dir = None;
     let mut top = 10;
     let mut show_context = false;
+    let mut compile = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--context" => show_context = true,
+            "--compile" => compile = true,
             "--top" => top = args.next().and_then(|n| n.parse().ok()).unwrap_or(top),
             _ => dir = Some(PathBuf::from(arg)),
         }
     }
     let Some(dir) = dir else {
-        eprintln!("usage: parse_corpus <dir> [--top <n>] [--context]");
+        eprintln!("usage: parse_corpus <dir> [--top <n>] [--context] [--compile]");
         std::process::exit(2);
     };
     let worker = std::thread::Builder::new()
         .stack_size(STACK)
-        .spawn(move || run(dir, top, show_context));
+        .spawn(move || run(dir, top, show_context, compile));
     match worker.map(|w| w.join()) {
         Ok(Ok(())) => {}
         _ => {
