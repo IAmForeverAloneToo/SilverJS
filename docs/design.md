@@ -883,7 +883,8 @@ order is taken from the reference browser's observed output (the
 web-engine session's probe table, forwarded by the lead), never from
 another engine's source. Each matched output is pinned by a SilverJS
 test that records Chrome's answer, as section 1.7's differential rule
-says. Messages live in one table in SilverJS, so the wording is
+says; `docs/chrome-surface.md` lists what was observed and the test
+that pins each row. Messages live in one table in SilverJS, so the wording is
 reviewed in one place; built-ins are installed from ordered tables, so
 their key order is data, not an accident of the code.
 
