@@ -700,6 +700,8 @@ browser's format, `Error.captureStackTrace` and `Error.stackTraceLimit`
 embedder as structured frames, so `js` no longer parses text; Annex B
 in full; `Date.parse` accepting what the reference browser accepts.
 Each is checked against Chrome's answer, never another engine's code.
+Messages, stacks, `toString` and key order are section 1.11's, from
+J2.4 on.
 
 ### 1.8 How memory and speed are measured against QuickJS-ng
 
@@ -849,6 +851,42 @@ A small command-line shell, `examples/shell.rs`, is the
 reference embedder: the Test262 runner is built on the same API and
 nothing private, which keeps the API sufficient for others.
 
+### 1.11 Chrome-compatible surface
+
+Added 2026-11-20 at the lead's request, from what a site's bot check
+taught the web-engine session. Silver presents itself as Chrome, so
+what its engine shows a page is part of compatibility: bot checks
+compare it with what Chrome's engine shows. SilverJS therefore matches
+the reference browser, from J2.4 and J2.5 on (not J7, as section 1.7
+first had it), on:
+
+- *error messages*: the texts of the errors SilverJS throws follow the
+  reference browser's wording, for example `Cannot read properties of
+  null (reading 'length')`;
+- *`Error.prototype.stack`*: its format, frame by frame, including the
+  frames of `eval` and `new Function` code (`at eval (eval at f
+  (url:1:2), <anonymous>:3:41)`);
+- *`Error.captureStackTrace`, `Error.prepareStackTrace` and
+  `Error.stackTraceLimit`*: present, and behaving as they do there;
+- *`Function.prototype.toString`*: its output for natives, bound
+  functions and classes;
+- *the own-key order of built-ins*: each intrinsic's properties are
+  defined in the order the reference browser's appear in
+  (`Object.getOwnPropertyNames(Array.prototype)` and the like).
+
+ECMA-262 leaves all of these implementation-defined, so matching costs
+nothing in conformance. There is no switch: an embedder other than
+Silver gets the same behaviour.
+
+How it is done, within the hard constraint: every text, format and
+order is taken from the reference browser's observed output (the
+web-engine session's probe table, forwarded by the lead), never from
+another engine's source. Each matched output is pinned by a SilverJS
+test that records Chrome's answer, as section 1.7's differential rule
+says. Messages live in one table in SilverJS, so the wording is
+reviewed in one place; built-ins are installed from ordered tables, so
+their key order is data, not an accident of the code.
+
 ## 2. Measures
 
 **Memory.** Expected lower than QuickJS-ng per object: 4-byte
@@ -946,7 +984,8 @@ no gate while that session is benching; its next gated push takes it.
   parity or better than QuickJS-ng by geometric mean; a realm under 2
   ms; renderer memory no higher on the sweep's pages.
 - **J7. The user's daily sites** (3 to 4 weeks): the sweep each way
-  on the daily list, Chrome-worded messages and stacks, Annex B and
+  on the daily list, the gaps left in Chrome-worded messages and stacks
+  (matched from J2.4 on, section 1.11), Annex B and
   `Date.parse` gaps, WPT's JavaScript-facing directories at QuickJS's
   pass counts or better, an hour's dogfood session on SilverJS without a
   crash. Targets: Test262 at least 95% and at least QuickJS-ng's rate;
