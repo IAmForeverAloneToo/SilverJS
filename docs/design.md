@@ -662,14 +662,27 @@ memoization already removes the security reason for one.
   Silver's side) runs the same set through the same front-matter
   reader (exported by SilverJS under its `test262` feature), so
   QuickJS-ng's own rate is the bar SilverJS is measured against, measured
-  on the pinned revision as soon as J0 lands (section 3).
+  on the pinned revision as soon as J0 lands (section 3). Until the
+  adapter exists (J5, which brings the dependency), a harness of
+  silver-work's tooling measures it on the same revision and set
+  (2026-11-20): 42,494 of 47,561, 89.35%; Temporal is 4,616 of its
+  failures, and without Temporal it passes 42,494 of 42,945, 98.95%.
+  The tests it passes are kept in `test262/quickjs-ng-passes.txt`, a
+  fixed list;
+- SilverJS's runner provides `$262.createRealm` (realms of one agent are
+  the browser's frames), so the tests that use it, 185 of QuickJS-ng's
+  failures for want of it there, count in SilverJS's set.
 
 **Pass-rate targets** (of the measured set) per milestone in section
 3: J1 99% of the parse-phase tests (every negative syntax test and the
 parse of every positive one); J2 35%; J3 65%; J4 90%; J5 93%; J6 no
-regression (the expectations file only shrinks); J7 at least 95% and
-at least QuickJS-ng's own rate, whichever is higher, before the
-replacement is allowed.
+regression (the expectations file only shrinks). J7, before the
+replacement is allowed (the lead, 2026-11-20), on the measured set with
+Temporal set aside: at least QuickJS-ng's 98.95% in aggregate, and no
+test of `test262/quickjs-ng-passes.txt` failing unless its failure is
+recorded with a reason (QuickJS-ng passing by accident, or a deviation
+chosen), so that the comparison is mechanical. Temporal has a milestone
+of its own after J7 (J9, section 3).
 
 **Differential runs against QuickJS-ng**, on the same scripts, through
 `js`'s backend switch:
@@ -989,17 +1002,26 @@ no gate while that session is benching; its next gated push takes it.
   (matched from J2.4 on, section 1.11), Annex B and
   `Date.parse` gaps, WPT's JavaScript-facing directories at QuickJS's
   pass counts or better, an hour's dogfood session on SilverJS without a
-  crash. Targets: Test262 at least 95% and at least QuickJS-ng's rate;
-  section 1.8's replacement bar met.
+  crash. Targets: Test262 as section 1.7 sets it (Temporal aside, at
+  least 98.95%, and no test of QuickJS-ng's pass list failing without a
+  recorded reason); section 1.8's replacement bar met.
 - **J8. The replacement, after beta** (1 to 2 weeks, then a week of
   dogfood): SilverJS becomes the default; QuickJS-ng stays selectable by
   `--js-engine quickjs` for one dogfood week as the fallback, then
   `quickjs/`, `rquickjs` and the four `unsafe` modules that exist for
   it are removed, and `security.md` section 5 loses QuickJS's C.
+- **J9. Temporal** (after J7; the lead, 2026-11-20): Chrome ships it
+  and Silver presents itself as Chrome, so SilverJS implements it;
+  QuickJS-ng has none of it, so it does not gate the switch. Its
+  calendars and time zones come from the embedder's ICU4X through hooks,
+  as `Intl`'s do. Target: at least 95% of `test/built-ins/Temporal`
+  and `test/intl402/Temporal` with Silver's ICU4X hooks, every Temporal
+  test of Chrome's shipped behaviour that the reference browser passes
+  passing too.
 
 The order, then: J1, J2, J3, J4 in SilverJS alone, J0 slotted in once
-G90 phase 3 closes, then J5 (which needs J0), J6, J7 and, after beta,
-J8. About 35 to 45 weeks of one session for J1 to J8, J0 a few days.
+G90 phase 3 closes, then J5 (which needs J0), J6, J7, then J9 and,
+after beta, J8. About 35 to 45 weeks of one session for J1 to J8, J0 a few days.
 Nothing here changes the beta's order: J1 to J7 proceed while the beta
 work does, at a lower priority, and J8 waits for the beta.
 
@@ -1008,9 +1030,8 @@ work does, at a lower priority, and J8 waits for the beta.
 - The baseline JIT, and any optimizing tier: a note of its own after
   J8, gated on the sandbox's dynamic-code decision (G112).
 - `SharedArrayBuffer`, `Atomics.wait` and cross-origin isolation.
-- Temporal: its own note, when the reference browser's shipped
-  behaviour settles; its calendars and time zones would come from the
-  embedder's ICU4X, as `Intl` does.
+- Temporal's design: a note of its own when J9 starts (its milestone
+  and target are in section 3).
 - A debugger protocol for DevTools on SilverJS (breakpoints, stepping);
   source positions and structured stacks are designed in now so that
   it can be added.

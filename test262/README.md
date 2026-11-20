@@ -18,3 +18,10 @@ each mode its flags ask for. `expected-parse-failures.txt` lists every
 test that does not yet, with a one-word reason; a run that fails a test
 not listed, or passes one listed, fails. `--update` rewrites the file,
 which only ever shrinks.
+
+`quickjs-ng-passes.txt` is QuickJS-ng's own pass list on the same
+revision and measured set (2026-11-20, QuickJS-ng 0.16 through rquickjs
+0.14, a harness of silver-work's tooling until the `js` adapter of
+J5): one test path a line. It is fixed: J7's bar is that no test in it
+fails in SilverJS without a recorded reason (docs/design.md section
+1.7).
