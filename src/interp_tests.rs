@@ -384,3 +384,121 @@ fn for_in_under_collection() {
         "var o = { a: 1, b: 2, c: 3 }; var s = ''; for (var k in o) { var t = { k }; s += t.k; } s";
     assert_eq!(run_in(&mut agent, src), "\"abc\"");
 }
+
+/// The bytes of string units copied while `src` runs.
+fn copies(agent: &mut Agent, src: &str) -> (String, usize) {
+    let before = agent.heap.string_copies;
+    let out = run_in(agent, src);
+    (out, agent.heap.string_copies - before)
+}
+
+/// String building copies each unit a constant number of times: at two
+/// sizes four times apart, the bytes copied stay under the same multiple
+/// of the length built (J2.4b, the lead's conditions).
+#[test]
+fn building_a_string_copies_linearly() {
+    let shapes = [
+        (
+            "append",
+            "var s = ''; for (var i = 0; i < N; i++) s += 'ab'; s.length",
+        ),
+        (
+            "prepend",
+            "var s = ''; for (var i = 0; i < N; i++) s = 'ab' + s; s.length",
+        ),
+        (
+            "alternating",
+            "var s = ''; for (var i = 0; i < N; i++) { if (i & 1) s += 'ab'; else s = 'ab' + s; } s.length",
+        ),
+        (
+            "right-leaning",
+            "function r(i) { return i == 0 ? '' : 'ab' + r(i - 1); } var s = ''; for (var k = 0; k < N / 4000; k++) s = r(4000) + s; s.length",
+        ),
+    ];
+    for (name, src) in shapes {
+        for n in [20_000usize, 80_000] {
+            let mut agent = Agent::new(AgentOptions::default());
+            let (out, copied) = copies(&mut agent, &src.replace('N', &n.to_string()));
+            assert_eq!(out, (2 * n).to_string(), "{name}");
+            // Each unit a byte (Latin-1): at most 6 bytes copied per unit
+            // built, whatever the size.
+            assert!(
+                copied <= 6 * 2 * n,
+                "{name} at {n}: {copied} bytes copied for {} units",
+                2 * n
+            );
+            // A buffer counted once, by its newest window: the heap does
+            // not seem to grow by the whole string at every step.
+            // (gc-stress builds collect at every allocation.)
+            let collections = agent.heap_stats().collections;
+            if !cfg!(feature = "gc-stress") {
+                assert!(
+                    collections < 100,
+                    "{name} at {n}: {collections} collections"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_prefix_extended_twice_copies_the_second_time() {
+    let mut agent = Agent::new(AgentOptions::default());
+    let src = "var p = ''; for (var i = 0; i < 100; i++) p += 'ab'; var a = p + 'x'; var b = p + 'y'; \
+               a[a.length - 1] + b[b.length - 1] + (a.length === b.length) + (p.length) + a.slice";
+    let out = run_in(&mut agent, src);
+    // Neither sees the other's unit; p sees neither.
+    assert!(out.starts_with("\"xytrue200"), "{out}");
+    let (out, copied) = copies(&mut agent, "var c = p + 'z'; c[c.length - 1]");
+    assert_eq!(out, "\"z\"");
+    // p no longer ends where its buffer is used to: c is a copy.
+    assert!(copied >= 200, "{copied}");
+}
+
+#[test]
+fn a_short_string_does_not_pin_a_long_buffer() {
+    for stress in [false, true] {
+        let mut agent = Agent::new(AgentOptions::default());
+        agent.set_stress(stress);
+        // 10 MB without stress; 100 KB under it, which collects at every
+        // allocation.
+        let doublings = if stress { 11 } else { 18 };
+        let src = format!(
+            "var base = ''; for (var i = 0; i < 40; i++) base += 'ab'; var keep = base + 'x'; \
+             var big = keep; for (var i = 0; i < {doublings}; i++) big += big; big.length"
+        );
+        let out = run_in(&mut agent, &src);
+        let n: usize = out.parse().unwrap();
+        assert!(n >= 81 << doublings, "{out}");
+        // While it lives, the heap counts it.
+        agent.collect();
+        let held = agent.heap_stats().bytes;
+        assert!(
+            held >= n,
+            "stress {stress}: {held} bytes counted for {n} units held"
+        );
+        assert_eq!(run_in(&mut agent, "big = null; 0"), "0");
+        agent.collect();
+        agent.collect();
+        let bytes = agent.heap_stats().bytes;
+        assert!(
+            bytes < 1 << 20,
+            "stress {stress}: {bytes} bytes after dropping {n} units"
+        );
+        assert_eq!(run_in(&mut agent, "keep.length + keep[80]"), "\"81x\"");
+    }
+}
+
+#[test]
+fn building_under_collection_keeps_every_unit() {
+    let mut agent = Agent::new(AgentOptions::default());
+    agent.set_stress(true);
+    let src = "var s = ''; var t = ''; for (var i = 0; i < 300; i++) { s += 'ab'; t = 'c' + t; if (i % 50 == 0) t = s + t; } \
+               s.length + t.length + s[599] + t[0] + t[t.length - 1]";
+    let expected = {
+        let mut a = Agent::new(AgentOptions::default());
+        a.set_stress(false);
+        run_in(&mut a, src)
+    };
+    assert_eq!(run_in(&mut agent, src), expected);
+}

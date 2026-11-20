@@ -428,12 +428,15 @@ impl<'a> Scope<'a> {
         let (Some(x), Some(y)) = (self.value(a).as_string(), self.value(b).as_string()) else {
             return Ok(None);
         };
-        let strings = &self.agent.heap.strings;
-        let (Some(x), Some(y)) = (strings.get(x), strings.get(y)) else {
+        let Some((cell, buffer)) = self.agent.heap.concat_cells(x, y) else {
             return Ok(None);
         };
-        let cell = StringCell::concat(x, y);
-        self.alloc_string(cell).map(Some)
+        self.agent.reserve(cell.owned_bytes() + 48)?;
+        let (index, _) = self.agent.heap.strings.alloc(cell);
+        if let Some(buffer) = buffer {
+            self.agent.heap.own_buffer(&buffer, index);
+        }
+        Ok(Some(self.local(Value::reference(RefKind::String, index))))
     }
 
     /// SameValue (section 7.2.10): strings by their units, numbers by

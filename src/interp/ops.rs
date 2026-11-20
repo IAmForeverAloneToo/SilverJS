@@ -513,23 +513,30 @@ impl Agent {
         let b = self.string_value(b);
         self.vm.temps.pop();
         let b = b?;
-        let (Some(x), Some(y)) = (
-            a.as_string().and_then(|i| self.heap.strings.get(i)),
-            b.as_string().and_then(|i| self.heap.strings.get(i)),
-        ) else {
+        let (Some(ia), Some(ib)) = (a.as_string(), b.as_string()) else {
             return Ok(a);
         };
-        if y.len() == 0 {
+        let len = |i| self.heap.strings.get(i).map_or(0, StringCell::len);
+        if len(ib) == 0 {
             return Ok(a);
         }
-        if x.len() == 0 {
+        if len(ia) == 0 {
             return Ok(b);
         }
-        let cell = StringCell::concat(x, y);
-        if self.reserve(cell.owned_bytes() + 48).is_err() {
+        let Some((cell, buffer)) = self.heap.concat_cells(ia, ib) else {
+            return Ok(a);
+        };
+        // Both stay rooted while the room is made.
+        self.vm.temps.extend([a, b]);
+        let room = self.reserve(cell.owned_bytes() + 48);
+        self.vm.temps.truncate(self.vm.temps.len() - 2);
+        if room.is_err() {
             return Err(self.out_of_memory());
         }
         let (i, _) = self.heap.strings.alloc(cell);
+        if let Some(buffer) = buffer {
+            self.heap.own_buffer(&buffer, i);
+        }
         Ok(Value::reference(RefKind::String, i))
     }
 
@@ -632,7 +639,7 @@ impl Agent {
                     if let PropertyKey::Index(i) = key
                         && (i as usize) < s.len()
                     {
-                        let unit = s.iter().nth(i as usize).unwrap_or(0);
+                        let unit = s.unit(i as usize).unwrap_or(0);
                         return self.new_string_units(&[unit]);
                     }
                 }

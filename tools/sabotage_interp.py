@@ -20,6 +20,7 @@ P = 'src/interp/ops.rs'
 R = 'src/interp/realm.rs'
 O = 'src/object.rs'
 H = 'src/heap.rs'
+S = 'src/string.rs'
 cases = [
     # Unwinding and frames.
     (M, "top.context = context;", "let _ = context;"),
@@ -54,6 +55,14 @@ cases = [
     # The object model and the heap.
     (O, "Some(e) if e.flags & (WRITABLE | ACCESSOR) == WRITABLE => {", "Some(e) => {"),
     (H, "        self.internals.update_extra(before, after);\n", ""),
+    # Strings built in shared buffers (J2.4b).
+    (S, "let append = after_a && (!before_b || lb <= la);", "let append = after_a;"),
+    (S, "if *end == buffer.borrow().used_end);", "if *end >= 0);"),
+    (S, "if *start == buffer.borrow().used_start);", "if *start >= 0);"),
+    (S, "(used + after).max(after * 2)", "after"),
+    (S, "let p = start + isize::try_from(i).ok()?;", "let p = start + isize::try_from(i).ok()? + 1;"),
+    (H, "if live * 4 >= capacity {", "if true {"),
+    (H, "c.accounted = 0;", "let _ = &c;"),
 ]
 env = dict(os.environ, CARGO_BUILD_JOBS='4')
 quiet = os.environ.get('QUIET_SH')

@@ -1,26 +1,120 @@
 //! Strings (docs/design.md section 1.3): immutable, with WTF-16
 //! semantics (a lone surrogate is a value of its own), held as Latin-1
 //! (one byte a unit) when every unit is under 256 and as UTF-16
-//! otherwise, each with its hash cached. Ropes come with J6.
+//! otherwise, each hashed when first compared.
+//!
+//! A string built by concatenation is a window on a buffer shared with
+//! the strings it was built from (J2.4b, the lead's ruling of
+//! 2026-11-20, in place of J2's ropes): the buffer keeps the range its
+//! windows have used, with room at both ends, grown by doubling. `a + b`
+//! writes `b` in place after `a` when `a`'s window ends exactly where the
+//! buffer's used range does, and `a` in place before `b` when `b`'s
+//! window starts where it starts; otherwise it copies. So `s += x`,
+//! `s = x + s`, either alternating, and `a + (b + (c + ...))` copy each
+//! unit a constant number of times, amortized, while every string stays
+//! flat to read. Branching off one prefix (`p + "x"`, then `p + "y"`)
+//! copies the second time: that pattern stays quadratic in a loop until
+//! J6's ropes.
+//!
+//! A buffer's bytes are counted once, by the window that last extended
+//! it; the collector copies the live windows of a buffer they cover
+//! under a quarter of out to buffers of their own, so that a short string
+//! never keeps a long one's buffer.
 //!
 //! Property keys are [`PropertyKey`]s: an array index as a number, a
 //! name as an [`Atom`] (an interned string with an agent-wide id, so
 //! that keys compare as integers), or a symbol.
 
+use std::cell::{Cell, Ref, RefCell};
 use std::collections::HashMap;
+use std::rc::Rc;
+
+/// Below this many units a concatenation copies into a flat string: a
+/// buffer is for strings that grow.
+pub(crate) const BUFFER_FROM: usize = 64;
+
+/// A buffer's units, in one width.
+#[derive(Debug, Clone)]
+pub(crate) enum Data {
+    Latin1(Vec<u8>),
+    Utf16(Vec<u16>),
+}
+
+impl Data {
+    fn len(&self) -> usize {
+        match self {
+            Data::Latin1(v) => v.len(),
+            Data::Utf16(v) => v.len(),
+        }
+    }
+
+    fn bytes(&self) -> usize {
+        match self {
+            Data::Latin1(v) => v.capacity(),
+            Data::Utf16(v) => v.capacity() * 2,
+        }
+    }
+}
+
+/// A buffer strings are windows on. Positions are logical: the unit at
+/// position `p` is `data[p - origin]`, so that growing at the front moves
+/// no window.
+#[derive(Debug)]
+pub(crate) struct Buffer {
+    pub(crate) data: Data,
+    pub(crate) origin: isize,
+    /// The range some window has used: only a window ending at
+    /// `used_end` may write after it, and one starting at `used_start`
+    /// before it.
+    pub(crate) used_start: isize,
+    pub(crate) used_end: isize,
+    /// The string cell its bytes are counted by.
+    pub(crate) owner: Option<u32>,
+}
+
+impl Buffer {
+    fn unit(&self, p: isize) -> u16 {
+        let i = usize::try_from(p - self.origin).unwrap_or(usize::MAX);
+        match &self.data {
+            Data::Latin1(v) => v.get(i).map_or(0, |&b| u16::from(b)),
+            Data::Utf16(v) => v.get(i).copied().unwrap_or(0),
+        }
+    }
+
+    pub(crate) fn bytes(&self) -> usize {
+        self.data.bytes()
+    }
+
+    /// The units the buffer has room for.
+    pub(crate) fn data_len(&self) -> usize {
+        self.data.len()
+    }
+}
+
+pub(crate) type Shared = Rc<RefCell<Buffer>>;
 
 /// A string's units.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) enum Units {
     Latin1(Box<[u8]>),
     Utf16(Box<[u16]>),
+    /// The positions `start..end` of a shared buffer.
+    Window {
+        buffer: Shared,
+        start: isize,
+        end: isize,
+    },
 }
 
 /// A string cell.
 #[derive(Debug, Clone)]
 pub(crate) struct StringCell {
     pub(crate) units: Units,
-    pub(crate) hash: u32,
+    /// FNV-1a over the units, made when first wanted.
+    hash: Cell<Option<u32>>,
+    /// The bytes the heap counts for it: its own units, or for a window,
+    /// its buffer's if it is the buffer's owner, else none.
+    pub(crate) accounted: usize,
 }
 
 /// FNV-1a over the units as 16-bit values, whichever form holds them,
@@ -34,26 +128,58 @@ fn hash_units(units: impl Iterator<Item = u16>) -> u32 {
     h
 }
 
+/// A string's units, in order.
+pub(crate) enum StringIter<'a> {
+    Latin1(std::slice::Iter<'a, u8>),
+    Utf16(std::slice::Iter<'a, u16>),
+    Window(Ref<'a, Buffer>, isize, isize),
+}
+
+impl Iterator for StringIter<'_> {
+    type Item = u16;
+
+    fn next(&mut self) -> Option<u16> {
+        match self {
+            StringIter::Latin1(i) => i.next().map(|&b| u16::from(b)),
+            StringIter::Utf16(i) => i.next().copied(),
+            StringIter::Window(buffer, at, end) => {
+                if *at >= *end {
+                    return None;
+                }
+                let u = buffer.unit(*at);
+                *at += 1;
+                Some(u)
+            }
+        }
+    }
+}
+
 impl StringCell {
+    fn flat(units: Units) -> StringCell {
+        let accounted = match &units {
+            Units::Latin1(b) => b.len(),
+            Units::Utf16(u) => u.len() * 2,
+            Units::Window { .. } => 0,
+        };
+        StringCell {
+            units,
+            hash: Cell::new(None),
+            accounted,
+        }
+    }
+
     /// A string of `units`, held as Latin-1 when they all fit.
     pub(crate) fn from_units(units: &[u16]) -> StringCell {
-        let hash = hash_units(units.iter().copied());
-        let data = if units.iter().all(|&u| u < 256) {
-            Units::Latin1(units.iter().map(|&u| u as u8).collect())
+        if units.iter().all(|&u| u < 256) {
+            StringCell::flat(Units::Latin1(units.iter().map(|&u| u as u8).collect()))
         } else {
-            Units::Utf16(units.into())
-        };
-        StringCell { units: data, hash }
+            StringCell::flat(Units::Utf16(units.into()))
+        }
     }
 
     pub(crate) fn from_str(text: &str) -> StringCell {
         if text.is_ascii() {
-            let bytes: Box<[u8]> = text.as_bytes().into();
-            let hash = hash_units(bytes.iter().map(|&b| u16::from(b)));
-            return StringCell {
-                units: Units::Latin1(bytes),
-                hash,
-            };
+            return StringCell::flat(Units::Latin1(text.as_bytes().into()));
         }
         let units: Vec<u16> = text.encode_utf16().collect();
         StringCell::from_units(&units)
@@ -63,18 +189,30 @@ impl StringCell {
         match &self.units {
             Units::Latin1(b) => b.len(),
             Units::Utf16(u) => u.len(),
+            Units::Window { start, end, .. } => usize::try_from(end - start).unwrap_or(0),
         }
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = u16> + '_ {
-        let (latin1, utf16): (&[u8], &[u16]) = match &self.units {
-            Units::Latin1(b) => (b, &[]),
-            Units::Utf16(u) => (&[], u),
-        };
-        latin1
-            .iter()
-            .map(|&b| u16::from(b))
-            .chain(utf16.iter().copied())
+    pub(crate) fn iter(&self) -> StringIter<'_> {
+        match &self.units {
+            Units::Latin1(b) => StringIter::Latin1(b.iter()),
+            Units::Utf16(u) => StringIter::Utf16(u.iter()),
+            Units::Window { buffer, start, end } => {
+                StringIter::Window(buffer.borrow(), *start, *end)
+            }
+        }
+    }
+
+    /// The unit at `i`, read in constant time.
+    pub(crate) fn unit(&self, i: usize) -> Option<u16> {
+        match &self.units {
+            Units::Latin1(b) => b.get(i).map(|&b| u16::from(b)),
+            Units::Utf16(u) => u.get(i).copied(),
+            Units::Window { buffer, start, end } => {
+                let p = start + isize::try_from(i).ok()?;
+                (p < *end).then(|| buffer.borrow().unit(p))
+            }
+        }
     }
 
     pub(crate) fn to_units(&self) -> Vec<u16> {
@@ -83,39 +221,214 @@ impl StringCell {
 
     /// The string as Rust text, a lone surrogate replaced.
     pub(crate) fn to_text(&self) -> String {
+        String::from_utf16_lossy(&self.to_units())
+    }
+
+    /// Whether every unit fits in a byte.
+    fn latin1(&self) -> bool {
         match &self.units {
-            Units::Latin1(b) => b.iter().map(|&b| char::from(b)).collect(),
-            Units::Utf16(u) => String::from_utf16_lossy(u),
+            Units::Latin1(_) => true,
+            Units::Utf16(_) => false,
+            Units::Window { buffer, .. } => matches!(buffer.borrow().data, Data::Latin1(_)),
         }
     }
 
-    /// Two strings' concatenation.
+    pub(crate) fn hash(&self) -> u32 {
+        if let Some(h) = self.hash.get() {
+            return h;
+        }
+        let h = hash_units(self.iter());
+        self.hash.set(Some(h));
+        h
+    }
+
+    /// Two strings' concatenation, flat.
     pub(crate) fn concat(a: &StringCell, b: &StringCell) -> StringCell {
-        if let (Units::Latin1(x), Units::Latin1(y)) = (&a.units, &b.units) {
-            let mut bytes = Vec::with_capacity(x.len() + y.len());
-            bytes.extend_from_slice(x);
-            bytes.extend_from_slice(y);
-            let hash = hash_units(bytes.iter().map(|&b| u16::from(b)));
-            return StringCell {
-                units: Units::Latin1(bytes.into()),
-                hash,
-            };
+        if a.latin1() && b.latin1() {
+            let bytes: Box<[u8]> = a.iter().chain(b.iter()).map(|u| u as u8).collect();
+            return StringCell::flat(Units::Latin1(bytes));
         }
         let units: Vec<u16> = a.iter().chain(b.iter()).collect();
         StringCell::from_units(&units)
     }
 
     pub(crate) fn same_units(&self, other: &StringCell) -> bool {
-        self.hash == other.hash && self.len() == other.len() && self.iter().eq(other.iter())
+        self.len() == other.len() && self.hash() == other.hash() && self.iter().eq(other.iter())
     }
 
-    /// The bytes the cell owns outside itself.
+    /// The bytes the heap counts for the cell.
     pub(crate) fn owned_bytes(&self) -> usize {
-        match &self.units {
-            Units::Latin1(b) => b.len(),
-            Units::Utf16(u) => u.len() * 2,
+        self.accounted
+    }
+
+    /// A flat copy of a window, for the collector (the bytes copied).
+    pub(crate) fn to_flat(&self) -> (StringCell, usize) {
+        let units = self.to_units();
+        let cell = StringCell::from_units(&units);
+        let copied = cell.accounted;
+        (cell, copied)
+    }
+}
+
+/// Writes `units` into `data` from index `at`, widening the data to
+/// UTF-16 first if a unit needs it (the bytes copied).
+fn write_units(data: &mut Data, at: usize, units: &[u16]) -> usize {
+    let mut copied = 0;
+    if let Data::Latin1(v) = data
+        && units.iter().any(|&u| u >= 256)
+    {
+        let wide: Vec<u16> = v.iter().map(|&b| u16::from(b)).collect();
+        copied += wide.len() * 2;
+        *data = Data::Utf16(wide);
+    }
+    match data {
+        Data::Latin1(v) => {
+            for (i, &u) in units.iter().enumerate() {
+                if let Some(slot) = v.get_mut(at + i) {
+                    *slot = u as u8;
+                }
+            }
+            copied += units.len();
+        }
+        Data::Utf16(v) => {
+            if let Some(dst) = v.get_mut(at..at + units.len()) {
+                dst.copy_from_slice(units);
+            }
+            copied += units.len() * 2;
         }
     }
+    copied
+}
+
+/// Grows `buffer` to hold `before` more units in front of its origin's
+/// used range and `after` more behind it, doubling (the bytes copied).
+fn grow(buffer: &mut Buffer, before: usize, after: usize) -> usize {
+    let used = usize::try_from(buffer.used_end - buffer.used_start).unwrap_or(0);
+    let front_room = usize::try_from(buffer.used_start - buffer.origin).unwrap_or(0);
+    let back_room = buffer.data.len().saturating_sub(front_room + used);
+    if front_room >= before && back_room >= after {
+        return 0;
+    }
+    let new_front = if front_room >= before {
+        front_room
+    } else {
+        (used + before).max(before * 2)
+    };
+    let new_back = if back_room >= after {
+        back_room
+    } else {
+        (used + after).max(after * 2)
+    };
+    let len = new_front + used + new_back;
+    let from = front_room;
+    let copied = match &mut buffer.data {
+        Data::Latin1(v) => {
+            let mut fresh = vec![0u8; len];
+            if let (Some(dst), Some(src)) = (
+                fresh.get_mut(new_front..new_front + used),
+                v.get(from..from + used),
+            ) {
+                dst.copy_from_slice(src);
+            }
+            *v = fresh;
+            used
+        }
+        Data::Utf16(v) => {
+            let mut fresh = vec![0u16; len];
+            if let (Some(dst), Some(src)) = (
+                fresh.get_mut(new_front..new_front + used),
+                v.get(from..from + used),
+            ) {
+                dst.copy_from_slice(src);
+            }
+            *v = fresh;
+            used * 2
+        }
+    };
+    buffer.origin = buffer.used_start - isize::try_from(new_front).unwrap_or(0);
+    copied
+}
+
+/// The concatenation of `a` and `b`, at least [`BUFFER_FROM`] units
+/// long, as a window: written into `a`'s buffer after it, into `b`'s
+/// before it, or into a new buffer. Returns the cell (its bytes counted
+/// as its buffer's), the buffer, the cell that counted the buffer before
+/// (now to count nothing), and the bytes copied.
+pub(crate) fn concat_window(
+    a: &StringCell,
+    b: &StringCell,
+) -> (StringCell, Shared, Option<u32>, usize) {
+    let (la, lb) = (a.len(), b.len());
+    let window = |buffer: Shared, start: isize, end: isize| {
+        let mut cell = StringCell::flat(Units::Window {
+            buffer: Rc::clone(&buffer),
+            start,
+            end,
+        });
+        cell.accounted = buffer.borrow().bytes();
+        cell
+    };
+    // Which may extend in place: a's window ending where its buffer is
+    // used to, b's starting where its is. Where both may, the shorter is
+    // the one written, so that `small + big` copies the small one.
+    let after_a =
+        matches!(&a.units, Units::Window { buffer, end, .. } if *end == buffer.borrow().used_end);
+    let before_b = matches!(&b.units, Units::Window { buffer, start, .. } if *start == buffer.borrow().used_start);
+    let append = after_a && (!before_b || lb <= la);
+    // After a, in place. (The units written are read before the buffer
+    // is borrowed to write: `s + s` reads the buffer it writes.)
+    if append && let Units::Window { buffer, start, .. } = &a.units {
+        let units = b.to_units();
+        let mut buf = buffer.borrow_mut();
+        {
+            let mut copied = grow(&mut buf, 0, lb);
+            let at = usize::try_from(buf.used_end - buf.origin).unwrap_or(0);
+            copied += write_units(&mut buf.data, at, &units);
+            buf.used_end += isize::try_from(lb).unwrap_or(0);
+            let new_end = buf.used_end;
+            let previous = buf.owner.take();
+            drop(buf);
+            let cell = window(Rc::clone(buffer), *start, new_end);
+            return (cell, Rc::clone(buffer), previous, copied);
+        }
+    }
+    // Before b, in place.
+    if before_b && let Units::Window { buffer, end, .. } = &b.units {
+        let units = a.to_units();
+        let mut buf = buffer.borrow_mut();
+        {
+            let mut copied = grow(&mut buf, la, 0);
+            buf.used_start -= isize::try_from(la).unwrap_or(0);
+            let at = usize::try_from(buf.used_start - buf.origin).unwrap_or(0);
+            copied += write_units(&mut buf.data, at, &units);
+            let new_start = buf.used_start;
+            let previous = buf.owner.take();
+            drop(buf);
+            let cell = window(Rc::clone(buffer), new_start, *end);
+            return (cell, Rc::clone(buffer), previous, copied);
+        }
+    }
+    // A new buffer, with room behind for what comes next.
+    let total = la + lb;
+    let latin1 = a.latin1() && b.latin1();
+    let room = total * 2;
+    let mut data = if latin1 {
+        Data::Latin1(vec![0u8; room])
+    } else {
+        Data::Utf16(vec![0u16; room])
+    };
+    let mut copied = write_units(&mut data, 0, &a.to_units());
+    copied += write_units(&mut data, la, &b.to_units());
+    let end = isize::try_from(total).unwrap_or(0);
+    let buffer = Rc::new(RefCell::new(Buffer {
+        data,
+        origin: 0,
+        used_start: 0,
+        used_end: end,
+        owner: None,
+    }));
+    let cell = window(Rc::clone(&buffer), 0, end);
+    (cell, buffer, None, copied)
 }
 
 /// An array index (section 6.1.7): the canonical decimal form of an
@@ -217,10 +530,7 @@ mod tests {
         let lone = StringCell::from_units(&[0xD800, 0x61]);
         assert_eq!(lone.to_units(), vec![0xD800, 0x61]);
         // Equal strings hash alike in either form.
-        let wide = StringCell {
-            units: Units::Utf16(units("abc").into()),
-            hash: hash_units(units("abc").into_iter()),
-        };
+        let wide = StringCell::flat(Units::Utf16(units("abc").into()));
         assert!(StringCell::from_str("abc").same_units(&wide));
     }
 

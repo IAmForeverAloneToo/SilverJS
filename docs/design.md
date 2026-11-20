@@ -338,11 +338,25 @@ values, as G78 needs):
 - *flat Latin-1* (one byte per unit) when every unit is under 256,
   which is most of the web's text and halves its memory; *flat UTF-16*
   otherwise;
-- *ropes* for concatenation (Boehm, Atkinson and Plass, "Ropes: an
-  alternative to strings", 1995): `a + b` past 24 units makes a node
-  over both, flattened iteratively at the first indexed read, search
-  or comparison, so building a string in a loop is linear; a rope's
-  depth is capped (flattened at 1,000) so nothing walks deep;
+- *shared buffers* for building strings (J2.4b, the lead's ruling of
+  2026-11-20, in place of ropes there): a string of 64 units or more
+  made by `a + b` is a window on a buffer it shares with the strings it
+  was built from, which keeps the range its windows have used and room
+  at both ends, grown by doubling. `a + b` writes `b` in place when
+  `a`'s window ends exactly at the used range's end, or `a` when `b`'s
+  starts at its start (the shorter written where both could), and
+  copies otherwise. Appending, prepending, both alternating, and
+  `a + (b + (c + ...))` copy each unit a constant number of times,
+  amortized, measured by bytes copied in the tests; every string stays
+  flat to read, so there is no depth and nothing to flatten. A buffer is
+  counted once, by its newest window; the collector copies out the live
+  windows of a buffer they cover under a quarter of, so a short string
+  never keeps a long one's buffer (tested at 10 MB);
+- *ropes* (Boehm, Atkinson and Plass, "Ropes: an alternative to
+  strings", 1995) remain J6's, for what buffers do not cover: branching
+  off one prefix (`a = p + "x"; b = p + "y"`, in a loop) copies `p`
+  each time and stays quadratic until then, a known gap the micro-bench
+  `string_branch` measures (51x QuickJS-ng's time at J2.4b);
 - no substring slices sharing a parent's buffer: they keep large
   strings alive by a small piece, a memory leak pages make easily; a
   measured need in J6 may reopen it;

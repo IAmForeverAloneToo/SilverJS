@@ -19,7 +19,7 @@
 pub(crate) use crate::internal::InternalCell;
 pub(crate) use crate::object::ObjectCell;
 pub(crate) use crate::string::StringCell;
-use crate::string::{Atoms, PropertyKey};
+use crate::string::{Atoms, BUFFER_FROM, PropertyKey, Shared, Units, concat_window};
 use crate::value::{RefKind, Value};
 
 /// What a cell reaches, for marking.
@@ -309,6 +309,9 @@ pub(crate) struct Heap {
     /// The key `length`, which arrays answer for themselves.
     pub(crate) length_key: PropertyKey,
     pub(crate) collections: u64,
+    /// The bytes of string units copied since the heap was made: what
+    /// the tests hold string building to (linear in what is built).
+    pub(crate) string_copies: usize,
 }
 
 impl Heap {
@@ -323,6 +326,7 @@ impl Heap {
             atoms,
             length_key,
             collections: 0,
+            string_copies: 0,
         }
     }
 
@@ -346,6 +350,101 @@ impl Heap {
                 + self.internals.committed()
                 + self.atoms.bytes(),
             collections: self.collections,
+        }
+    }
+
+    /// The concatenation of strings `a` and `b` (both non-empty): a flat
+    /// copy when short, else a window that extends one of theirs or a new
+    /// buffer. The cell to place, and its buffer, whose owner the caller
+    /// makes the new cell once placed ([`Heap::own_buffer`]).
+    pub(crate) fn concat_cells(&mut self, a: u32, b: u32) -> Option<(StringCell, Option<Shared>)> {
+        let (x, y) = (self.strings.get(a)?, self.strings.get(b)?);
+        if x.len() + y.len() < BUFFER_FROM {
+            let cell = StringCell::concat(x, y);
+            self.string_copies += cell.owned_bytes();
+            return Some((cell, None));
+        }
+        let (cell, buffer, previous, copied) = concat_window(x, y);
+        self.string_copies += copied;
+        // The buffer's bytes are the new window's to count now.
+        if let Some(p) = previous
+            && let Some(c) = self.strings.get_mut(p)
+            && matches!(&c.units, Units::Window { buffer: b, .. } if std::rc::Rc::ptr_eq(b, &buffer))
+        {
+            let before = c.accounted;
+            c.accounted = 0;
+            self.strings.update_extra(before, 0);
+        }
+        Some((cell, Some(buffer)))
+    }
+
+    /// Records the cell `i` as the one counting `buffer`'s bytes.
+    pub(crate) fn own_buffer(&mut self, buffer: &Shared, i: u32) {
+        buffer.borrow_mut().owner = Some(i);
+    }
+
+    /// Copies out the live windows of each buffer they cover under a
+    /// quarter of, so that a short string never keeps a long one's
+    /// buffer (the lead's condition for J2.4b). Run after marking: the
+    /// cells changed are kept ones, and counted so.
+    fn compact_buffers(&mut self) {
+        let mut groups: std::collections::HashMap<usize, (usize, usize, Vec<usize>)> =
+            std::collections::HashMap::new();
+        for (i, slot) in self.strings.slots.iter().enumerate() {
+            if !self.strings.marked(i) {
+                continue;
+            }
+            if let Some(cell) = &slot.cell
+                && let Units::Window { buffer, start, end } = &cell.units
+            {
+                let key = std::rc::Rc::as_ptr(buffer) as usize;
+                let capacity = buffer.borrow().data_len();
+                let entry = groups.entry(key).or_insert((capacity, 0, Vec::new()));
+                entry.1 += usize::try_from(end - start).unwrap_or(0);
+                entry.2.push(i);
+            }
+        }
+        for (_, (capacity, live, cells)) in groups {
+            if live * 4 >= capacity {
+                // Kept: counted by a live window. If the window counting
+                // it died, a live one takes its bytes, so that a buffer a
+                // live string keeps is never uncounted.
+                let owner_live = cells.iter().any(|&i| {
+                    self.strings
+                        .slots
+                        .get(i)
+                        .and_then(|s| s.cell.as_ref())
+                        .is_some_and(|c| c.accounted > 0)
+                });
+                if !owner_live
+                    && let Some(&first) = cells.first()
+                    && let Some(cell) = self
+                        .strings
+                        .slots
+                        .get_mut(first)
+                        .and_then(|s| s.cell.as_mut())
+                    && let Units::Window { buffer, .. } = &cell.units
+                {
+                    let bytes = buffer.borrow().bytes();
+                    buffer.borrow_mut().owner = u32::try_from(first).ok();
+                    let before = cell.accounted;
+                    cell.accounted = bytes;
+                    self.strings.extra = self.strings.extra + bytes - before;
+                    self.strings.kept_extra = self.strings.kept_extra + bytes - before;
+                }
+                continue;
+            }
+            for i in cells {
+                let Some(cell) = self.strings.slots.get_mut(i).and_then(|s| s.cell.as_mut()) else {
+                    continue;
+                };
+                let (flat, copied) = cell.to_flat();
+                let (before, after) = (cell.accounted, flat.accounted);
+                *cell = flat;
+                self.string_copies += copied;
+                self.strings.extra = self.strings.extra + after - before;
+                self.strings.kept_extra = self.strings.kept_extra + after - before;
+            }
         }
     }
 
@@ -438,6 +537,7 @@ impl Heap {
         if cfg!(any(debug_assertions, feature = "gc-stress")) {
             self.verify();
         }
+        self.compact_buffers();
         self.objects.end_collection();
         self.strings.end_collection();
         self.symbols.end_collection();
