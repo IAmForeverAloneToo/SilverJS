@@ -163,7 +163,10 @@ impl Gen<'_, '_> {
                 self.reg_op(Op::Star, c);
                 let (first, n) = self.args(args)?;
                 let ic = self.ic();
-                self.pos(span);
+                // The callee, which a "not a constructor" error quotes.
+                // (A stack frame's column at `new` is J2.5's, with the
+                // positions table.)
+                self.pos(self.ast.expr(*callee).span);
                 self.emit(Op::New, &[i64::from(c), i64::from(first), i64::from(n), ic]);
                 self.free_n(first, n);
                 self.free(c);

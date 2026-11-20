@@ -831,6 +831,15 @@ agent.run_jobs()?; // the microtask checkpoint, when the embedder chooses
   `run_jobs`, `clear_kept_objects`, `collect`, `collect_idle(deadline)`,
   `heap_stats`, `terminate_handle()` (an `Arc<AtomicBool>`-like handle
   another thread may set, a worker's `terminate()`), `set_limits`.
+- `heap_stats()` reads in constant time, cheap enough for every call
+  (the lead, 2026-11-20, by J5): `bytes`, the heap in use (live cells and
+  what they own), and `committed`, what the heap has taken from the
+  allocator (arenas at capacity, cells dead but not yet swept, the
+  register file), from counts kept as cells come and go, never a walk.
+  Silver's `performance.memory` reads them live and unrounded, as
+  Chrome's does; QuickJS-ng can answer only with a heap walk, so the
+  browser waits for SilverJS here. A test holds a read on a heap of
+  300,000 objects to the time of one on an empty heap.
 - `Scope`: values in and out (numbers, strings, objects, arrays,
   `ArrayBuffer`s with external stores), property get, set, define and
   delete, calls and `new`, `compile_script`, the module API, natives

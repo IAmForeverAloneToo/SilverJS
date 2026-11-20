@@ -13,6 +13,7 @@
 //! | 4 string | an index into the heap's strings |
 //! | 5 symbol | an index into the heap's symbols |
 //! | 6 BigInt | an index into the heap's BigInts |
+//! | 7 internal | an index into the heap's internal cells (environments, iterators): never seen by script |
 //!
 //! Every double made from outside the engine's own arithmetic goes
 //! through [`Value::number`] or [`Value::double`], which canonicalize a
@@ -34,6 +35,7 @@ const TAG_OBJECT: u64 = 3;
 const TAG_STRING: u64 = 4;
 const TAG_SYMBOL: u64 = 5;
 const TAG_BIGINT: u64 = 6;
+const TAG_INTERNAL: u64 = 7;
 
 const fn tagged(tag: u64, payload: u32) -> u64 {
     // 0xFFF8 with the tag's three bits beneath it: tag 1 is 0xFFF9.
@@ -47,6 +49,8 @@ pub enum RefKind {
     String,
     Symbol,
     BigInt,
+    /// An environment or an iterator of the interpreter's own.
+    Internal,
 }
 
 /// A value, as the engine holds it: in registers, slots and elements.
@@ -99,6 +103,7 @@ impl Value {
             RefKind::String => TAG_STRING,
             RefKind::Symbol => TAG_SYMBOL,
             RefKind::BigInt => TAG_BIGINT,
+            RefKind::Internal => TAG_INTERNAL,
         };
         Value(tagged(tag, index))
     }
@@ -169,6 +174,7 @@ impl Value {
             TAG_STRING => RefKind::String,
             TAG_SYMBOL => RefKind::Symbol,
             TAG_BIGINT => RefKind::BigInt,
+            TAG_INTERNAL => RefKind::Internal,
             _ => return None,
         };
         Some((kind, self.payload()))
@@ -273,6 +279,7 @@ mod tests {
             Value::reference(RefKind::String, 0),
             Value::reference(RefKind::Symbol, 0),
             Value::reference(RefKind::BigInt, 0),
+            Value::reference(RefKind::Internal, 0),
             Value::double(0.5),
         ];
         for (i, a) in all.iter().enumerate() {

@@ -1,0 +1,111 @@
+"""SilverJS's interpreter sabotage: one break at a time, `cargo test`,
+restored byte for byte. Prints which tests each break fails, then every
+test no break failed (which must be none).
+
+    python -I tools/sabotage_interp.py <repository root>
+
+With QUIET_SH set to the path of a quiet-machine script, each build first
+runs `bash $QUIET_SH wait`, so that it waits while another job needs the
+machine quiet.
+"""
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+root = sys.argv[1].replace('\\', '/').rstrip('/') + '/'
+M = 'src/interp/mod.rs'
+P = 'src/interp/ops.rs'
+R = 'src/interp/realm.rs'
+O = 'src/object.rs'
+H = 'src/heap.rs'
+cases = [
+    # Unwinding and frames.
+    (M, "top.context = context;", "let _ = context;"),
+    (M, "self.vm.acc = self.vm.exception;", ""),
+    (M, "if abrupt == Abrupt::Throw", "if true"),
+    (M, "_ if !f.strict && this.is_nullish() => self.realm().global,", ""),
+    (M, "if frame.construct && value.as_object().is_none() {", "if false {"),
+    (M, "self.reg(base, r.u())", "{ let _ = r.u(); Value::UNDEFINED }"),
+    (M, "if self.vm.acc == Value::UNINITIALIZED {", "if false {"),
+    (M, "if let Some(e) = copy {", "if let Some(e) = copy.filter(|_| false) {"),
+    (M, "for _ in 0..depth {", "for _ in 0..depth.min(0) {"),
+    (M, "let at = f.positions.iter().rev().find(|p| p.pc <= pc);",
+        "let at = f.positions.iter().find(|p| p.pc <= pc);"),
+    (M, ".is_some_and(|f| f.kind == FunctionKind::Normal),", ".is_some_and(|_| true),"),
+    (M, "if self.vm.frames.len() >= MAX_FRAMES {\n            return Err(self.throw_error(ErrorType::RangeError,",
+        "if self.vm.frames.len() >= MAX_FRAMES {\n            return Err(self.throw_error(ErrorType::TypeError,"),
+    # Operations.
+    (P, "return x == y;", "return x.to_bits() == y.to_bits();"),
+    (P, "if pa.as_string().is_some() || pb.as_string().is_some() {",
+        "if pa.as_string().is_some() && pb.as_string().is_some() {"),
+    (P, 'Some("0x" | "0X") => Some(16),', 'Some("0x" | "0X") => Some(10),'),
+    (P, "let m = if m < 0.0 { m + 4_294_967_296.0 } else { m };", ""),
+    (P, "if a.is_nullish() && b.is_nullish() {", "if false {"),
+    (P, "if key == self.heap.length_key {", "if false {"),
+    (P, "if b.constant {", "if false {"),
+    (P, "if still {", "if true {"),
+    (P, "let result = self.finish_function(f, length, &name, kind == FunctionKind::Normal);",
+        "let result = self.finish_function(f, length, &name, false);"),
+    (P, 'messages::read_only(&k, "#<Object>")', 'messages::read_only(&k, "object")'),
+    # The realm's natives.
+    (R, "let index = len + i as f64;", "let index = len;"),
+    # The object model and the heap.
+    (O, "Some(e) if e.flags & (WRITABLE | ACCESSOR) == WRITABLE => {", "Some(e) => {"),
+    (H, "        self.internals.update_extra(before, after);\n", ""),
+]
+env = dict(os.environ, CARGO_BUILD_JOBS='4')
+quiet = os.environ.get('QUIET_SH')
+
+
+def wait_quiet():
+    if quiet:
+        # Resolved on PATH: on Windows a bare 'bash' would be looked up in
+        # the system directory first.
+        bash = shutil.which('bash') or 'bash'
+        subprocess.run([bash, quiet, 'wait'], check=True)
+
+
+all_tests = set()
+failed_ever = set()
+wait_quiet()
+r = subprocess.run(['cargo', 'test', '-q', '--lib', '--', '--list'], cwd=root,
+                   capture_output=True, text=True, env=env)
+for line in r.stdout.splitlines():
+    # The interpreter's own tests: no other can fail by these breaks.
+    if line.endswith(': test') and line.split('::')[0] == 'interp_tests':
+        all_tests.add(line[:-len(': test')])
+print(f'{len(all_tests)} tests', flush=True)
+for path, a, b in cases:
+    full = root + path
+    with open(full, 'rb') as f:
+        src = f.read().decode('utf-8')
+    if '\r\n' in src:
+        a, b = a.replace('\n', '\r\n'), b.replace('\n', '\r\n')
+    if src.count(a) != 1:
+        print(f'NOT FOUND ({src.count(a)}) {path}: {a.strip()[:70]}', flush=True)
+        continue
+    shutil.copy(full, full + '.bak')
+    with open(full, 'wb') as f:
+        f.write(src.replace(a, b).encode('utf-8'))
+    try:
+        wait_quiet()
+        r = subprocess.run(['cargo', 'test', '-q', '--lib', '--', 'interp_tests'],
+                           cwd=root, capture_output=True, text=True, encoding='utf-8',
+                           errors='replace', timeout=900, env=env)
+        out = r.stdout + r.stderr
+    except subprocess.TimeoutExpired:
+        out = 'test result: TIMEOUT'
+    finally:
+        shutil.move(full + '.bak', full)
+        os.utime(full)
+    if 'test result' not in out:
+        print('DID NOT RUN ' + a.strip()[:60] + ' :: ' + out[-400:].replace('\n', ' '), flush=True)
+        continue
+    failed = set(re.findall(r'^test (\S+) \.\.\. FAILED', out, re.M))
+    failed |= set(re.findall(r'^    (\S+)$', out, re.M)) & all_tests
+    failed_ever |= failed
+    tag = 'CAUGHT' if (r.returncode != 0 or 'TIMEOUT' in out) else 'MISSED'
+    print(f'{tag} {a.strip()[:55]!r} -> {sorted(failed)}', flush=True)
+print('never failed:', sorted(all_tests - failed_ever), flush=True)

@@ -242,3 +242,54 @@ fn escape_moves_one_local_out() {
         assert_eq!(scope.string_text(kept).as_deref(), Some("out"));
     });
 }
+
+/// Reading the heap's statistics costs the same on a large heap as on a
+/// small one: the counts are kept as cells come and go, never summed
+/// (Silver's `performance.memory`, read on every call, the lead's
+/// requirement for J5).
+#[test]
+fn heap_stats_read_in_constant_time() {
+    fn time_reads(agent: &Agent) -> std::time::Duration {
+        (0..5)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                for _ in 0..100_000 {
+                    std::hint::black_box(agent.heap_stats());
+                }
+                start.elapsed()
+            })
+            .min()
+            .unwrap_or_default()
+    }
+    // About reads, not rooting: no collection at every allocation, even
+    // in gc-stress builds.
+    let mut small = Agent::new(AgentOptions::default());
+    small.set_stress(false);
+    let mut large = Agent::new(AgentOptions {
+        heap_limit: 1 << 30,
+    });
+    large.set_stress(false);
+    let _kept = large.scope(|scope| {
+        let holder = scope.array(None).unwrap();
+        for i in 0..300_000u32 {
+            scope.nested(|inner| {
+                let o = inner.object(None).unwrap();
+                let name = inner.key(&format!("k{}", i % 5000));
+                let v = inner.number(f64::from(i));
+                inner.set(o, name, v);
+                inner.set(holder, crate::PropertyKey::Index(i), o);
+            });
+        }
+        scope.global(holder)
+    });
+    let stats = large.heap_stats();
+    assert!(
+        stats.objects > 300_000 && stats.committed >= stats.bytes,
+        "{stats:?}"
+    );
+    let (t_small, t_large) = (time_reads(&small), time_reads(&large));
+    assert!(
+        t_large <= t_small * 4 + std::time::Duration::from_millis(2),
+        "a read on 300,000 objects took {t_large:?} per 100,000, on none {t_small:?}"
+    );
+}

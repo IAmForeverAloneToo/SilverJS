@@ -57,6 +57,16 @@ enum Elements {
     Sparse(BTreeMap<u32, (Value, u8)>),
 }
 
+/// What a function object runs when called.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Callable {
+    /// Function `func` of the agent's installed unit `unit`, over the
+    /// environment it was made in (undefined: the global one).
+    Code { unit: u32, func: u32, env: Value },
+    /// The native `id` of the realm's table ([`crate::interp`]).
+    Native { id: u32 },
+}
+
 #[derive(Debug, Clone)]
 struct Extra {
     elements: Elements,
@@ -65,6 +75,8 @@ struct Extra {
     /// An array's length, and whether `length` is writable.
     length: u32,
     length_writable: bool,
+    /// A function's code.
+    function: Option<Callable>,
 }
 
 impl Default for Extra {
@@ -75,6 +87,7 @@ impl Default for Extra {
             index: None,
             length: 0,
             length_writable: true,
+            function: None,
         }
     }
 }
@@ -83,6 +96,7 @@ impl Default for Extra {
 pub(crate) enum ObjectKind {
     Ordinary,
     Array,
+    Function,
 }
 
 /// An object cell.
@@ -197,8 +211,20 @@ impl ObjectCell {
         }
     }
 
+    /// A function object: `callable` is what calling it runs.
+    pub(crate) fn function(proto: Value, callable: Callable) -> ObjectCell {
+        let mut cell = ObjectCell::new(proto, ObjectKind::Function);
+        cell.extra_mut().function = Some(callable);
+        cell
+    }
+
     pub(crate) fn kind(&self) -> ObjectKind {
         self.kind
+    }
+
+    /// What calling the object runs, if it is a function.
+    pub(crate) fn callable(&self) -> Option<Callable> {
+        self.extra.as_ref()?.function
     }
 
     fn extra_mut(&mut self) -> &mut Extra {
@@ -270,6 +296,39 @@ impl ObjectCell {
                 .filter(|v| **v != Value::HOLE)
                 .map(|&v| (v, DEFAULT)),
             Elements::Sparse(map) => map.get(&i).copied(),
+        }
+    }
+
+    /// Writes `value` over an own writable data property, if `key` names
+    /// one: what `[[Set]]` comes to when the receiver holds the property
+    /// itself, without its general path. False, and nothing written,
+    /// otherwise.
+    fn write_own(&mut self, key: PropertyKey, value: Value) -> bool {
+        match key {
+            PropertyKey::Index(i) => match self.extra.as_mut().map(|e| &mut e.elements) {
+                Some(Elements::Packed(v) | Elements::Holey(v)) => match v.get_mut(i as usize) {
+                    Some(slot) if *slot != Value::HOLE => {
+                        *slot = value;
+                        true
+                    }
+                    _ => false,
+                },
+                Some(Elements::Sparse(map)) => match map.get_mut(&i) {
+                    Some((v, flags)) if *flags & (WRITABLE | ACCESSOR) == WRITABLE => {
+                        *v = value;
+                        true
+                    }
+                    _ => false,
+                },
+                None => false,
+            },
+            _ => match self.find(key).and_then(|at| self.props.get_mut(at)) {
+                Some(e) if e.flags & (WRITABLE | ACCESSOR) == WRITABLE => {
+                    e.value = value;
+                    true
+                }
+                _ => false,
+            },
         }
     }
 
@@ -530,6 +589,9 @@ impl Trace for ObjectCell {
             }
         }
         if let Some(extra) = &self.extra {
+            if let Some(Callable::Code { env, .. }) = extra.function {
+                out.push(env);
+            }
             for pair in &extra.accessors {
                 out.push(pair.get);
                 out.push(pair.set);
@@ -841,6 +903,16 @@ impl Heap {
         value: Value,
         receiver: Value,
     ) -> SetOutcome {
+        // The receiver's own writable data property: written in place
+        // (the count of its bytes is unchanged).
+        if receiver.as_object() == Some(o)
+            && self
+                .objects
+                .get_mut(o)
+                .is_some_and(|c| c.write_own(key, value))
+        {
+            return SetOutcome::Done(true);
+        }
         let mut at = Some(o);
         let mut found = None;
         while let Some(o) = at {

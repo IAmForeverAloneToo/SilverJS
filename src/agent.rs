@@ -71,7 +71,7 @@ struct RootEntry {
 /// An agent: one heap, one thread.
 pub struct Agent {
     id: u32,
-    heap: Heap,
+    pub(crate) heap: Heap,
     handles: Vec<Value>,
     roots: Vec<Option<RootEntry>>,
     free_roots: Vec<u32>,
@@ -79,6 +79,8 @@ pub struct Agent {
     next_collection: usize,
     /// Collect at every allocation (the `gc-stress` feature, or a test).
     stress: bool,
+    /// The interpreter's state: its frames, registers and realm.
+    pub(crate) vm: crate::interp::Vm,
 }
 
 impl Agent {
@@ -92,6 +94,7 @@ impl Agent {
             limit: options.heap_limit,
             next_collection: FIRST_COLLECTION,
             stress: cfg!(feature = "gc-stress"),
+            vm: crate::interp::Vm::default(),
         }
     }
 
@@ -124,18 +127,28 @@ impl Agent {
             .flatten()
             .filter(|r| r.strong)
             .map(|r| r.value);
-        let roots: Vec<Value> = self.handles.iter().copied().chain(strong).collect();
+        let roots: Vec<Value> = self
+            .handles
+            .iter()
+            .copied()
+            .chain(strong)
+            .chain(self.vm.roots())
+            .collect();
         self.heap.collect(roots);
         self.next_collection = ((self.heap.bytes() as f64 * GROWTH) as usize).max(FIRST_COLLECTION);
     }
 
+    /// The heap's statistics, read in constant time: counts the arenas
+    /// keep as cells come and go, never a walk of the heap.
     pub fn heap_stats(&self) -> HeapStats {
-        self.heap.stats()
+        let mut stats = self.heap.stats();
+        stats.committed += self.vm.stack.capacity() * 8 + self.handles.capacity() * 8;
+        stats
     }
 
     /// Makes room for `bytes` more: a collection when the heap has grown
     /// enough since the last (or always, under stress), and the limit.
-    fn reserve(&mut self, bytes: usize) -> Result<(), OutOfMemory> {
+    pub(crate) fn reserve(&mut self, bytes: usize) -> Result<(), OutOfMemory> {
         let wanted = self.heap.bytes() + bytes;
         if self.stress || wanted > self.next_collection || wanted > self.limit {
             self.collect();
@@ -153,6 +166,7 @@ impl Agent {
             Some((RefKind::Object, i)) => self.heap.objects.generation(i),
             Some((RefKind::String, i)) => self.heap.strings.generation(i),
             Some((RefKind::Symbol, i)) => self.heap.symbols.generation(i),
+            Some((RefKind::Internal, i)) => self.heap.internals.generation(i),
             Some(_) => None,
         }
     }
@@ -188,6 +202,17 @@ impl Agent {
             _ => panic!("a released handle used"),
         }
     }
+}
+
+/// How a script run ended.
+#[derive(Clone, Copy)]
+pub enum Outcome<'s> {
+    /// It completed: its completion value.
+    Value(Local<'s>),
+    /// It threw this value, which nothing caught.
+    Threw(Local<'s>),
+    /// The interrupt hook stopped it.
+    Terminated,
 }
 
 /// A frame of the handle stack, and the way into the agent while it
@@ -689,5 +714,38 @@ impl<'a> Scope<'a> {
 
     pub fn heap_stats(&self) -> HeapStats {
         self.agent.heap_stats()
+    }
+
+    /// Compiles `source` as a script and runs it in the agent's realm
+    /// (made at the first run): its completion value, the value it threw,
+    /// or its termination; or why it did not compile.
+    pub fn run_script(
+        &mut self,
+        source: &str,
+    ) -> Result<Outcome<'a>, crate::compiler::CompileError> {
+        let unit = crate::compiler::compile(source, crate::parser::Goal::Script)?;
+        let completion = self.agent.run_compiled(unit);
+        self.agent.vm.acc = Value::UNDEFINED;
+        self.agent.vm.exception = Value::UNDEFINED;
+        Ok(match completion {
+            crate::interp::Completion::Normal(v) => Outcome::Value(self.local(v)),
+            crate::interp::Completion::Threw(v) => Outcome::Threw(self.local(v)),
+            crate::interp::Completion::Terminated => Outcome::Terminated,
+        })
+    }
+
+    /// The value a local holds, for tests.
+    #[cfg(test)]
+    pub(crate) fn value_for_test(&self, local: Local<'_>) -> Value {
+        self.value(local)
+    }
+
+    /// The realm's global object (the realm made if it was not).
+    pub fn global_object(&mut self) -> Result<Local<'a>, OutOfMemory> {
+        if self.agent.ensure_realm().is_err() {
+            return Err(OutOfMemory);
+        }
+        let g = self.agent.realm().global;
+        Ok(self.local(g))
     }
 }

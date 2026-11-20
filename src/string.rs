@@ -157,6 +157,9 @@ pub enum PropertyKey {
 pub(crate) struct Atoms {
     ids: HashMap<Box<[u16]>, Atom>,
     names: Vec<Box<[u16]>>,
+    /// What the names take, kept as they are added: read in constant
+    /// time.
+    bytes: usize,
 }
 
 impl Atoms {
@@ -166,6 +169,7 @@ impl Atoms {
         }
         let atom = Atom(u32::try_from(self.names.len()).unwrap_or(u32::MAX));
         let owned: Box<[u16]> = units.into();
+        self.bytes += owned.len() * 4 + 48;
         self.names.push(owned.clone());
         self.ids.insert(owned, atom);
         atom
@@ -189,7 +193,7 @@ impl Atoms {
     }
 
     pub(crate) fn bytes(&self) -> usize {
-        self.names.iter().map(|n| n.len() * 4 + 48).sum()
+        self.bytes
     }
 }
 
