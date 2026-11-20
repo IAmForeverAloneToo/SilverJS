@@ -2,7 +2,24 @@
 //! is reachable from the roots, long-lived handles check their cell and
 //! their agent, and the heap limit holds.
 
-use crate::agent::{Agent, AgentOptions, OutOfMemory};
+use crate::agent::{Agent, AgentOptions, GetResult, Local, OutOfMemory, Scope, SetResult};
+use crate::string::PropertyKey;
+
+/// Puts `value` at index `i` of `object`.
+fn put(scope: &mut Scope<'_>, object: Local<'_>, i: u32, value: Local<'_>) {
+    assert!(matches!(
+        scope.set(object, PropertyKey::Index(i), value),
+        Some(SetResult::Done(true))
+    ));
+}
+
+/// The value at index `i` of `object`.
+fn at<'a>(scope: &mut Scope<'a>, object: Local<'_>, i: u32) -> Local<'a> {
+    match scope.get(object, PropertyKey::Index(i)) {
+        Some(GetResult::Value(v)) => v,
+        _ => panic!("no element {i}"),
+    }
+}
 
 fn agent() -> Agent {
     Agent::new(AgentOptions::default())
@@ -14,7 +31,7 @@ fn locals_keep_their_values_and_the_rest_is_collected() {
     agent.scope(|scope| {
         let kept = scope.object(None).unwrap();
         let text = scope.string("kept").unwrap();
-        scope.push_slot(kept, text);
+        put(scope, kept, 0, text);
         let weak_kept = scope.weak(kept);
         let dropped = scope.nested(|inner| {
             let garbage = inner.object(None).unwrap();
@@ -24,7 +41,7 @@ fn locals_keep_their_values_and_the_rest_is_collected() {
         assert!(scope.get_weak(&dropped).is_none());
         let again = scope.get_weak(&weak_kept).unwrap();
         assert!(scope.same(again, kept));
-        let slot = scope.slot(kept, 0).unwrap();
+        let slot = at(scope, kept, 0);
         assert_eq!(scope.string_text(slot).as_deref(), Some("kept"));
         scope.release_weak(dropped);
         scope.release_weak(weak_kept);
@@ -38,7 +55,7 @@ fn cycles_die_together() {
         let (wa, wb) = scope.nested(|inner| {
             let a = inner.object(None).unwrap();
             let b = inner.object(Some(a)).unwrap();
-            inner.push_slot(a, b);
+            put(inner, a, 0, b);
             (inner.weak(a), inner.weak(b))
         });
         scope.collect();
@@ -62,7 +79,7 @@ fn a_long_chain_is_marked_without_recursion() {
             };
             for _ in 0..links {
                 let next = inner.object(None).unwrap();
-                inner.push_slot(last, next);
+                put(inner, last, 0, next);
                 last = next;
             }
             inner.weak(last)
@@ -79,13 +96,13 @@ fn globals_outlive_scopes_until_released() {
     let global = agent.scope(|scope| {
         let o = scope.object(None).unwrap();
         let n = scope.number(42.5);
-        scope.push_slot(o, n);
+        put(scope, o, 0, n);
         scope.global(o)
     });
     agent.collect();
     let weak = agent.scope(|scope| {
         let o = scope.get_global(&global);
-        let n = scope.slot(o, 0).unwrap();
+        let n = at(scope, o, 0);
         assert_eq!(scope.as_number(n), Some(42.5));
         scope.weak(o)
     });
@@ -126,8 +143,8 @@ fn a_cell_made_after_two_collections_lives() {
         scope.collect();
         let o = scope.object(None).unwrap();
         let n = scope.number(7.0);
-        assert!(scope.push_slot(o, n));
-        let back = scope.slot(o, 0).unwrap();
+        put(scope, o, 0, n);
+        let back = at(scope, o, 0);
         assert_eq!(scope.as_number(back), Some(7.0));
     });
 }
@@ -174,10 +191,10 @@ fn the_heap_limit_holds_and_garbage_makes_room() {
         // All of it kept: the limit is reached.
         let holder = scope.object(None).unwrap();
         let mut result = Ok(());
-        for _ in 0..2000 {
+        for i in 0..2000 {
             match scope.string(&"x".repeat(4096)) {
                 Ok(s) => {
-                    scope.push_slot(holder, s);
+                    put(scope, holder, i, s);
                 }
                 Err(e) => {
                     result = Err(e);
@@ -199,12 +216,12 @@ fn under_stress_every_allocation_collects_and_nothing_rooted_is_lost() {
         for i in 0..300 {
             let s = scope.string(&format!("s{i}")).unwrap();
             let o = scope.object(Some(root)).unwrap();
-            scope.push_slot(o, s);
-            scope.push_slot(root, o);
+            put(scope, o, 0, s);
+            put(scope, root, i, o);
         }
         for i in 0..300 {
-            let o = scope.slot(root, i).unwrap();
-            let s = scope.slot(o, 0).unwrap();
+            let o = at(scope, root, i);
+            let s = at(scope, o, 0);
             assert_eq!(scope.string_text(s), Some(format!("s{i}")));
             let proto = scope.proto(o).unwrap();
             assert!(scope.same(proto, root));

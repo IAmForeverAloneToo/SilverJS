@@ -12,10 +12,12 @@
 //! - In debug builds and under `gc-stress`, a verifier checks after each
 //!   marking that every value a marked cell holds names a live cell.
 //!
-//! The cells are still J2.1's: an object is a prototype and a vector of
-//! values, a string its UTF-16 units. Strings, symbols and objects of
-//! their own come with J2.2.
+//! The cells: objects ([`crate::object`]), strings
+//! ([`crate::string`]) and symbols. BigInts come with J4.
 
+pub(crate) use crate::object::ObjectCell;
+pub(crate) use crate::string::StringCell;
+use crate::string::{Atoms, PropertyKey};
 use crate::value::{RefKind, Value};
 
 /// What a cell reaches, for marking.
@@ -250,41 +252,32 @@ impl<T: Trace> Arena<T> {
     }
 }
 
-/// A plain object as J2.1 knows it.
-pub(crate) struct ObjectCell {
-    pub(crate) proto: Value,
-    pub(crate) slots: Vec<Value>,
-}
-
-impl Trace for ObjectCell {
-    fn trace(&self, out: &mut Vec<Value>) {
-        out.push(self.proto);
-        out.extend_from_slice(&self.slots);
-    }
-
-    fn extra_bytes(&self) -> usize {
-        self.slots.capacity() * std::mem::size_of::<Value>()
-    }
-}
-
-/// A string as J2.1 knows it: its UTF-16 units.
-pub(crate) struct StringCell {
-    pub(crate) units: Box<[u16]>,
-}
-
 impl Trace for StringCell {
     fn trace(&self, _: &mut Vec<Value>) {}
 
     fn extra_bytes(&self) -> usize {
-        self.units.len() * 2
+        self.owned_bytes()
     }
 }
 
-/// What a collection found.
+/// A symbol: its description (a string, or undefined).
+pub(crate) struct SymbolCell {
+    pub(crate) description: Value,
+}
+
+impl Trace for SymbolCell {
+    fn trace(&self, out: &mut Vec<Value>) {
+        out.push(self.description);
+    }
+}
+
+/// What the heap holds, by kind.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HeapStats {
     pub objects: usize,
     pub strings: usize,
+    pub symbols: usize,
+    /// The bytes the cells take, and what they own.
     pub bytes: usize,
     pub collections: u64,
 }
@@ -293,26 +286,36 @@ pub struct HeapStats {
 pub(crate) struct Heap {
     pub(crate) objects: Arena<ObjectCell>,
     pub(crate) strings: Arena<StringCell>,
+    pub(crate) symbols: Arena<SymbolCell>,
+    pub(crate) atoms: Atoms,
+    /// The key `length`, which arrays answer for themselves.
+    pub(crate) length_key: PropertyKey,
     pub(crate) collections: u64,
 }
 
 impl Heap {
     pub(crate) fn new() -> Heap {
+        let mut atoms = Atoms::default();
+        let length_key = PropertyKey::Atom(atoms.intern_str("length"));
         Heap {
             objects: Arena::new(),
             strings: Arena::new(),
+            symbols: Arena::new(),
+            atoms,
+            length_key,
             collections: 0,
         }
     }
 
     pub(crate) fn bytes(&self) -> usize {
-        self.objects.bytes() + self.strings.bytes()
+        self.objects.bytes() + self.strings.bytes() + self.symbols.bytes() + self.atoms.bytes()
     }
 
     pub(crate) fn stats(&self) -> HeapStats {
         HeapStats {
             objects: self.objects.len(),
             strings: self.strings.len(),
+            symbols: self.symbols.len(),
             bytes: self.bytes(),
             collections: self.collections,
         }
@@ -324,7 +327,26 @@ impl Heap {
             None => true,
             Some((RefKind::Object, i)) => self.objects.get(i).is_some(),
             Some((RefKind::String, i)) => self.strings.get(i).is_some(),
-            // Symbols and BigInts have no cells before J2.2.
+            Some((RefKind::Symbol, i)) => self.symbols.get(i).is_some(),
+            // BigInts have no cells before J4.
+            Some(_) => false,
+        }
+    }
+
+    /// Whether `value` names a cell the marking under way has kept; for
+    /// the verifier.
+    fn kept(&self, value: Value) -> bool {
+        match value.as_reference() {
+            None => true,
+            Some((RefKind::Object, j)) => {
+                self.objects.get_raw(j).is_some() && self.objects.marked(j as usize)
+            }
+            Some((RefKind::String, j)) => {
+                self.strings.get_raw(j).is_some() && self.strings.marked(j as usize)
+            }
+            Some((RefKind::Symbol, j)) => {
+                self.symbols.get_raw(j).is_some() && self.symbols.marked(j as usize)
+            }
             Some(_) => false,
         }
     }
@@ -334,6 +356,7 @@ impl Heap {
     pub(crate) fn collect(&mut self, roots: impl IntoIterator<Item = Value>) {
         self.objects.begin_collection();
         self.strings.begin_collection();
+        self.symbols.begin_collection();
         let mut stack: Vec<Value> = roots.into_iter().collect();
         while let Some(value) = stack.pop() {
             match value.as_reference() {
@@ -347,6 +370,13 @@ impl Heap {
                 Some((RefKind::String, i)) => {
                     self.strings.keep(i);
                 }
+                Some((RefKind::Symbol, i)) => {
+                    if self.symbols.keep(i)
+                        && let Some(cell) = self.symbols.get_raw(i)
+                    {
+                        cell.trace(&mut stack);
+                    }
+                }
                 _ => {}
             }
         }
@@ -355,6 +385,7 @@ impl Heap {
         }
         self.objects.end_collection();
         self.strings.end_collection();
+        self.symbols.end_collection();
         self.collections += 1;
     }
 
@@ -370,21 +401,21 @@ impl Heap {
                 held.clear();
                 cell.trace(&mut held);
                 for value in &held {
-                    let ok = match value.as_reference() {
-                        Some((RefKind::Object, j)) => {
-                            self.objects.get_raw(j).is_some() && self.objects.marked(j as usize)
-                        }
-                        Some((RefKind::String, j)) => {
-                            self.strings.get_raw(j).is_some() && self.strings.marked(j as usize)
-                        }
-                        Some(_) => false,
-                        None => true,
-                    };
                     assert!(
-                        ok,
+                        self.kept(*value),
                         "heap verifier: object {i} holds {value:?}, not a live cell"
                     );
                 }
+            }
+        }
+        for (i, slot) in self.symbols.slots.iter().enumerate() {
+            if let Some(cell) = &slot.cell
+                && self.symbols.marked(i)
+            {
+                assert!(
+                    self.kept(cell.description),
+                    "heap verifier: symbol {i}'s description is not a live cell"
+                );
             }
         }
     }

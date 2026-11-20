@@ -16,13 +16,16 @@
 //! read out of it only as handles or plain data, so no unrooted value
 //! survives a collection.
 //!
-//! J2.1's cells are placeholders (an object is a prototype and a vector
-//! of values); J2.2 brings strings and objects of their own.
+//! The scope's operations on objects are the standard's internal methods
+//! ([`crate::object`]); `[[Get]]` and `[[Set]]` hand an accessor back to
+//! the caller to call rather than run script themselves.
 
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::heap::{Heap, HeapStats, ObjectCell, StringCell};
+use crate::heap::{Heap, HeapStats, ObjectCell, StringCell, SymbolCell};
+use crate::object::{Descriptor, Got, ObjectKind, OwnProperty, SetOutcome, same_value};
+use crate::string::PropertyKey;
 use crate::value::{RefKind, Value};
 
 static NEXT_AGENT: AtomicU32 = AtomicU32::new(1);
@@ -149,6 +152,7 @@ impl Agent {
             None => Some(0),
             Some((RefKind::Object, i)) => self.heap.objects.generation(i),
             Some((RefKind::String, i)) => self.heap.strings.generation(i),
+            Some((RefKind::Symbol, i)) => self.heap.symbols.generation(i),
             Some(_) => None,
         }
     }
@@ -234,6 +238,66 @@ pub struct Weak {
     generation: u32,
 }
 
+/// A property as its object holds it, its values as locals.
+#[derive(Clone, Copy)]
+pub enum Property<'s> {
+    Data {
+        value: Local<'s>,
+        writable: bool,
+        enumerable: bool,
+        configurable: bool,
+    },
+    Accessor {
+        get: Local<'s>,
+        set: Local<'s>,
+        enumerable: bool,
+        configurable: bool,
+    },
+}
+
+/// A Property Descriptor for [`Scope::define_property`]: any field may
+/// be absent.
+#[derive(Clone, Copy, Default)]
+pub struct PropertyDescriptor<'l> {
+    pub value: Option<Local<'l>>,
+    pub get: Option<Local<'l>>,
+    pub set: Option<Local<'l>>,
+    pub writable: Option<bool>,
+    pub enumerable: Option<bool>,
+    pub configurable: Option<bool>,
+}
+
+impl<'l> PropertyDescriptor<'l> {
+    /// A data property writable, enumerable and configurable.
+    pub fn data(value: Local<'l>) -> PropertyDescriptor<'l> {
+        PropertyDescriptor {
+            value: Some(value),
+            writable: Some(true),
+            enumerable: Some(true),
+            configurable: Some(true),
+            ..PropertyDescriptor::default()
+        }
+    }
+}
+
+/// What [`Scope::get`] found.
+#[derive(Clone, Copy)]
+pub enum GetResult<'s> {
+    Value(Local<'s>),
+    /// An accessor: call this getter (undefined: the result is
+    /// undefined) with the object as `this`.
+    Getter(Local<'s>),
+}
+
+/// What [`Scope::set`] did.
+#[derive(Clone, Copy)]
+pub enum SetResult<'s> {
+    /// Done; false where strict code throws.
+    Done(bool),
+    /// An accessor: call this setter with the object as `this`.
+    Setter(Local<'s>),
+}
+
 impl<'a> Scope<'a> {
     /// The agent's id.
     pub fn agent_id(&self) -> u32 {
@@ -311,62 +375,246 @@ impl<'a> Scope<'a> {
         self.value(a) == self.value(b)
     }
 
-    /// A string of `text`'s UTF-16 units.
+    /// A string of `text`.
     pub fn string(&mut self, text: &str) -> Result<Local<'a>, OutOfMemory> {
-        let units: Box<[u16]> = text.encode_utf16().collect();
-        self.agent.reserve(units.len() * 2 + 32)?;
-        let (index, _) = self.agent.heap.strings.alloc(StringCell { units });
+        self.alloc_string(StringCell::from_str(text))
+    }
+
+    /// A string of UTF-16 `units`, lone surrogates and all.
+    pub fn string_from_units(&mut self, units: &[u16]) -> Result<Local<'a>, OutOfMemory> {
+        self.alloc_string(StringCell::from_units(units))
+    }
+
+    fn alloc_string(&mut self, cell: StringCell) -> Result<Local<'a>, OutOfMemory> {
+        self.agent.reserve(cell.owned_bytes() + 48)?;
+        let (index, _) = self.agent.heap.strings.alloc(cell);
         Ok(self.local(Value::reference(RefKind::String, index)))
     }
 
-    /// A string's text, if the local holds a string.
+    /// A string's text (a lone surrogate replaced), if the local holds a
+    /// string.
     pub fn string_text(&self, local: Local<'_>) -> Option<String> {
         let index = self.value(local).as_string()?;
-        let cell = self.agent.heap.strings.get(index)?;
-        Some(String::from_utf16_lossy(&cell.units))
+        Some(self.agent.heap.strings.get(index)?.to_text())
+    }
+
+    /// The concatenation of two strings.
+    pub fn concat(&mut self, a: Local<'_>, b: Local<'_>) -> Result<Option<Local<'a>>, OutOfMemory> {
+        let (Some(x), Some(y)) = (self.value(a).as_string(), self.value(b).as_string()) else {
+            return Ok(None);
+        };
+        let strings = &self.agent.heap.strings;
+        let (Some(x), Some(y)) = (strings.get(x), strings.get(y)) else {
+            return Ok(None);
+        };
+        let cell = StringCell::concat(x, y);
+        self.alloc_string(cell).map(Some)
+    }
+
+    /// SameValue (section 7.2.10): strings by their units, numbers by
+    /// value with NaN equal to itself and the zeros apart, the rest by
+    /// identity.
+    pub fn same_value(&self, a: Local<'_>, b: Local<'_>) -> bool {
+        same_value(&self.agent.heap, self.value(a), self.value(b))
+    }
+
+    /// A new symbol with `description`.
+    pub fn symbol(&mut self, description: Option<&str>) -> Result<Local<'a>, OutOfMemory> {
+        let description = match description {
+            Some(text) => {
+                let s = self.string(text)?;
+                self.value(s)
+            }
+            None => Value::UNDEFINED,
+        };
+        self.agent.reserve(32)?;
+        let (index, _) = self.agent.heap.symbols.alloc(SymbolCell { description });
+        Ok(self.local(Value::reference(RefKind::Symbol, index)))
+    }
+
+    /// The key a name makes: an array index or an atom.
+    pub fn key(&mut self, name: &str) -> PropertyKey {
+        let units: Vec<u16> = name.encode_utf16().collect();
+        self.agent.heap.atoms.key(&units)
+    }
+
+    /// The key a string or symbol held by `local` makes (ToPropertyKey
+    /// for those; other values need ToString, J2.5's).
+    pub fn key_of(&mut self, local: Local<'_>) -> Option<PropertyKey> {
+        let value = self.value(local);
+        match value.as_reference() {
+            Some((RefKind::Symbol, i)) => Some(PropertyKey::Symbol(i)),
+            Some((RefKind::String, i)) => {
+                let units = self.agent.heap.strings.get(i)?.to_units();
+                Some(self.agent.heap.atoms.key(&units))
+            }
+            _ => None,
+        }
+    }
+
+    /// A key's text, for a name or an index (`None` for a symbol).
+    pub fn key_text(&self, key: PropertyKey) -> Option<String> {
+        match key {
+            PropertyKey::Index(i) => Some(i.to_string()),
+            PropertyKey::Atom(a) => Some(String::from_utf16_lossy(self.agent.heap.atoms.units(a))),
+            PropertyKey::Symbol(_) => None,
+        }
     }
 
     /// A plain object with prototype `proto` (`None` for null).
     pub fn object(&mut self, proto: Option<Local<'_>>) -> Result<Local<'a>, OutOfMemory> {
+        self.alloc_object(proto, ObjectKind::Ordinary)
+    }
+
+    /// An empty array with prototype `proto`.
+    pub fn array(&mut self, proto: Option<Local<'_>>) -> Result<Local<'a>, OutOfMemory> {
+        self.alloc_object(proto, ObjectKind::Array)
+    }
+
+    fn alloc_object(
+        &mut self,
+        proto: Option<Local<'_>>,
+        kind: ObjectKind,
+    ) -> Result<Local<'a>, OutOfMemory> {
         let proto = proto.map_or(Value::NULL, |p| self.value(p));
         self.agent.reserve(64)?;
-        let (index, _) = self.agent.heap.objects.alloc(ObjectCell {
-            proto,
-            slots: Vec::new(),
-        });
+        let (index, _) = self.agent.heap.objects.alloc(ObjectCell::new(proto, kind));
         Ok(self.local(Value::reference(RefKind::Object, index)))
     }
 
-    /// Appends `value` to an object's slots (J2.1's stand-in for
-    /// properties); false if `object` is no object.
-    pub fn push_slot(&mut self, object: Local<'_>, value: Local<'_>) -> bool {
+    /// Whether the local holds an object.
+    pub fn is_object(&self, local: Local<'_>) -> bool {
+        self.value(local).as_object().is_some()
+    }
+
+    fn object_index(&self, local: Local<'_>) -> Option<u32> {
+        self.value(local).as_object()
+    }
+
+    /// `[[GetOwnProperty]]`.
+    pub fn get_own_property(
+        &mut self,
+        object: Local<'_>,
+        key: PropertyKey,
+    ) -> Option<Property<'a>> {
+        let o = self.object_index(object)?;
+        Some(match self.agent.heap.get_own_property(o, key)? {
+            OwnProperty::Data {
+                value,
+                writable,
+                enumerable,
+                configurable,
+            } => Property::Data {
+                value: self.local(value),
+                writable,
+                enumerable,
+                configurable,
+            },
+            OwnProperty::Accessor {
+                get,
+                set,
+                enumerable,
+                configurable,
+            } => Property::Accessor {
+                get: self.local(get),
+                set: self.local(set),
+                enumerable,
+                configurable,
+            },
+        })
+    }
+
+    /// `[[DefineOwnProperty]]`: false where the standard refuses.
+    pub fn define_property(
+        &mut self,
+        object: Local<'_>,
+        key: PropertyKey,
+        desc: PropertyDescriptor<'_>,
+    ) -> bool {
+        let Some(o) = self.object_index(object) else {
+            return false;
+        };
+        let desc = Descriptor {
+            value: desc.value.map(|l| self.value(l)),
+            get: desc.get.map(|l| self.value(l)),
+            set: desc.set.map(|l| self.value(l)),
+            writable: desc.writable,
+            enumerable: desc.enumerable,
+            configurable: desc.configurable,
+        };
+        self.agent.heap.define_own_property(o, key, desc)
+    }
+
+    /// `[[Get]]` with the object as receiver: a value, or a getter for the
+    /// caller to call.
+    pub fn get(&mut self, object: Local<'_>, key: PropertyKey) -> Option<GetResult<'a>> {
+        let o = self.object_index(object)?;
+        Some(match self.agent.heap.get(o, key) {
+            Got::Value(v) => GetResult::Value(self.local(v)),
+            Got::Getter(g) => GetResult::Getter(self.local(g)),
+        })
+    }
+
+    /// `[[Set]]` with the object as receiver: done (false where strict
+    /// code throws), or a setter for the caller to call.
+    pub fn set(
+        &mut self,
+        object: Local<'_>,
+        key: PropertyKey,
+        value: Local<'_>,
+    ) -> Option<SetResult<'a>> {
+        let o = self.object_index(object)?;
+        let receiver = self.value(object);
         let value = self.value(value);
-        let Some(index) = self.value(object).as_object() else {
-            return false;
-        };
-        let objects = &mut self.agent.heap.objects;
-        let Some(cell) = objects.get_mut(index) else {
-            return false;
-        };
-        let before = cell.slots.capacity() * std::mem::size_of::<Value>();
-        cell.slots.push(value);
-        let after = cell.slots.capacity() * std::mem::size_of::<Value>();
-        objects.update_extra(before, after);
-        true
+        Some(match self.agent.heap.set(o, key, value, receiver) {
+            SetOutcome::Done(done) => SetResult::Done(done),
+            SetOutcome::Setter(s) => SetResult::Setter(self.local(s)),
+        })
     }
 
-    /// An object's slot `i`, as a local.
-    pub fn slot(&mut self, object: Local<'_>, i: usize) -> Option<Local<'a>> {
-        let index = self.value(object).as_object()?;
-        let value = *self.agent.heap.objects.get(index)?.slots.get(i)?;
-        Some(self.local(value))
+    /// `[[HasProperty]]`.
+    pub fn has_property(&self, object: Local<'_>, key: PropertyKey) -> bool {
+        self.object_index(object)
+            .is_some_and(|o| self.agent.heap.has_property(o, key))
     }
 
-    /// An object's prototype, as a local.
+    /// `[[Delete]]`: false for a non-configurable property.
+    pub fn delete(&mut self, object: Local<'_>, key: PropertyKey) -> bool {
+        self.object_index(object)
+            .is_some_and(|o| self.agent.heap.delete(o, key))
+    }
+
+    /// `[[OwnPropertyKeys]]`.
+    pub fn own_keys(&self, object: Local<'_>) -> Vec<PropertyKey> {
+        self.object_index(object)
+            .map(|o| self.agent.heap.own_keys(o))
+            .unwrap_or_default()
+    }
+
+    /// `[[GetPrototypeOf]]`.
     pub fn proto(&mut self, object: Local<'_>) -> Option<Local<'a>> {
-        let index = self.value(object).as_object()?;
-        let value = self.agent.heap.objects.get(index)?.proto;
-        Some(self.local(value))
+        let o = self.object_index(object)?;
+        let proto = self.agent.heap.get_prototype_of(o);
+        Some(self.local(proto))
+    }
+
+    /// `[[SetPrototypeOf]]` (`None` for null): false where refused.
+    pub fn set_proto(&mut self, object: Local<'_>, proto: Option<Local<'_>>) -> bool {
+        let proto = proto.map_or(Value::NULL, |p| self.value(p));
+        self.object_index(object)
+            .is_some_and(|o| self.agent.heap.set_prototype_of(o, proto))
+    }
+
+    /// `[[PreventExtensions]]`.
+    pub fn prevent_extensions(&mut self, object: Local<'_>) -> bool {
+        self.object_index(object)
+            .is_some_and(|o| self.agent.heap.prevent_extensions(o))
+    }
+
+    /// `[[IsExtensible]]`.
+    pub fn is_extensible(&self, object: Local<'_>) -> bool {
+        self.object_index(object)
+            .is_some_and(|o| self.agent.heap.is_extensible(o))
     }
 
     /// A strong handle to the local's value, valid across scopes until
