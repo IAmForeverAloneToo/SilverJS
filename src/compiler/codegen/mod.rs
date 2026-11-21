@@ -471,6 +471,7 @@ impl<'s, 'a> Gen<'s, 'a> {
 
     fn function(mut self) -> R<FunctionCode> {
         let info = self.a.function(self.index).clone();
+        let mut mapped = Vec::new();
         let (span, kind, name, length) = match info.func {
             None => {
                 let span = self.sh.program.span;
@@ -492,6 +493,18 @@ impl<'s, 'a> Gen<'s, 'a> {
                     ),
                 };
                 let length = f.params.iter().take_while(|p| p.default.is_none()).count();
+                if info.mapped_arguments {
+                    let mut map = vec![0u32; info.param_count as usize];
+                    for b in &self.a.scope(self.scope).bindings {
+                        if let (BindingKind::Param, Loc::Slot(k), Some(p)) =
+                            (b.kind, b.loc, b.param)
+                            && let Some(m) = map.get_mut(p as usize)
+                        {
+                            *m = k + 1;
+                        }
+                    }
+                    mapped = map;
+                }
                 self.body(fid)?;
                 (
                     (f.span.start, f.span.end),
@@ -521,6 +534,7 @@ impl<'s, 'a> Gen<'s, 'a> {
             positions: std::mem::take(&mut self.positions),
             ic_slots: self.ic,
             span,
+            mapped,
         })
     }
 

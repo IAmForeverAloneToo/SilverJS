@@ -17,7 +17,7 @@ import sys
 root = sys.argv[1].replace('\\', '/').rstrip('/') + '/'
 M = 'src/interp/mod.rs'
 P = 'src/interp/ops.rs'
-R = 'src/interp/realm.rs'
+R = 'src/builtins/array.rs'
 O = 'src/object.rs'
 H = 'src/heap.rs'
 S = 'src/string.rs'
@@ -51,7 +51,7 @@ cases = [
         "let result = self.finish_function(f, length, &name, false);"),
     (P, 'messages::read_only(&k, "#<Object>")', 'messages::read_only(&k, "object")'),
     # The realm's natives.
-    (R, "let index = len + i as f64;", "let index = len;"),
+    (R, "agent.put_index(o, len + i as f64, v)?;", "agent.put_index(o, len, v)?;"),
     # The object model and the heap.
     (O, "Some(e) if e.flags & (WRITABLE | ACCESSOR) == WRITABLE => {", "Some(e) => {"),
     (H, "        self.internals.update_extra(before, after);\n", ""),

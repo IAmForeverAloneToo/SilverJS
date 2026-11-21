@@ -5,7 +5,8 @@
 //! J1: the lexer (ECMA-262 section 12), the parser and its early errors
 //! (sections 13 to 17), and RegExp's pattern syntax. J2 so far: values,
 //! the heap and its collector, handles, strings, symbols and objects,
-//! the compiler to register bytecode, and its interpreter.
+//! the compiler to register bytecode, its interpreter, the core
+//! built-ins, and the embedder's natives.
 
 // No module needs `unsafe` before the replacement (section 1.5). It turns
 // to `deny` with the first reviewed module that does, in a commit of its
@@ -17,7 +18,9 @@
 
 pub mod agent;
 pub mod ast;
+mod builtins;
 pub mod compiler;
+mod embed;
 mod heap;
 mod internal;
 mod interp;
@@ -33,6 +36,8 @@ mod unicode_tables;
 pub mod value;
 
 #[cfg(test)]
+mod builtins_tests;
+#[cfg(test)]
 mod compiler_tests;
 #[cfg(test)]
 mod heap_tests;
@@ -45,6 +50,7 @@ mod object_tests;
 #[cfg(test)]
 mod parser_tests;
 
+pub use embed::{ErrorKind, HostFn, JsResult, Thrown};
 pub use heap::HeapStats;
 pub use string::{Atom, PropertyKey};
 pub use unicode_tables::UNICODE_VERSION;

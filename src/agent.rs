@@ -98,6 +98,14 @@ impl Agent {
         }
     }
 
+    pub(crate) fn handles_len(&self) -> usize {
+        self.handles.len()
+    }
+
+    pub(crate) fn truncate_handles(&mut self, len: usize) {
+        self.handles.truncate(len);
+    }
+
     /// The agent's id, which its long-lived handles carry.
     pub fn id(&self) -> u32 {
         self.id
@@ -324,6 +332,30 @@ pub enum SetResult<'s> {
 }
 
 impl<'a> Scope<'a> {
+    /// A scope over `agent` whose locals the caller drops (a native's
+    /// call).
+    pub(crate) fn over(agent: &'a mut Agent) -> Scope<'a> {
+        Scope { agent }
+    }
+
+    pub(crate) fn agent_mut(&mut self) -> &mut Agent {
+        self.agent
+    }
+
+    pub(crate) fn agent_ref(&self) -> &Agent {
+        self.agent
+    }
+
+    /// A local for a raw value.
+    pub(crate) fn local_of(&mut self, value: Value) -> Local<'a> {
+        self.local(value)
+    }
+
+    /// The raw value of a local.
+    pub(crate) fn value_of(&self, local: Local<'_>) -> Value {
+        self.value(local)
+    }
+
     /// The agent's id.
     pub fn agent_id(&self) -> u32 {
         self.agent.id

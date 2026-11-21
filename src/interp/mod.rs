@@ -20,9 +20,9 @@
 //! accumulator, the exception being thrown, the realm, and the installed
 //! units' strings.
 
-mod messages;
-mod ops;
-mod realm;
+pub(crate) mod messages;
+pub(crate) mod ops;
+pub(crate) mod realm;
 
 use std::rc::Rc;
 
@@ -107,6 +107,17 @@ pub(crate) struct Vm {
     /// Values Rust holds across an allocation (a new object being
     /// filled), rooted while it does.
     pub temps: Vec<Value>,
+    /// The well-known symbols, by [`crate::builtins::Wk`], shared by the
+    /// agent's realms.
+    pub well_known: Vec<Value>,
+    /// `Symbol.for`'s registry, the agent's.
+    pub registry: std::collections::HashMap<Vec<u16>, Value>,
+    /// `Math.random`'s state.
+    pub random: (u64, u64),
+    /// The arrays `join` is joining, for its cycle check.
+    pub joining: Vec<Value>,
+    /// The embedder's natives.
+    pub(crate) hosts: Vec<crate::embed::Host>,
 }
 
 impl Default for Vm {
@@ -122,6 +133,11 @@ impl Default for Vm {
             interrupt: None,
             reentry: 0,
             temps: Vec::new(),
+            well_known: Vec::new(),
+            registry: std::collections::HashMap::new(),
+            random: (0, 0),
+            joining: Vec::new(),
+            hosts: Vec::new(),
         }
     }
 }
@@ -136,6 +152,9 @@ impl Vm {
         }
         out.extend([self.acc, self.exception]);
         out.extend_from_slice(&self.temps);
+        out.extend_from_slice(&self.well_known);
+        out.extend(self.registry.values());
+        out.extend_from_slice(&self.joining);
         if let Some(realm) = &self.realm {
             realm.trace(&mut out);
         }
@@ -419,10 +438,35 @@ impl Agent {
     /// accessor, a conversion): a nested run, bounded by the re-entry
     /// count.
     pub(crate) fn call_value(&mut self, callee: Value, this: Value, args: &[Value]) -> Res<Value> {
-        let Some(callable) = self.callable(callee) else {
+        if self.callable(callee).is_none() {
             let text = self.display(callee);
             return Err(self.throw_error(ErrorType::TypeError, messages::not_a_function(&text)));
-        };
+        }
+        self.call_from_rust(callee, this, args, None)
+    }
+
+    /// Construct (section 7.3.15) from Rust: `new callee(...args)` with
+    /// `new_target`.
+    pub(crate) fn construct_value(
+        &mut self,
+        callee: Value,
+        args: &[Value],
+        new_target: Value,
+    ) -> Res<Value> {
+        if !self.is_constructor_value(callee) {
+            let text = self.display(callee);
+            return Err(self.throw_error(ErrorType::TypeError, messages::not_a_constructor(&text)));
+        }
+        self.call_from_rust(callee, Value::UNDEFINED, args, Some(new_target))
+    }
+
+    fn call_from_rust(
+        &mut self,
+        callee: Value,
+        this: Value,
+        args: &[Value],
+        new_target: Option<Value>,
+    ) -> Res<Value> {
         if self.vm.reentry >= MAX_REENTRY {
             return Err(self.throw_error(ErrorType::RangeError, messages::STACK_OVERFLOW));
         }
@@ -430,38 +474,103 @@ impl Agent {
         // them and the collector sees them.
         let start = self.vm.stack.len();
         self.vm.stack.extend_from_slice(args);
-        let result = match callable {
-            Callable::Native { id } => {
-                self.vm.reentry += 1;
-                let r = realm::call_native(self, id, this, start, args.len());
-                self.vm.reentry -= 1;
-                r
-            }
-            Callable::Code { unit, func, env } => {
-                match self.push_frame(
-                    callee,
-                    unit,
-                    func,
-                    env,
-                    this,
-                    start,
-                    args.len(),
-                    Value::UNDEFINED,
-                    false,
-                    true,
-                ) {
-                    Ok(()) => {
-                        self.vm.reentry += 1;
-                        let r = self.run_frames();
-                        self.vm.reentry -= 1;
-                        r
-                    }
-                    Err(e) => Err(e),
-                }
-            }
+        self.vm.reentry += 1;
+        let result = match self.begin_call(callee, this, start, args.len(), new_target, true) {
+            Ok(Some(v)) => Ok(v),
+            Ok(None) => self.run_frames(),
+            Err(e) => Err(e),
         };
+        self.vm.reentry -= 1;
         self.vm.stack.truncate(start);
         result
+    }
+
+    /// Starts a call (or, with `new_target`, a construction) of the
+    /// function `callee`, its arguments the `argc` values from `args` on
+    /// the register file: a native runs to its value (`Some`); script
+    /// gets a frame, run by the caller's loop (`None`). A bound function
+    /// is unwrapped to its target first.
+    pub(crate) fn begin_call(
+        &mut self,
+        callee: Value,
+        this: Value,
+        args: usize,
+        argc: usize,
+        new_target: Option<Value>,
+        entry: bool,
+    ) -> Res<Option<Value>> {
+        let (mut callee, mut this, mut new_target) = (callee, this, new_target);
+        let (mut args, mut argc) = (args, argc);
+        while let Some(Callable::Bound) = self.callable(callee) {
+            let internal = callee
+                .as_object()
+                .and_then(|o| self.heap.objects.get(o))
+                .map(|c| c.internal().to_vec())
+                .unwrap_or_default();
+            let target = internal.first().copied().unwrap_or(Value::UNDEFINED);
+            // The bound arguments, then the call's, above everything.
+            let copy = self.vm.stack.len();
+            self.vm.stack.extend(internal.iter().skip(2).copied());
+            for i in 0..argc {
+                let v = self
+                    .vm
+                    .stack
+                    .get(args + i)
+                    .copied()
+                    .unwrap_or(Value::UNDEFINED);
+                self.vm.stack.push(v);
+            }
+            argc = self.vm.stack.len() - copy;
+            args = copy;
+            if let Some(nt) = new_target {
+                new_target = Some(if nt == callee { target } else { nt });
+            } else {
+                this = internal.get(1).copied().unwrap_or(Value::UNDEFINED);
+            }
+            callee = target;
+        }
+        match self.callable(callee) {
+            Some(Callable::Code { unit, func, env }) => {
+                let (this, nt, construct) = match new_target {
+                    Some(nt) => (self.construct_this(nt)?, nt, true),
+                    None => (this, Value::UNDEFINED, false),
+                };
+                // A copy of the arguments above everything: the callee's
+                // own registers.
+                let copy = self.vm.stack.len();
+                for i in 0..argc {
+                    let v = self
+                        .vm
+                        .stack
+                        .get(args + i)
+                        .copied()
+                        .unwrap_or(Value::UNDEFINED);
+                    self.vm.stack.push(v);
+                }
+                if let Err(e) = self.push_frame(
+                    callee, unit, func, env, this, copy, argc, nt, construct, entry,
+                ) {
+                    self.vm.stack.truncate(copy);
+                    return Err(e);
+                }
+                Ok(None)
+            }
+            Some(Callable::Native { id }) => {
+                self.tick()?;
+                let call = crate::builtins::Call {
+                    this,
+                    args,
+                    argc,
+                    new_target: new_target.unwrap_or(Value::UNDEFINED),
+                    callee,
+                };
+                crate::builtins::call_native(self, id, call).map(Some)
+            }
+            Some(Callable::Bound) | None => {
+                let text = self.display(callee);
+                Err(self.throw_error(ErrorType::TypeError, messages::not_a_function(&text)))
+            }
+        }
     }
 
     /// What calling `v` runs, if it is a function.
@@ -510,9 +619,18 @@ impl Agent {
                 *slot = v;
             }
         }
+        // OrdinaryCallBindThis (section 10.2.1.2): sloppy code gets the
+        // global object for nothing, a wrapper for a primitive.
         let this = match f.kind {
             FunctionKind::Arrow => Value::UNDEFINED,
             _ if !f.strict && this.is_nullish() => self.realm().global,
+            _ if !f.strict && this.as_object().is_none() => match self.wrap(this, None) {
+                Ok(w) => w,
+                Err(e) => {
+                    self.vm.stack.truncate(base);
+                    return Err(e);
+                }
+            },
             _ => this,
         };
         let args = u32::try_from(args).unwrap_or(u32::MAX);
@@ -536,7 +654,7 @@ impl Agent {
 
     /// Charges a step; asks the interrupt hook every so many.
     #[inline]
-    fn tick(&mut self) -> Res<()> {
+    pub(crate) fn tick(&mut self) -> Res<()> {
         self.vm.steps -= 1;
         if self.vm.steps == 0 {
             self.vm.steps = STEPS_PER_CHECK;
@@ -991,15 +1109,9 @@ impl Agent {
                         self.vm.acc = tri!(self.make_closure(u, f as u32, env), start);
                     }
                     Op::CreateArguments => {
-                        let _mapped = r.u();
+                        let mapped = r.u() != 0;
                         let frame = *self.top();
-                        self.vm.acc = tri!(
-                            self.make_arguments(
-                                frame.args as usize,
-                                (frame.base - frame.args) as usize
-                            ),
-                            start
-                        );
+                        self.vm.acc = tri!(self.make_arguments(&frame, mapped), start);
                     }
                     Op::CreateRestParameter => {
                         let from = r.u();
@@ -1325,7 +1437,12 @@ impl Agent {
                             top.resume = r.pc as u32;
                         }
                         let construct = op == Op::New;
-                        let Some(callable) = self.callable(callee) else {
+                        let callable_ok = if construct {
+                            self.is_constructor_value(callee)
+                        } else {
+                            self.callable(callee).is_some()
+                        };
+                        if !callable_ok {
                             let text = self.text_at(u, fi, start as u32);
                             let message = if construct {
                                 messages::not_a_constructor(&text)
@@ -1333,6 +1450,9 @@ impl Agent {
                                 messages::not_a_function(&text)
                             };
                             fail!(self.throw_error(ErrorType::TypeError, message))
+                        }
+                        let Some(callable) = self.callable(callee) else {
+                            fail!(Abrupt::Throw)
                         };
                         match callable {
                             Callable::Code { unit, func, env } => {
@@ -1373,19 +1493,11 @@ impl Agent {
                                 }
                                 continue 'frames;
                             }
-                            Callable::Native { id } => {
-                                if construct && !self.is_constructor(callable) {
-                                    let text = self.text_at(u, fi, start as u32);
-                                    fail!(self.throw_error(
-                                        ErrorType::TypeError,
-                                        messages::not_a_constructor(&text)
-                                    ))
-                                }
-                                if let Err(e) = self.tick() {
-                                    fail!(e)
-                                }
-                                match realm::call_native(self, id, recv, args, argc) {
-                                    Ok(v) => self.vm.acc = v,
+                            Callable::Native { .. } | Callable::Bound => {
+                                let nt = construct.then_some(callee);
+                                match self.begin_call(callee, recv, args, argc, nt, false) {
+                                    Ok(Some(v)) => self.vm.acc = v,
+                                    Ok(None) => continue 'frames,
                                     Err(e) => fail!(e),
                                 }
                             }
@@ -1457,21 +1569,51 @@ impl Agent {
                 .get(unit as usize)
                 .and_then(|u| u.code.functions.get(func as usize))
                 .is_some_and(|f| f.kind == FunctionKind::Normal),
-            Callable::Native { id } => realm::native_constructs(id),
+            Callable::Native { id } => crate::builtins::native_constructs(id),
+            // Answered by the target, in `is_constructor_value`.
+            Callable::Bound => false,
         }
     }
 
-    /// The object `new F` makes: its prototype `F.prototype` if an
-    /// object, else the realm's `Object.prototype`.
-    fn construct_this(&mut self, callee: Value) -> Res<Value> {
+    /// IsConstructor (section 7.2.4).
+    pub(crate) fn is_constructor_value(&self, v: Value) -> bool {
+        let mut at = v;
+        // A chain of bound functions, each made over a function already.
+        loop {
+            match self.callable(at) {
+                Some(Callable::Bound) => {
+                    at = at
+                        .as_object()
+                        .and_then(|o| self.heap.objects.get(o))
+                        .and_then(|c| c.internal().first().copied())
+                        .unwrap_or(Value::UNDEFINED);
+                }
+                Some(c) => return self.is_constructor(c),
+                None => return false,
+            }
+        }
+    }
+
+    /// The object `new F` makes: its prototype `newTarget.prototype` if
+    /// an object, else the realm's `Object.prototype`.
+    fn construct_this(&mut self, new_target: Value) -> Res<Value> {
+        let proto = self.prototype_from(new_target, self.realm().object_prototype)?;
+        self.alloc_object(ObjectCell::new(proto, ObjectKind::Ordinary))
+    }
+
+    /// GetPrototypeFromConstructor (section 10.1.14): `ctor.prototype`
+    /// if an object, else `default`.
+    pub(crate) fn prototype_from(&mut self, ctor: Value, default: Value) -> Res<Value> {
+        if ctor.as_object().is_none() {
+            return Ok(default);
+        }
         let key = self.realm().prototype_key;
-        let proto = self.get_value(callee, key)?;
-        let proto = if proto.as_object().is_some() {
+        let proto = self.get_value(ctor, key)?;
+        Ok(if proto.as_object().is_some() {
             proto
         } else {
-            self.realm().object_prototype
-        };
-        self.alloc_object(ObjectCell::new(proto, ObjectKind::Ordinary))
+            default
+        })
     }
 }
 

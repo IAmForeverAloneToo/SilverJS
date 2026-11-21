@@ -17,6 +17,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::heap::{Heap, Trace};
+use crate::internal::InternalCell;
 use crate::string::PropertyKey;
 use crate::value::{RefKind, Value};
 
@@ -63,8 +64,11 @@ pub(crate) enum Callable {
     /// Function `func` of the agent's installed unit `unit`, over the
     /// environment it was made in (undefined: the global one).
     Code { unit: u32, func: u32, env: Value },
-    /// The native `id` of the realm's table ([`crate::interp`]).
+    /// The native `id` of the built-ins' tables ([`crate::builtins`]).
     Native { id: u32 },
+    /// A bound function (section 10.4.1): its target, `this` and leading
+    /// arguments are the object's internal slots.
+    Bound,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +81,11 @@ struct Extra {
     length_writable: bool,
     /// A function's code.
     function: Option<Callable>,
+    /// Internal slots, by kind: a wrapper's primitive; a bound
+    /// function's target, `this` and arguments; a mapped arguments
+    /// object's environment and, per index, the slot it is mapped to
+    /// (an int) or a hole.
+    internal: Vec<Value>,
 }
 
 impl Default for Extra {
@@ -88,6 +97,7 @@ impl Default for Extra {
             length: 0,
             length_writable: true,
             function: None,
+            internal: Vec::new(),
         }
     }
 }
@@ -97,6 +107,18 @@ pub(crate) enum ObjectKind {
     Ordinary,
     Array,
     Function,
+    /// Made by an error constructor (`[[ErrorData]]`).
+    Error,
+    /// An arguments object: mapped (section 10.4.4) when it has an
+    /// environment in its internal slots.
+    Arguments,
+    /// The wrappers of primitives (`[[BooleanData]]` and the like), the
+    /// primitive the first internal slot; a `String` one is exotic
+    /// (section 10.4.3).
+    Boolean,
+    Number,
+    String,
+    Symbol,
 }
 
 /// An object cell.
@@ -216,6 +238,36 @@ impl ObjectCell {
         let mut cell = ObjectCell::new(proto, ObjectKind::Function);
         cell.extra_mut().function = Some(callable);
         cell
+    }
+
+    /// A bound function: its target, `this` and leading arguments.
+    pub(crate) fn bound(proto: Value, internal: Vec<Value>) -> ObjectCell {
+        let mut cell = ObjectCell::function(proto, Callable::Bound);
+        cell.extra_mut().internal = internal;
+        cell
+    }
+
+    /// An object of `kind` with internal slots.
+    pub(crate) fn with_internal(
+        proto: Value,
+        kind: ObjectKind,
+        internal: Vec<Value>,
+    ) -> ObjectCell {
+        let mut cell = ObjectCell::new(proto, kind);
+        cell.extra_mut().internal = internal;
+        cell
+    }
+
+    /// Its internal slots.
+    pub(crate) fn internal(&self) -> &[Value] {
+        self.extra.as_ref().map_or(&[], |e| &e.internal)
+    }
+
+    /// Sets internal slot `i`, if it has one.
+    pub(crate) fn set_internal(&mut self, i: usize, v: Value) {
+        if let Some(slot) = self.extra.as_mut().and_then(|e| e.internal.get_mut(i)) {
+            *slot = v;
+        }
     }
 
     pub(crate) fn kind(&self) -> ObjectKind {
@@ -592,6 +644,7 @@ impl Trace for ObjectCell {
             if let Some(Callable::Code { env, .. }) = extra.function {
                 out.push(env);
             }
+            out.extend(extra.internal.iter().filter(|v| **v != Value::HOLE));
             for pair in &extra.accessors {
                 out.push(pair.get);
                 out.push(pair.set);
@@ -618,6 +671,7 @@ impl Trace for ObjectCell {
                 + elements
                 + e.accessors.capacity() * std::mem::size_of::<Accessor>()
                 + e.index.as_ref().map_or(0, |m| m.capacity() * 24)
+                + e.internal.capacity() * 8
         });
         props + extra
     }
@@ -641,6 +695,26 @@ pub(crate) fn same_value(heap: &Heap, a: Value, b: Value) -> bool {
     a == b
 }
 
+/// Whether defining `desc` over the non-configurable data property
+/// `current` would be allowed, with nothing to change
+/// (ValidateAndApplyPropertyDescriptor's checks, section 10.1.6.3).
+fn compatible(heap: &Heap, current: OwnProperty, desc: &Descriptor) -> bool {
+    let OwnProperty::Data {
+        value,
+        writable,
+        enumerable,
+        ..
+    } = current
+    else {
+        return false;
+    };
+    !(desc.configurable == Some(true)
+        || desc.enumerable.is_some_and(|e| e != enumerable)
+        || desc.is_accessor()
+        || (!writable && desc.writable == Some(true))
+        || desc.value.is_some_and(|v| !same_value(heap, v, value)))
+}
+
 /// The object operations, over the heap's objects named by index.
 impl Heap {
     fn object(&self, o: u32) -> Option<&ObjectCell> {
@@ -658,20 +732,103 @@ impl Heap {
         Some(result)
     }
 
-    /// `[[GetOwnProperty]]`, an array's `length` included.
+    /// `[[GetOwnProperty]]`, an array's `length` included, a `String`
+    /// wrapper's indices and a mapped arguments object's too.
     pub(crate) fn get_own_property(&self, o: u32, key: PropertyKey) -> Option<OwnProperty> {
         let cell = self.object(o)?;
-        if key == self.length_key
-            && let Some((length, writable)) = cell.array_length()
-        {
-            return Some(OwnProperty::Data {
-                value: Value::number(f64::from(length)),
-                writable,
-                enumerable: false,
-                configurable: false,
-            });
+        match cell.kind {
+            ObjectKind::Array if key == self.length_key => {
+                let (length, writable) = cell.array_length()?;
+                return Some(OwnProperty::Data {
+                    value: Value::number(f64::from(length)),
+                    writable,
+                    enumerable: false,
+                    configurable: false,
+                });
+            }
+            ObjectKind::String => {
+                if let Some(p) = self.string_own(cell, key) {
+                    return Some(p);
+                }
+            }
+            ObjectKind::Arguments => {
+                let mut p = cell.own_property(key)?;
+                if let (Some(v), OwnProperty::Data { value, .. }) = (self.mapped(cell, key), &mut p)
+                {
+                    *value = v;
+                }
+                return Some(p);
+            }
+            _ => {}
         }
         cell.own_property(key)
+    }
+
+    /// A `String` wrapper's own `length` and indices (section 10.4.3.5),
+    /// the one-unit strings read from the heap's table of them (which
+    /// the wrapper filled when it was made).
+    fn string_own(&self, cell: &ObjectCell, key: PropertyKey) -> Option<OwnProperty> {
+        let s = self.strings.get(cell.internal().first()?.as_string()?)?;
+        let value = if key == self.length_key {
+            Value::int(i32::try_from(s.len()).unwrap_or(i32::MAX))
+        } else {
+            let PropertyKey::Index(i) = key else {
+                return None;
+            };
+            let unit = s.unit(i as usize)?;
+            *self.unit_strings.get(&unit)?
+        };
+        Some(OwnProperty::Data {
+            value,
+            writable: false,
+            enumerable: key != self.length_key,
+            configurable: false,
+        })
+    }
+
+    /// The value a mapped arguments object's index reads from its
+    /// environment, if the index is mapped.
+    fn mapped(&self, cell: &ObjectCell, key: PropertyKey) -> Option<Value> {
+        let (env, slot) = Self::mapping(cell, key)?;
+        match self.internals.get(env)? {
+            InternalCell::Env(e) => e.slots.get(slot).copied(),
+            InternalCell::ForIn(_) => None,
+        }
+    }
+
+    fn mapping(cell: &ObjectCell, key: PropertyKey) -> Option<(u32, usize)> {
+        let PropertyKey::Index(i) = key else {
+            return None;
+        };
+        let internal = cell.internal();
+        let (_, env) = internal.first()?.as_reference()?;
+        let slot = internal.get(1 + i as usize)?.as_int()?;
+        Some((env, usize::try_from(slot).ok()?))
+    }
+
+    /// Writes a mapped index's environment slot.
+    fn set_mapped(&mut self, o: u32, key: PropertyKey, v: Value) {
+        let Some((env, slot)) = self.object(o).and_then(|c| Self::mapping(c, key)) else {
+            return;
+        };
+        if let Some(InternalCell::Env(e)) = self.internals.get_mut(env)
+            && let Some(s) = e.slots.get_mut(slot)
+        {
+            *s = v;
+        }
+    }
+
+    /// Ends the mapping of an arguments object's index.
+    fn unmap(&mut self, o: u32, key: PropertyKey) {
+        if let PropertyKey::Index(i) = key {
+            self.with_object(o, |c| c.set_internal(1 + i as usize, Value::HOLE));
+        }
+    }
+
+    /// Whether `o` is a mapped arguments object mapping `key`.
+    fn is_mapped(&self, o: u32, key: PropertyKey) -> bool {
+        self.object(o)
+            .is_some_and(|c| c.kind == ObjectKind::Arguments && Self::mapping(c, key).is_some())
     }
 
     /// `[[DefineOwnProperty]]` (sections 10.1.6 and 10.4.2.1).
@@ -684,6 +841,16 @@ impl Heap {
         let Some(kind) = self.object(o).map(ObjectCell::kind) else {
             return false;
         };
+        if kind == ObjectKind::String
+            && let Some(cell) = self.object(o)
+            && let Some(current) = self.string_own(cell, key)
+        {
+            // Never written: whether `desc` agrees with what is there.
+            return compatible(self, current, &desc);
+        }
+        if kind == ObjectKind::Arguments && self.is_mapped(o, key) {
+            return self.arguments_define(o, key, desc);
+        }
         if kind == ObjectKind::Array {
             if key == self.length_key {
                 return self.array_set_length(o, desc);
@@ -707,6 +874,29 @@ impl Heap {
             }
         }
         self.ordinary_define(o, key, desc)
+    }
+
+    /// A mapped arguments object's `[[DefineOwnProperty]]` of a mapped
+    /// index (section 10.4.4.2).
+    fn arguments_define(&mut self, o: u32, key: PropertyKey, desc: Descriptor) -> bool {
+        let mut arg_desc = desc;
+        if desc.is_data() && desc.value.is_none() && desc.writable == Some(false) {
+            arg_desc.value = self.object(o).and_then(|c| self.mapped(c, key));
+        }
+        if !self.ordinary_define(o, key, arg_desc) {
+            return false;
+        }
+        if desc.is_accessor() {
+            self.unmap(o, key);
+        } else {
+            if let Some(v) = desc.value {
+                self.set_mapped(o, key, v);
+            }
+            if desc.writable == Some(false) {
+                self.unmap(o, key);
+            }
+        }
+        true
     }
 
     /// OrdinaryDefineOwnProperty with ValidateAndApplyPropertyDescriptor
@@ -909,7 +1099,7 @@ impl Heap {
             && self
                 .objects
                 .get_mut(o)
-                .is_some_and(|c| c.write_own(key, value))
+                .is_some_and(|c| c.kind != ObjectKind::Arguments && c.write_own(key, value))
         {
             return SetOutcome::Done(true);
         }
@@ -962,6 +1152,9 @@ impl Heap {
         match self.get_own_property(o, key) {
             None => true,
             Some(p) if p.configurable() => {
+                if self.is_mapped(o, key) {
+                    self.unmap(o, key);
+                }
                 self.with_object(o, |c| c.remove(key));
                 true
             }
@@ -970,9 +1163,31 @@ impl Heap {
     }
 
     pub(crate) fn own_keys(&self, o: u32) -> Vec<PropertyKey> {
-        self.object(o)
-            .map(|c| c.own_keys(self.length_key))
-            .unwrap_or_default()
+        let Some(cell) = self.object(o) else {
+            return Vec::new();
+        };
+        let mut keys = cell.own_keys(self.length_key);
+        // A `String` wrapper's indices, then `length`, come first
+        // (section 10.4.3.3); its other indices are past the string's.
+        if cell.kind == ObjectKind::String
+            && let Some(s) = cell
+                .internal()
+                .first()
+                .and_then(|v| v.as_string())
+                .and_then(|i| self.strings.get(i))
+        {
+            let n = u32::try_from(s.len()).unwrap_or(u32::MAX);
+            let mut all: Vec<PropertyKey> = (0..n).map(PropertyKey::Index).collect();
+            let split = keys
+                .iter()
+                .position(|k| !matches!(k, PropertyKey::Index(_)))
+                .unwrap_or(keys.len());
+            all.extend(keys.iter().take(split).copied());
+            all.push(self.length_key);
+            all.extend(keys.iter().skip(split).copied());
+            keys = all;
+        }
+        keys
     }
 
     pub(crate) fn prevent_extensions(&mut self, o: u32) -> bool {

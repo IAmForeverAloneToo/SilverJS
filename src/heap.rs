@@ -312,6 +312,9 @@ pub(crate) struct Heap {
     /// The bytes of string units copied since the heap was made: what
     /// the tests hold string building to (linear in what is built).
     pub(crate) string_copies: usize,
+    /// One-unit strings by their unit, made as `String` wrappers and
+    /// `charAt` need them, kept for the agent's life (at most 65,536).
+    pub(crate) unit_strings: std::collections::HashMap<u16, Value>,
 }
 
 impl Heap {
@@ -327,6 +330,7 @@ impl Heap {
             length_key,
             collections: 0,
             string_copies: 0,
+            unit_strings: std::collections::HashMap::new(),
         }
     }
 
@@ -505,6 +509,7 @@ impl Heap {
         self.symbols.begin_collection();
         self.internals.begin_collection();
         let mut stack: Vec<Value> = roots.into_iter().collect();
+        stack.extend(self.unit_strings.values());
         while let Some(value) = stack.pop() {
             match value.as_reference() {
                 Some((RefKind::Object, i)) => {

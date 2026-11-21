@@ -548,6 +548,14 @@ impl Gen<'_, '_> {
     /// Stores the accumulator into a member expression (a for-in head).
     fn store_to_expr(&mut self, e: crate::ast::ExprId) -> R {
         let node = self.ast.expr(e);
+        // A name (`for (x in o)`), parenthesized or not.
+        match &node.kind {
+            crate::ast::Expr::Ident(name) => {
+                return self.store_name(&name.name, node.span, false);
+            }
+            crate::ast::Expr::Paren(inner) => return self.store_to_expr(*inner),
+            _ => {}
+        }
         let crate::ast::Expr::Member {
             object,
             prop,

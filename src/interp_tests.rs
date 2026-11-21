@@ -62,7 +62,10 @@ fn expressions_and_bindings() {
     assert_eq!(run("1 + 2 + 'a'"), "\"3a\"");
     assert_eq!(run("'5' * '2'"), "10");
     assert_eq!(run("+'  0x10  ' + +'1e3' + +''"), "1016");
-    assert_eq!(run("isNaN"), "throw ReferenceError: isNaN is not defined");
+    assert_eq!(
+        run("notAGlobal"),
+        "throw ReferenceError: notAGlobal is not defined"
+    );
     assert_eq!(
         run("typeof 1 + typeof 'x' + typeof undefined + typeof null + typeof function () {}"),
         "\"numberstringundefinedobjectfunction\""
@@ -82,6 +85,13 @@ fn expressions_and_bindings() {
 
 #[test]
 fn functions_closures_and_recursion() {
+    // A sloppy call with no receiver gets the global object.
+    assert_eq!(
+        run(
+            "function f() { return this; } (f() === globalThis) + ',' + (f.call(null) === globalThis)"
+        ),
+        "\"true,true\""
+    );
     assert_eq!(
         run("function fib(n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); } fib(20)"),
         "6765"
@@ -166,10 +176,7 @@ fn objects_arrays_and_strings() {
         run("var o = { ...{ a: 1, b: 2 }, c: 3 }; o.a + o.b + o.c"),
         "6"
     );
-    assert_eq!(
-        run("String({}) === undefined"),
-        "throw ReferenceError: String is not defined"
-    );
+    assert_eq!(run("String({})"), "\"[object Object]\"");
     assert_eq!(run("'' + {}"), "\"[object Object]\"");
     assert_eq!(run("var o = { valueOf() { return 41; } }; o + 1"), "42");
     assert_eq!(run("var o; with ({ z: 9 }) { o = z; } o"), "9");
@@ -376,10 +383,7 @@ fn for_in_under_collection() {
     let mut agent = Agent::new(AgentOptions::default());
     agent.set_stress(true);
     let src = "var o = { a: 1, b: 2 }; var p = Object; var s = ''; for (var k in o) { var t = { k }; s += t.k; } s";
-    assert_eq!(
-        run_in(&mut agent, src),
-        "throw ReferenceError: Object is not defined"
-    );
+    assert_eq!(run_in(&mut agent, src), "\"ab\"");
     let src =
         "var o = { a: 1, b: 2, c: 3 }; var s = ''; for (var k in o) { var t = { k }; s += t.k; } s";
     assert_eq!(run_in(&mut agent, src), "\"abc\"");

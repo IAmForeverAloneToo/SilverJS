@@ -19,6 +19,18 @@ test that does not yet, with a one-word reason; a run that fails a test
 not listed, or passes one listed, fails. `--update` rewrites the file,
 which only ever shrinks.
 
+From J2.5, `--run` runs the tests: the harness's `assert.js` and
+`sta.js`, the test's `includes`, then the test, in a fresh agent for
+each mode, with `print` and `$262` made through the embedding API (the
+runner uses nothing private). A negative runtime test must throw an
+error of its type; an `async` test must print its completion. Each run
+stops at ten seconds through the agent's interrupt hook.
+`expected-run-failures.txt` is this mode's file, with the same rules.
+Not applicable, as well as the features the reference browser does not
+ship: tail calls, which it does not implement, and the
+`error-stack-accessor` proposal, since its `stack` is an own accessor of
+each error (docs/chrome-surface.md). `--all` prints every new failure.
+
 `quickjs-ng-passes.txt` is QuickJS-ng's own pass list on the same
 revision and measured set (2026-11-20, QuickJS-ng 0.16 through rquickjs
 0.14, a harness of silver-work's tooling until the `js` adapter of

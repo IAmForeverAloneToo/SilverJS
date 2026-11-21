@@ -144,6 +144,10 @@ pub struct FunctionCode {
     pub ic_slots: u32,
     /// The source text, `start..end`: `Function.prototype.toString`'s.
     pub span: (u32, u32),
+    /// For a mapped arguments object: per parameter, one more than the
+    /// slot of the function's environment it is mapped to, or 0 (a
+    /// repeated name maps its last parameter only).
+    pub mapped: Vec<u32>,
 }
 
 /// A top-level declaration of a script, which the interpreter makes

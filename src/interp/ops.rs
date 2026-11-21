@@ -137,7 +137,7 @@ pub(crate) fn string_to_number(units: &[u16]) -> f64 {
 
 /// Number::exponentiate (section 6.1.6.1.3), where it differs from
 /// `powf`: a NaN exponent, and a base of magnitude 1 to an infinity.
-fn exponentiate(base: f64, exponent: f64) -> f64 {
+pub(crate) fn exponentiate(base: f64, exponent: f64) -> f64 {
     if exponent.is_nan() {
         return f64::NAN;
     }
@@ -190,7 +190,7 @@ impl Agent {
         let (o, _) = self
             .heap
             .objects
-            .alloc(ObjectCell::new(proto, ObjectKind::Ordinary));
+            .alloc(ObjectCell::new(proto, ObjectKind::Error));
         let (m, _) = self
             .heap
             .strings
@@ -215,7 +215,7 @@ impl Agent {
 
     pub(crate) fn make_error(&mut self, t: ErrorType, message: &str) -> Res<Value> {
         let proto = self.realm().error_proto(t);
-        let e = self.alloc_object(ObjectCell::new(proto, ObjectKind::Ordinary))?;
+        let e = self.alloc_object(ObjectCell::new(proto, ObjectKind::Error))?;
         self.vm.temps.push(e);
         let m = self.new_string(message);
         self.vm.temps.pop();
@@ -278,6 +278,28 @@ impl Agent {
     pub(crate) fn primitive(&mut self, v: Value, hint: Option<bool>) -> Res<Value> {
         if v.as_object().is_none() {
             return Ok(v);
+        }
+        // `@@toPrimitive` first, with the hint's name.
+        let key = self.well_known_key(crate::builtins::Wk::ToPrimitive);
+        self.vm.temps.push(v);
+        let exotic = self.get_method(v, key);
+        self.vm.temps.pop();
+        let exotic = exotic?;
+        if !exotic.is_undefined() {
+            let hint = match hint {
+                Some(true) => "string",
+                Some(false) => "number",
+                None => "default",
+            };
+            let h = self.new_string(hint)?;
+            self.vm.temps.push(v);
+            let r = self.call_value(exotic, v, &[h]);
+            self.vm.temps.pop();
+            let r = r?;
+            if r.as_object().is_some() {
+                return Err(self.throw_error(ErrorType::TypeError, messages::OBJECT_TO_PRIMITIVE));
+            }
+            return Ok(r);
         }
         let realm = self.realm();
         let order = if hint == Some(true) {
@@ -674,6 +696,21 @@ impl Agent {
         self.get_value(target, key)
     }
 
+    /// ArraySetLength's conversions (section 10.4.2.4): ToUint32 and
+    /// ToNumber of the new length, a RangeError where they differ.
+    pub(crate) fn array_length_value(&mut self, v: Value) -> Res<Value> {
+        if v.as_int().is_some_and(|i| i >= 0) {
+            return Ok(v);
+        }
+        let n = self.number(v)?;
+        let len = to_uint32(n);
+        let again = self.number(v)?;
+        if f64::from(len) != again {
+            return Err(self.throw_error(ErrorType::RangeError, "Invalid array length"));
+        }
+        Ok(Value::number(f64::from(len)))
+    }
+
     /// PutValue's `[[Set]]` (section 6.2.5.6): `target[key] = value`, a
     /// failure thrown in strict code.
     pub(crate) fn set_value(
@@ -706,6 +743,12 @@ impl Agent {
             }
             return Ok(());
         };
+        let mut value = value;
+        if key == self.heap.length_key
+            && let Some((_, true)) = self.heap.objects.get(o).and_then(ObjectCell::array_length)
+        {
+            value = self.array_length_value(value)?;
+        }
         match self.heap.set(o, key, value, target) {
             SetOutcome::Done(true) => Ok(()),
             SetOutcome::Done(false) => {
@@ -869,37 +912,21 @@ impl Agent {
         Ok(self.heap.has_property(o, key))
     }
 
-    /// InstanceofOperator (section 13.10.2), without `@@hasInstance`
-    /// (J2.5).
+    /// InstanceofOperator (section 13.10.2).
     pub(crate) fn instance_of(&mut self, value: Value, target: Value) -> Res<bool> {
         if target.as_object().is_none() {
             return Err(self.throw_error(ErrorType::TypeError, messages::INSTANCEOF_NOT_OBJECT));
         }
+        let key = self.well_known_key(crate::builtins::Wk::HasInstance);
+        let h = self.get_method(target, key)?;
+        if !h.is_undefined() {
+            let r = self.call_value(h, target, &[value])?;
+            return Ok(self.to_boolean(r));
+        }
         if self.callable(target).is_none() {
             return Err(self.throw_error(ErrorType::TypeError, messages::INSTANCEOF_NOT_CALLABLE));
         }
-        let Some(mut o) = value.as_object() else {
-            return Ok(false);
-        };
-        let key = self.realm().prototype_key;
-        let proto = self.get_value(target, key)?;
-        if proto.as_object().is_none() {
-            let text = self.display(proto);
-            return Err(self.throw_error(
-                ErrorType::TypeError,
-                format!("Function has non-object prototype '{text}' in instanceof check"),
-            ));
-        }
-        loop {
-            let p = self.heap.get_prototype_of(o);
-            if p == proto {
-                return Ok(true);
-            }
-            match p.as_object() {
-                Some(next) => o = next,
-                None => return Ok(false),
-            }
-        }
+        self.ordinary_has_instance(target, value)
     }
 
     // Bindings by name.
@@ -1119,12 +1146,37 @@ impl Agent {
         Ok(())
     }
 
-    /// An unmapped arguments object (section 10.4.4.6) of `argc` values
-    /// from `start` on the register file. (A sloppy function's mapped
-    /// one is J2.5's; its indices are not yet tied to the parameters.)
-    pub(crate) fn make_arguments(&mut self, start: usize, argc: usize) -> Res<Value> {
+    /// The arguments object of `frame` (sections 10.4.4.6 and 10.4.4.7):
+    /// its arguments' values, `length` and `callee`; mapped, each index
+    /// below the parameter count reads and writes its parameter's slot of
+    /// the function's environment, and `callee` is the function; else
+    /// `callee` throws.
+    pub(crate) fn make_arguments(&mut self, frame: &super::Frame, mapped: bool) -> Res<Value> {
+        let (start, argc) = (frame.args as usize, (frame.base - frame.args) as usize);
+        let mut internal = Vec::new();
+        if mapped {
+            let map = self
+                .vm
+                .units
+                .get(frame.unit as usize)
+                .and_then(|u| u.code.functions.get(frame.func as usize))
+                .map(|f| f.mapped.clone())
+                .unwrap_or_default();
+            internal.push(frame.fn_context);
+            internal.extend(map.iter().take(argc).map(|&m| {
+                if m == 0 {
+                    Value::HOLE
+                } else {
+                    Value::int(i32::try_from(m - 1).unwrap_or(0))
+                }
+            }));
+        }
         let proto = self.realm().object_prototype;
-        let a = self.alloc_object(ObjectCell::new(proto, ObjectKind::Ordinary))?;
+        let a = self.alloc_object(ObjectCell::with_internal(
+            proto,
+            ObjectKind::Arguments,
+            internal,
+        ))?;
         let Some(o) = a.as_object() else {
             return Ok(a);
         };
@@ -1141,6 +1193,23 @@ impl Agent {
         let length_key = self.heap.length_key;
         self.heap
             .define_own_property(o, length_key, hidden(Value::number(argc as f64)));
+        let callee_key = self
+            .heap
+            .atoms
+            .key(&"callee".encode_utf16().collect::<Vec<u16>>());
+        let callee = if mapped {
+            hidden(frame.closure)
+        } else {
+            let t = self.realm().intrinsics.throw_type_error;
+            Descriptor {
+                get: Some(t),
+                set: Some(t),
+                enumerable: Some(false),
+                configurable: Some(false),
+                ..Descriptor::default()
+            }
+        };
+        self.heap.define_own_property(o, callee_key, callee);
         Ok(a)
     }
 
