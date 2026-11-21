@@ -91,6 +91,10 @@ pub(crate) struct Intrinsics {
     /// The error constructors, by [`ErrorType`].
     pub errors: [Value; 7],
     pub throw_type_error: Value,
+    /// Every error's `stack` accessor pair.
+    pub stack_get: Value,
+    pub stack_set: Value,
+    pub call_site_prototype: Value,
     pub math: Value,
     pub reflect: Value,
     pub eval: Value,
@@ -109,6 +113,9 @@ impl Intrinsics {
         symbol: Value::UNDEFINED,
         errors: [Value::UNDEFINED; 7],
         throw_type_error: Value::UNDEFINED,
+        stack_get: Value::UNDEFINED,
+        stack_set: Value::UNDEFINED,
+        call_site_prototype: Value::UNDEFINED,
         math: Value::UNDEFINED,
         reflect: Value::UNDEFINED,
         eval: Value::UNDEFINED,
@@ -126,6 +133,9 @@ impl Intrinsics {
             self.boolean,
             self.symbol,
             self.throw_type_error,
+            self.stack_get,
+            self.stack_set,
+            self.call_site_prototype,
             self.math,
             self.reflect,
             self.eval,
@@ -232,10 +242,16 @@ impl Agent {
         }
     }
 
-    /// Makes the agent's well-known symbols, once.
+    /// Makes the agent's well-known symbols, and its own hidden one,
+    /// once.
     fn ensure_well_known(&mut self) -> Res<()> {
         if !self.vm.well_known.is_empty() {
             return Ok(());
+        }
+        let hidden = self.new_symbol(Value::UNDEFINED)?;
+        self.vm.stack_symbol = hidden;
+        if let Some((_, i)) = hidden.as_reference() {
+            self.heap.hidden_symbol = Some(i);
         }
         for w in Wk::ALL {
             let d = self.new_string(&w.description())?;
@@ -273,6 +289,40 @@ impl Agent {
             }
             self.heap.prevent_extensions(o);
         }
+        // Every error's `stack` accessor pair.
+        for (i, length) in [(0, 0), (1, 1)] {
+            let f = self.native_function(super::native_id(table::STACK, i), length, "")?;
+            self.set_intrinsics(|n| {
+                if i == 0 {
+                    n.stack_get = f;
+                } else {
+                    n.stack_set = f;
+                }
+            });
+        }
+        // `CallSite.prototype`, which `Error.prepareStackTrace` sees.
+        let sp = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|n| n.call_site_prototype = sp);
+        let id = super::native_id(table::CALL_SITE_CTOR, 0);
+        let site_ctor = self.native_function(id, 0, "CallSite")?;
+        self.vm.temps.push(site_ctor);
+        if let Some(o) = site_ctor.as_object() {
+            let key = self.realm().prototype_key;
+            self.heap.define_own_property(
+                o,
+                key,
+                Descriptor {
+                    value: Some(sp),
+                    writable: Some(false),
+                    enumerable: Some(false),
+                    configurable: Some(false),
+                    ..Descriptor::default()
+                },
+            );
+        }
+        let done = self.install_table(sp, table::CALL_SITE, site_ctor, &[]);
+        self.vm.temps.pop();
+        done?;
         // The constructors.
         let r = self.realm();
         let protos = [
@@ -385,9 +435,27 @@ impl Agent {
         Ok(())
     }
 
+    /// Where the native now running was called from: the frame below it,
+    /// and where that frame stands.
+    pub(crate) fn caller_position(&self) -> Option<(u32, u32, u32)> {
+        let frames = u32::try_from(self.vm.frames.len()).unwrap_or(u32::MAX);
+        let top = self.vm.frames.last()?;
+        let pc = if self.vm.natives.last().is_some_and(|n| n.below == frames) {
+            top.pc
+        } else {
+            self.vm.pc
+        };
+        Some((top.unit, top.func, pc))
+    }
+
     /// Runs `source` as a script in the realm, from a native: indirect
-    /// `eval` (section 19.2.1.1) and the embedder's `evalScript`.
-    pub(crate) fn eval_script(&mut self, source: &str) -> Res<Value> {
+    /// `eval` (section 19.2.1.1), the `Function` constructor's code and
+    /// the embedder's `evalScript`, each with its origin.
+    pub(crate) fn eval_script(
+        &mut self,
+        source: &str,
+        origin: crate::interp::Origin,
+    ) -> Res<Value> {
         let unit = match crate::compiler::compile(source, crate::parser::Goal::Script) {
             Ok(u) => u,
             Err(crate::compiler::CompileError::Syntax(e)) => {
@@ -399,7 +467,7 @@ impl Agent {
             return Err(self.range_error(crate::interp::messages::STACK_OVERFLOW));
         }
         self.vm.reentry += 1;
-        let done = self.run_compiled(unit);
+        let done = self.run_compiled(unit, origin);
         self.vm.reentry -= 1;
         match done {
             Completion::Normal(v) => Ok(v),
@@ -418,8 +486,7 @@ fn eval(agent: &mut Agent, c: Call) -> Res<Value> {
     if x.as_string().is_none() {
         return Ok(x);
     }
-    let text = agent.text(x);
-    agent.eval_script(&text)
+    agent.indirect_eval(x)
 }
 
 fn is_nan(agent: &mut Agent, c: Call) -> Res<Value> {

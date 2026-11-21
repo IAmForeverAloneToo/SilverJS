@@ -792,7 +792,7 @@ impl Heap {
         let (env, slot) = Self::mapping(cell, key)?;
         match self.internals.get(env)? {
             InternalCell::Env(e) => e.slots.get(slot).copied(),
-            InternalCell::ForIn(_) => None,
+            InternalCell::ForIn(_) | InternalCell::Stack(_) => None,
         }
     }
 
@@ -1167,6 +1167,9 @@ impl Heap {
             return Vec::new();
         };
         let mut keys = cell.own_keys(self.length_key);
+        if let Some(h) = self.hidden_symbol {
+            keys.retain(|k| *k != PropertyKey::Symbol(h));
+        }
         // A `String` wrapper's indices, then `length`, come first
         // (section 10.4.3.3); its other indices are past the string's.
         if cell.kind == ObjectKind::String

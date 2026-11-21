@@ -57,6 +57,7 @@ pub(crate) struct Realm {
     pub message_key: PropertyKey,
     pub to_string_key: PropertyKey,
     pub value_of_key: PropertyKey,
+    pub stack_trace_limit_key: PropertyKey,
 }
 
 impl Realm {
@@ -148,6 +149,7 @@ impl Agent {
             message_key: self.key_named("message"),
             to_string_key: self.key_named("toString"),
             value_of_key: self.key_named("valueOf"),
+            stack_trace_limit_key: self.key_named("stackTraceLimit"),
         };
         self.vm.realm = Some(realm);
         macro_rules! set {

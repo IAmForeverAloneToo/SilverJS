@@ -44,8 +44,15 @@ pub(crate) enum ScopeKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScopeKind {
     Script,
-    Function { arrow: bool },
-    FuncName { function: ScopeId },
+    /// Eval code's top level: its own scope, whose `var`s and functions
+    /// are its caller's when it is sloppy.
+    Eval,
+    Function {
+        arrow: bool,
+    },
+    FuncName {
+        function: ScopeId,
+    },
     Block,
     Catch,
     Loop,
@@ -94,6 +101,9 @@ pub(crate) enum Loc {
     Global,
     /// `this` or `new.target` read from the frame (not captured).
     Intrinsic,
+    /// A sloppy eval's `var` or function, made in its caller's variable
+    /// environment and found by name.
+    Dynamic,
 }
 
 #[derive(Debug, Clone)]
@@ -127,8 +137,9 @@ pub(crate) struct Scope {
     pub has_eval: bool,
     /// It has an environment at run time.
     pub has_env: bool,
-    /// Its environment's slots: names and whether each is lexical.
-    pub slots: Vec<(Box<str>, bool)>,
+    /// Its environment's slots: names, whether each is lexical, and
+    /// what an assignment by name meets ([`ScopeInfo::constant`]).
+    pub slots: Vec<(Box<str>, bool, u8)>,
 }
 
 #[derive(Debug, Clone)]
@@ -233,6 +244,7 @@ impl Analysis {
                         Place::Slot { depth, slot }
                     }
                     Loc::Global => Place::Global,
+                    Loc::Dynamic => Place::Dynamic,
                     Loc::Intrinsic | Loc::Unassigned => Place::Intrinsic,
                 };
                 return Resolved {
@@ -255,11 +267,17 @@ impl Analysis {
             }
             cur = scope.parent;
         }
-        if name == "this" {
+        let eval = self
+            .scopes
+            .first()
+            .is_some_and(|s| s.kind == ScopeKind::Eval);
+        if name == "this" && !eval {
             none(Place::GlobalThis)
         } else if special {
+            // Eval code's `this` and `new.target`: its caller's, which
+            // its frame is given.
             none(Place::Intrinsic)
-        } else if dynamic {
+        } else if dynamic || eval {
             none(Place::Dynamic)
         } else {
             none(Place::Global)
@@ -298,6 +316,15 @@ struct Walker<'a> {
 
 /// Analyzes a script.
 pub(crate) fn analyze(program: &Program) -> Analysis {
+    analyze_as(program, ScopeKind::Script)
+}
+
+/// Analyzes eval code.
+pub(crate) fn analyze_eval(program: &Program) -> Analysis {
+    analyze_as(program, ScopeKind::Eval)
+}
+
+fn analyze_as(program: &Program, top_kind: ScopeKind) -> Analysis {
     let mut w = Walker {
         program,
         a: Analysis::default(),
@@ -315,7 +342,7 @@ pub(crate) fn analyze(program: &Program) -> Analysis {
         registers: 0,
         mapped_arguments: false,
     });
-    let top = w.new_scope(ScopeKind::Script, None, 0, ScopeKey::Program);
+    let top = w.new_scope(top_kind, None, 0, ScopeKey::Program);
     w.current.push(top);
     w.push_stmts(&program.body);
     w.run();
@@ -375,7 +402,8 @@ impl<'a> Walker<'a> {
         loop {
             let scope = self.a.scope(s);
             match (scope.kind, scope.parent) {
-                (ScopeKind::Script | ScopeKind::Function { .. }, _) | (_, None) => return s,
+                (ScopeKind::Script | ScopeKind::Eval | ScopeKind::Function { .. }, _)
+                | (_, None) => return s,
                 (_, Some(p)) => s = p,
             }
         }
@@ -876,7 +904,11 @@ impl<'a> Walker<'a> {
                 }
                 return;
             }
-            if scope.kind == (ScopeKind::Function { arrow: false }) {
+            // Eval code's top level holds its own `this` and `new.target`
+            // (its caller's), for the arrows inside it.
+            if scope.kind == (ScopeKind::Function { arrow: false })
+                || (scope.kind == ScopeKind::Eval && special)
+            {
                 let kind = match name {
                     "this" => Some(BindingKind::This),
                     "new.target" => Some(BindingKind::NewTarget),
@@ -965,6 +997,8 @@ impl<'a> Walker<'a> {
                 }
                 continue;
             }
+            // A sloppy eval's `var`s and functions are its caller's.
+            let sloppy_eval = kind == ScopeKind::Eval && !self.a.functions[0].strict;
             let home = match kind {
                 ScopeKind::FuncName { function } => function.0 as usize,
                 _ => si,
@@ -972,22 +1006,30 @@ impl<'a> Walker<'a> {
             for bi in 0..self.a.scopes[si].bindings.len() {
                 let b = &self.a.scopes[si].bindings[bi];
                 let (bkind, captured, param) = (b.kind, b.captured, b.param);
-                let loc =
-                    if matches!(bkind, BindingKind::This | BindingKind::NewTarget) && !captured {
-                        Loc::Intrinsic
-                    } else if captured {
-                        let name = b.name.clone();
-                        let slots = &mut self.a.scopes[home].slots;
-                        let slot = u32::try_from(slots.len()).unwrap_or(u32::MAX);
-                        slots.push((name, bkind.lexical()));
-                        Loc::Slot(slot)
-                    } else if let (BindingKind::Param, Some(p)) = (bkind, param) {
-                        Loc::Register(p)
-                    } else {
-                        let f = &mut self.a.functions[func as usize];
-                        f.registers += 1;
-                        Loc::Register(f.registers - 1)
+                let loc = if sloppy_eval
+                    && matches!(bkind, BindingKind::Var | BindingKind::Function)
+                {
+                    Loc::Dynamic
+                } else if matches!(bkind, BindingKind::This | BindingKind::NewTarget) && !captured {
+                    Loc::Intrinsic
+                } else if captured {
+                    let name = b.name.clone();
+                    let slots = &mut self.a.scopes[home].slots;
+                    let slot = u32::try_from(slots.len()).unwrap_or(u32::MAX);
+                    let constant = match bkind {
+                        BindingKind::Const => 1,
+                        BindingKind::FuncSelf => 2,
+                        _ => 0,
                     };
+                    slots.push((name, bkind.lexical(), constant));
+                    Loc::Slot(slot)
+                } else if let (BindingKind::Param, Some(p)) = (bkind, param) {
+                    Loc::Register(p)
+                } else {
+                    let f = &mut self.a.functions[func as usize];
+                    f.registers += 1;
+                    Loc::Register(f.registers - 1)
+                };
                 self.a.scopes[si].bindings[bi].loc = loc;
             }
         }

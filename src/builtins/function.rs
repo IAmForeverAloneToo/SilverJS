@@ -134,7 +134,12 @@ pub(crate) fn construct(agent: &mut Agent, c: Call) -> Res<Value> {
         return Err(syntax(agent));
     }
     let source = format!("(function anonymous({params}\n) {{\n{body}\n}})");
-    let f = agent.eval_script(&source)?;
+    let origin = crate::interp::Origin::Eval {
+        caller: agent.caller_position(),
+        caller_name: "<anonymous>".into(),
+        function: true,
+    };
+    let f = agent.eval_script(&source, origin)?;
     if !c.new_target.is_undefined()
         && c.new_target != c.callee
         && let Some(o) = f.as_object()

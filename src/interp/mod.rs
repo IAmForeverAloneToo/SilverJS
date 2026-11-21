@@ -20,6 +20,7 @@
 //! accumulator, the exception being thrown, the realm, and the installed
 //! units' strings.
 
+mod eval;
 pub(crate) mod messages;
 pub(crate) mod ops;
 pub(crate) mod realm;
@@ -64,6 +65,36 @@ pub(crate) struct Installed {
     pub code: Rc<CompiledUnit>,
     pub strings: Vec<Vec<Value>>,
     pub keys: Vec<Vec<Option<PropertyKey>>>,
+    /// Where its source came from, for its stack frames.
+    pub origin: Origin,
+    /// The UTF-8 offsets its lines begin at, made when a frame of it is
+    /// first shown.
+    pub lines: std::cell::OnceCell<Vec<u32>>,
+}
+
+/// Where a unit's source came from (its stack frames' locations).
+#[derive(Debug, Clone)]
+pub(crate) enum Origin {
+    /// A script, by its URL (empty: none, shown `<anonymous>`).
+    Script(Rc<str>),
+    /// Code from a string: `eval`'s (`function` false) or the `Function`
+    /// constructor's, made where `caller` (a unit, a function and a pc)
+    /// was, in a function named `caller_name`.
+    Eval {
+        caller: Option<(u32, u32, u32)>,
+        caller_name: Rc<str>,
+        function: bool,
+    },
+}
+
+/// A native's activation, kept beside the frames for the stack: it sits
+/// above the first `below` frames.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NativeFrame {
+    pub below: u32,
+    pub callee: Value,
+    pub this: Value,
+    pub construct: bool,
 }
 
 /// A function's activation.
@@ -91,6 +122,8 @@ pub(crate) struct Frame {
     pub construct: bool,
     /// Pushed by Rust (a native's call): its return ends a nested run.
     pub entry: bool,
+    /// Called as a getter or setter (its stack frame names no type).
+    pub accessor: bool,
 }
 
 /// The interpreter's state, which the agent owns.
@@ -114,6 +147,15 @@ pub(crate) struct Vm {
     pub registry: std::collections::HashMap<Vec<u16>, Value>,
     /// `Math.random`'s state.
     pub random: (u64, u64),
+    /// The instruction the top frame is running, while it runs.
+    pub pc: u32,
+    /// The natives running, for the stack.
+    pub natives: Vec<NativeFrame>,
+    /// The next frame pushed is a getter's or setter's.
+    pub accessor_call: bool,
+    /// The symbol errors keep their captured stacks under, which no
+    /// script holds and own-key listings leave out.
+    pub stack_symbol: Value,
     /// The arrays `join` is joining, for its cycle check.
     pub joining: Vec<Value>,
     /// The embedder's natives.
@@ -136,6 +178,10 @@ impl Default for Vm {
             well_known: Vec::new(),
             registry: std::collections::HashMap::new(),
             random: (0, 0),
+            pc: 0,
+            natives: Vec::new(),
+            accessor_call: false,
+            stack_symbol: Value::UNDEFINED,
             joining: Vec::new(),
             hosts: Vec::new(),
         }
@@ -155,6 +201,10 @@ impl Vm {
         out.extend_from_slice(&self.well_known);
         out.extend(self.registry.values());
         out.extend_from_slice(&self.joining);
+        out.push(self.stack_symbol);
+        for n in &self.natives {
+            out.extend([n.callee, n.this]);
+        }
         if let Some(realm) = &self.realm {
             realm.trace(&mut out);
         }
@@ -259,13 +309,15 @@ impl Agent {
     }
 
     /// Installs a compiled unit: its strings made, its names interned.
-    pub(crate) fn install(&mut self, unit: CompiledUnit) -> Res<u32> {
+    pub(crate) fn install(&mut self, unit: CompiledUnit, origin: Origin) -> Res<u32> {
         let index = u32::try_from(self.vm.units.len()).unwrap_or(u32::MAX);
         let code = Rc::new(unit);
         self.vm.units.push(Installed {
             code: Rc::clone(&code),
             strings: Vec::new(),
             keys: Vec::new(),
+            origin,
+            lines: std::cell::OnceCell::new(),
         });
         for f in &code.functions {
             let mut strings = Vec::with_capacity(f.constants.len());
@@ -306,9 +358,9 @@ impl Agent {
 
     /// Runs a compiled script in the agent's realm: its global
     /// declarations, then its code.
-    pub(crate) fn run_compiled(&mut self, unit: CompiledUnit) -> Completion {
+    pub(crate) fn run_compiled(&mut self, unit: CompiledUnit, origin: Origin) -> Completion {
         let result = self.ensure_realm().and_then(|()| {
-            let index = self.install(unit)?;
+            let index = self.install(unit, origin)?;
             self.global_declarations(index)?;
             self.push_script_frame(index)?;
             self.run_frames()
@@ -342,6 +394,7 @@ impl Agent {
             fn_context: Value::UNDEFINED,
             construct: false,
             entry: true,
+            accessor: false,
         });
         Ok(())
     }
@@ -470,6 +523,15 @@ impl Agent {
         if self.vm.reentry >= MAX_REENTRY {
             return Err(self.throw_error(ErrorType::RangeError, messages::STACK_OVERFLOW));
         }
+        // The calling frame, if it is the one running (not waiting on a
+        // native), stopped where it is.
+        let pc = self.vm.pc;
+        let frames = u32::try_from(self.vm.frames.len()).unwrap_or(u32::MAX);
+        if self.vm.natives.last().is_none_or(|n| n.below < frames)
+            && let Some(top) = self.vm.frames.last_mut()
+        {
+            top.pc = pc;
+        }
         // The arguments on the register file, where the callee reads
         // them and the collector sees them.
         let start = self.vm.stack.len();
@@ -482,6 +544,8 @@ impl Agent {
         };
         self.vm.reentry -= 1;
         self.vm.stack.truncate(start);
+        self.vm.pc = pc;
+        self.vm.accessor_call = false;
         result
     }
 
@@ -557,6 +621,7 @@ impl Agent {
             }
             Some(Callable::Native { id }) => {
                 self.tick()?;
+                self.vm.accessor_call = false;
                 let call = crate::builtins::Call {
                     this,
                     args,
@@ -564,7 +629,15 @@ impl Agent {
                     new_target: new_target.unwrap_or(Value::UNDEFINED),
                     callee,
                 };
-                crate::builtins::call_native(self, id, call).map(Some)
+                self.vm.natives.push(NativeFrame {
+                    below: u32::try_from(self.vm.frames.len()).unwrap_or(u32::MAX),
+                    callee,
+                    this,
+                    construct: new_target.is_some(),
+                });
+                let r = crate::builtins::call_native(self, id, call);
+                self.vm.natives.pop();
+                r.map(Some)
             }
             Some(Callable::Bound) | None => {
                 let text = self.display(callee);
@@ -648,6 +721,7 @@ impl Agent {
             fn_context: env,
             construct,
             entry,
+            accessor: std::mem::take(&mut self.vm.accessor_call),
         });
         self.tick()
     }
@@ -776,7 +850,7 @@ impl Agent {
         for _ in 0..depth {
             at = match self.heap.internals.get(at.as_reference()?.1)? {
                 InternalCell::Env(e) => e.parent,
-                InternalCell::ForIn(_) => return None,
+                InternalCell::ForIn(_) | InternalCell::Stack(_) => return None,
             };
         }
         match at.as_reference()? {
@@ -824,6 +898,7 @@ impl Agent {
             slots,
             scope: Some((unit, u32::try_from(scope).unwrap_or(u32::MAX))),
             object: Value::UNDEFINED,
+            vars: Value::UNDEFINED,
         }))
     }
 
@@ -873,6 +948,7 @@ impl Agent {
             }
             loop {
                 let start = r.pc;
+                self.vm.pc = start as u32;
                 let mut byte = r.byte(r.pc);
                 r.scale = 1;
                 if byte == Op::Wide as u32 {
@@ -1055,9 +1131,14 @@ impl Agent {
                         let scope = r.u();
                         let outer = self.top().context;
                         let env = tri!(self.new_env(u, scope, outer), start);
+                        // A sloppy eval's own scope is not its variable
+                        // environment: that stays its caller's.
+                        let sloppy_eval = fi == 0 && unit.eval && !strict;
                         if let Some(top) = self.vm.frames.last_mut() {
                             top.context = env;
-                            top.fn_context = env;
+                            if !sloppy_eval {
+                                top.fn_context = env;
+                            }
                         }
                     }
                     Op::CopyContext => {
@@ -1096,6 +1177,7 @@ impl Agent {
                                 slots: Vec::new(),
                                 scope: None,
                                 object,
+                                vars: Value::UNDEFINED,
                             })),
                             start
                         );
@@ -1430,6 +1512,23 @@ impl Agent {
                         }
                         let callee = self.reg(base, callee_reg);
                         let args = base as usize + first;
+                        // A direct eval: `eval` named, the realm's own.
+                        if op == Op::CallEval && argc > 0 && callee == self.realm().intrinsics.eval
+                        {
+                            let x = self.reg(base, first);
+                            if x.as_string().is_none() {
+                                self.vm.acc = x;
+                                continue;
+                            }
+                            if let Some(top) = self.vm.frames.last_mut() {
+                                top.pc = start as u32;
+                                top.resume = r.pc as u32;
+                            }
+                            match self.begin_direct_eval(x, start as u32) {
+                                Ok(()) => continue 'frames,
+                                Err(e) => fail!(e),
+                            }
+                        }
                         // Its pc while the callee runs, and where it goes
                         // on after.
                         if let Some(top) = self.vm.frames.last_mut() {

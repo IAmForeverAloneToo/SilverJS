@@ -69,6 +69,22 @@ pub fn parse_with_stack(
     parse_with_stats(source, goal, stack_budget).0
 }
 
+/// Parses `source` as eval code (ECMA-262 section 19.2.1.1): a script,
+/// strict from the start if the code that called `eval` is, and with
+/// `new.target` allowed if that code is a function's.
+pub fn parse_eval(
+    source: &str,
+    strict: bool,
+    new_target: bool,
+    stack_budget: usize,
+) -> Result<Program, SyntaxError> {
+    let mut parser = Parser::new(source, Goal::Script)?;
+    parser.cx.strict = strict;
+    parser.cx.new_target = new_target;
+    parser.stack = StackGuard::new(stack_budget);
+    parser.program()
+}
+
 /// What a parse used: the deepest nesting it reached (levels of
 /// brackets, functions, statements and right-associative operators) and
 /// the most stack it took past its entry, in bytes. An embedder sizes its

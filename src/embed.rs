@@ -200,7 +200,8 @@ impl<'a> Scope<'a> {
     /// embedder's `evalScript`): its completion value, or what it threw.
     pub fn eval_script(&mut self, source: &str) -> JsResult<'a, Local<'a>> {
         self.realm_ready()?;
-        let r = self.agent_mut().eval_script(source);
+        let origin = crate::interp::Origin::Script("".into());
+        let r = self.agent_mut().eval_script(source, origin);
         let v = self.lift(r)?;
         Ok(self.local_of(v))
     }

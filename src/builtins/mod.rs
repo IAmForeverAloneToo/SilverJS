@@ -21,6 +21,7 @@ mod number;
 mod object;
 mod primitive;
 mod reflect;
+mod stack;
 mod string;
 mod uri;
 
@@ -157,6 +158,9 @@ const TABLES: &[&[Entry]] = &[
     array::PROTO,
     math::MATH,
     reflect::REFLECT,
+    stack::ACCESSORS,
+    stack::CALL_SITE,
+    stack::CALL_SITE_CTOR,
 ];
 
 /// The tables' indices.
@@ -180,6 +184,9 @@ pub(crate) mod table {
     pub const ARRAY_PROTO: u32 = 16;
     pub const MATH: u32 = 17;
     pub const REFLECT: u32 = 18;
+    pub const STACK: u32 = 19;
+    pub const CALL_SITE: u32 = 20;
+    pub const CALL_SITE_CTOR: u32 = 21;
 }
 
 const SETTER: u32 = 0x8000;

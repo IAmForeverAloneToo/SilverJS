@@ -163,10 +163,9 @@ impl Gen<'_, '_> {
                 self.reg_op(Op::Star, c);
                 let (first, n) = self.args(args)?;
                 let ic = self.ic();
-                // The callee, which a "not a constructor" error quotes.
-                // (A stack frame's column at `new` is J2.5's, with the
-                // positions table.)
-                self.pos(self.ast.expr(*callee).span);
+                // The callee, which a "not a constructor" error quotes; a
+                // stack frame's column is at `new`.
+                self.pos_at(self.ast.expr(*callee).span, span.start);
                 self.emit(Op::New, &[i64::from(c), i64::from(first), i64::from(n), ic]);
                 self.free_n(first, n);
                 self.free(c);
@@ -329,18 +328,38 @@ impl Gen<'_, '_> {
     }
 
     /// Reads the property `prop` of the object in register `o`.
+    /// Where a stack frame stopped at a call of `callee` points: the
+    /// name called (a property's, for a method), else the arguments'
+    /// opening parenthesis, as the reference browser's frames do.
+    fn stack_at(&self, callee: ExprId) -> u32 {
+        let node = self.ast.expr(callee);
+        match &node.kind {
+            Expr::Ident(i) => i.span.start,
+            Expr::Member {
+                prop: MemberProp::Ident(i) | MemberProp::Private(i),
+                ..
+            } => i.span.start,
+            Expr::Member {
+                prop: MemberProp::Computed(e),
+                ..
+            } => self.ast.expr(*e).span.start,
+            _ => node.span.end,
+        }
+    }
+
     fn get(&mut self, o: u32, prop: &MemberProp, span: Span) -> R {
         match prop {
             MemberProp::Ident(i) => {
                 let n = self.name(&i.name);
                 let ic = self.ic();
-                self.pos(span);
+                self.pos_at(span, i.span.start);
                 self.emit(Op::GetNamed, &[i64::from(o), n, ic]);
             }
             MemberProp::Computed(e) => {
+                let at = self.ast.expr(*e).span.start;
                 self.expr(*e)?;
                 let ic = self.ic();
-                self.pos(span);
+                self.pos_at(span, at);
                 self.emit(Op::GetKeyed, &[i64::from(o), ic]);
             }
             MemberProp::Private(i) => return Err(unsupported("private names", i.span)),
@@ -465,7 +484,8 @@ impl Gen<'_, '_> {
                         self.reg_op(Op::Star, f);
                         let (first, n) = self.args(args)?;
                         let ic = self.ic();
-                        self.pos(self.ast.expr(*callee).span);
+                        let at = self.stack_at(*callee);
+                        self.pos_at(self.ast.expr(*callee).span, at);
                         self.emit(
                             Op::Call,
                             &[
@@ -505,9 +525,11 @@ impl Gen<'_, '_> {
                     self.reg_op(Op::Star, f);
                     let (first, n) = self.args(args)?;
                     let callee_node = self.ast.expr(*callee);
-                    self.pos(callee_node.span);
-                    let direct_eval =
-                        matches!(&callee_node.kind, Expr::Ident(i) if &*i.name == "eval");
+                    let at = self.stack_at(*callee);
+                    self.pos_at(callee_node.span, at);
+                    // `eval?.(x)` is never a direct eval.
+                    let direct_eval = !*optional
+                        && matches!(&callee_node.kind, Expr::Ident(i) if &*i.name == "eval");
                     if direct_eval {
                         self.emit(
                             Op::CallEval,

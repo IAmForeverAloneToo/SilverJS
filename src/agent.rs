@@ -758,8 +758,18 @@ impl<'a> Scope<'a> {
         &mut self,
         source: &str,
     ) -> Result<Outcome<'a>, crate::compiler::CompileError> {
+        self.run_script_named(source, "")
+    }
+
+    /// The same, the script named by `url` in its stack frames.
+    pub fn run_script_named(
+        &mut self,
+        source: &str,
+        url: &str,
+    ) -> Result<Outcome<'a>, crate::compiler::CompileError> {
         let unit = crate::compiler::compile(source, crate::parser::Goal::Script)?;
-        let completion = self.agent.run_compiled(unit);
+        let origin = crate::interp::Origin::Script(url.into());
+        let completion = self.agent.run_compiled(unit, origin);
         self.agent.vm.acc = Value::UNDEFINED;
         self.agent.vm.exception = Value::UNDEFINED;
         Ok(match completion {

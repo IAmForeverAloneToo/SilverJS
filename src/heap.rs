@@ -315,6 +315,9 @@ pub(crate) struct Heap {
     /// One-unit strings by their unit, made as `String` wrappers and
     /// `charAt` need them, kept for the agent's life (at most 65,536).
     pub(crate) unit_strings: std::collections::HashMap<u16, Value>,
+    /// The engine's own symbol (captured stacks' key), left out of every
+    /// object's own keys.
+    pub(crate) hidden_symbol: Option<u32>,
 }
 
 impl Heap {
@@ -331,6 +334,7 @@ impl Heap {
             collections: 0,
             string_copies: 0,
             unit_strings: std::collections::HashMap::new(),
+            hidden_symbol: None,
         }
     }
 

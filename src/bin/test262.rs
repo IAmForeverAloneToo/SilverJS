@@ -719,8 +719,11 @@ fn main() {
         pass as f64 * 100.0 / measured as f64
     };
     let phase = if execute { "run" } else { "parse phase" };
+    // What is given up on purpose to show what the reference browser
+    // shows (J7's report counts it).
+    let chrome = failing.values().filter(|r| *r == "chrome-surface").count();
     println!(
-        "test262 ({phase}): {pass} passed, {fail} failed, {na} not applicable; {rate:.2}% of {measured}"
+        "test262 ({phase}): {pass} passed, {fail} failed ({chrome} chrome-surface), {na} not applicable; {rate:.2}% of {measured}"
     );
     let shown = if all { usize::MAX } else { 200 };
     for (test, detail) in new_failures.iter().take(shown) {

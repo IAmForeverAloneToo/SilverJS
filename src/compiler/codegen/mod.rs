@@ -14,7 +14,7 @@ mod stmt;
 use std::collections::HashMap;
 
 use super::bytecode::{Op, encode, patch_jump};
-use super::scope::{Analysis, BindingKind, Loc, Place, Resolved, ScopeId, ScopeKey};
+use super::scope::{Analysis, BindingKind, Loc, Place, Resolved, ScopeId, ScopeKey, ScopeKind};
 use super::{
     CompileError, CompiledUnit, Constant, FunctionCode, FunctionKind, GlobalDecl, Handler,
     Position, ScopeInfo,
@@ -56,8 +56,9 @@ impl Shared<'_> {
         }
         let scope = self.a.scope(s);
         let info = ScopeInfo {
-            names: scope.slots.iter().map(|(n, _)| units(n)).collect(),
-            lexical: scope.slots.iter().map(|(_, l)| *l).collect(),
+            names: scope.slots.iter().map(|(n, _, _)| units(n)).collect(),
+            lexical: scope.slots.iter().map(|(_, l, _)| *l).collect(),
+            constant: scope.slots.iter().map(|(_, _, c)| *c).collect(),
         };
         let i = u32::try_from(self.scopes.len()).unwrap_or(u32::MAX);
         self.scopes.push(info);
@@ -105,6 +106,7 @@ pub(super) fn generate_with_stats(
             scopes: shared.scopes,
             globals,
             source: source.into(),
+            eval: a.scopes.first().is_some_and(|s| s.kind == ScopeKind::Eval),
         },
         peak,
     ))
@@ -116,9 +118,11 @@ fn globals(program: &Program, a: &Analysis) -> Vec<GlobalDecl> {
     let Some(top) = a.key(ScopeKey::Program) else {
         return Vec::new();
     };
+    let eval = a.scope(top).kind == ScopeKind::Eval;
     a.scope(top)
         .bindings
         .iter()
+        .filter(|b| !eval || b.loc == Loc::Dynamic)
         .map(|b| {
             let name = units(&b.name);
             match (b.kind, b.func) {
@@ -300,15 +304,22 @@ impl<'s, 'a> Gen<'s, 'a> {
 
     /// Records the source being run from here on.
     pub(super) fn pos(&mut self, span: Span) {
+        self.pos_at(span, span.start);
+    }
+
+    /// The position of the next instruction: `span` for the text an error
+    /// quotes, `at` for a stack frame's column.
+    pub(super) fn pos_at(&mut self, span: Span, at: u32) {
         let pc = self.pc();
         let p = Position {
             pc,
             start: span.start,
             end: span.end,
+            at,
         };
         match self.positions.last_mut() {
             Some(last) if last.pc == pc => *last = p,
-            Some(last) if last.start == p.start && last.end == p.end => {}
+            Some(last) if last.start == p.start && last.end == p.end && last.at == at => {}
             _ => self.positions.push(p),
         }
     }
@@ -410,7 +421,7 @@ impl<'s, 'a> Gen<'s, 'a> {
         match loc {
             Loc::Register(r) => self.reg_op(Op::Star, r),
             Loc::Slot(k) => self.emit(Op::StaSlot, &[0, i64::from(k)]),
-            Loc::Global | Loc::Intrinsic | Loc::Unassigned => {}
+            Loc::Global | Loc::Intrinsic | Loc::Unassigned | Loc::Dynamic => {}
         }
     }
 
@@ -542,9 +553,53 @@ impl<'s, 'a> Gen<'s, 'a> {
         let program = self.sh.program;
         let c = self.alloc();
         self.completion = Some(c);
+        let top = self.scope;
+        if self.a.scope(top).kind == ScopeKind::Eval {
+            self.eval_prologue(top)?;
+        }
         self.stmts(&program.body)?;
         self.reg_op(Op::Ldar, c);
         self.op(Op::Return);
+        Ok(())
+    }
+
+    /// Eval code's entry: its environment, its lexical bindings in
+    /// registers uninitialized, its functions made (a sloppy one's into
+    /// its caller's variable environment, by name).
+    fn eval_prologue(&mut self, top: ScopeId) -> R {
+        let scope = self.a.scope(top);
+        if scope.has_env {
+            let info = self.scope_info(top);
+            self.emit(Op::CreateFunctionContext, &[info]);
+        }
+        for b in &scope.bindings {
+            match (b.kind, b.loc) {
+                (BindingKind::This, Loc::Slot(k)) => {
+                    self.op(Op::LdaThis);
+                    self.emit(Op::StaSlot, &[0, i64::from(k)]);
+                }
+                (BindingKind::NewTarget, Loc::Slot(k)) => {
+                    self.op(Op::LdaNewTarget);
+                    self.emit(Op::StaSlot, &[0, i64::from(k)]);
+                }
+                (kind, Loc::Register(r)) if kind.lexical() => {
+                    self.op(Op::LdaUninitialized);
+                    self.reg_op(Op::Star, r);
+                }
+                _ => {}
+            }
+        }
+        for b in &scope.bindings {
+            if let Some(g) = b.func {
+                self.closure(g, None)?;
+                if b.loc == Loc::Dynamic {
+                    let n = self.name(&b.name);
+                    self.emit(Op::StaDynamic, &[n]);
+                } else {
+                    self.store_loc(b.loc);
+                }
+            }
+        }
         Ok(())
     }
 

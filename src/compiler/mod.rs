@@ -85,6 +85,10 @@ pub enum Constant {
 pub struct ScopeInfo {
     pub names: Vec<Box<[u16]>>,
     pub lexical: Vec<bool>,
+    /// Per slot: 0 assignable, 1 a `const` (an assignment throws), 2 a
+    /// named function expression's own name (strict code's assignment
+    /// throws, sloppy code's does nothing).
+    pub constant: Vec<u8>,
 }
 
 /// A try statement's handler: an exception thrown by an instruction in
@@ -107,6 +111,10 @@ pub struct Position {
     pub pc: u32,
     pub start: u32,
     pub end: u32,
+    /// Where a stack frame stopped here points, as the reference
+    /// browser's does: a call's callee name (the property's, for
+    /// `o.m()`), a property access's name, a construction's `new`.
+    pub at: u32,
 }
 
 /// What a function is, for calls and `new`.
@@ -167,14 +175,33 @@ pub struct CompiledUnit {
     /// Function 0 is the script's top-level code.
     pub functions: Vec<FunctionCode>,
     pub scopes: Vec<ScopeInfo>,
+    /// A script's top-level declarations; eval code's, those a sloppy
+    /// eval makes in its caller's variable environment.
     pub globals: Vec<GlobalDecl>,
     pub source: Box<str>,
+    /// Eval code ([`compile_eval`]).
+    pub eval: bool,
 }
 
 /// Parses and compiles `source` within [`DEFAULT_STACK_BUDGET`] of the
 /// caller's stack.
 pub fn compile(source: &str, goal: Goal) -> Result<CompiledUnit, CompileError> {
     compile_with_stack(source, goal, DEFAULT_STACK_BUDGET)
+}
+
+/// Compiles eval code: strict if its caller is (or it says so), with
+/// `new.target` allowed in a function's; a name it does not declare is
+/// looked up by name at run time, and a sloppy one's `var`s and
+/// functions are made in its caller's variable environment
+/// ([`CompiledUnit::eval`]).
+pub fn compile_eval(
+    source: &str,
+    strict: bool,
+    new_target: bool,
+) -> Result<CompiledUnit, CompileError> {
+    let program = crate::parser::parse_eval(source, strict, new_target, DEFAULT_STACK_BUDGET)?;
+    let analysis = scope::analyze_eval(&program);
+    codegen::generate(&program, &analysis, source, DEFAULT_STACK_BUDGET)
 }
 
 /// Parses with `stack_budget`, then compiles with the same budget, from

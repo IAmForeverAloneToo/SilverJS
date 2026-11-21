@@ -49,6 +49,8 @@ mod lexer_tests;
 mod object_tests;
 #[cfg(test)]
 mod parser_tests;
+#[cfg(test)]
+mod stack_tests;
 
 pub use embed::{ErrorKind, HostFn, JsResult, Thrown};
 pub use heap::HeapStats;

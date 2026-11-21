@@ -217,7 +217,13 @@ impl Agent {
         let proto = self.realm().error_proto(t);
         let e = self.alloc_object(ObjectCell::new(proto, ObjectKind::Error))?;
         self.vm.temps.push(e);
-        let m = self.new_string(message);
+        let m = self.new_string(message).and_then(|m| {
+            // `stack` first, then `message`: the reference browser's order.
+            self.vm.temps.push(m);
+            let captured = self.capture_stack(e, m, false, Value::UNDEFINED);
+            self.vm.temps.pop();
+            captured.map(|()| m)
+        });
         self.vm.temps.pop();
         let m = m?;
         let key = self.realm().message_key;
@@ -674,7 +680,10 @@ impl Agent {
         match self.heap.get(holder, key) {
             Got::Value(v) => Ok(v),
             Got::Getter(g) if g.is_undefined() => Ok(Value::UNDEFINED),
-            Got::Getter(g) => self.call_value(g, target, &[]),
+            Got::Getter(g) => {
+                self.vm.accessor_call = true;
+                self.call_value(g, target, &[])
+            }
         }
     }
 
@@ -760,7 +769,10 @@ impl Agent {
                     Ok(())
                 }
             }
-            SetOutcome::Setter(s) => self.call_value(s, target, &[value]).map(|_| ()),
+            SetOutcome::Setter(s) => {
+                self.vm.accessor_call = true;
+                self.call_value(s, target, &[value]).map(|_| ())
+            }
         }
     }
 
@@ -1014,6 +1026,12 @@ impl Agent {
             {
                 return Some((Some((i, slot)), Value::UNDEFINED));
             }
+            // What a sloppy direct eval declared here.
+            if let Some(o) = e.vars.as_object()
+                && self.heap.has_property(o, key)
+            {
+                return Some((None, e.vars));
+            }
             at = e.parent;
         }
         None
@@ -1051,12 +1069,49 @@ impl Agent {
     ) -> Res<()> {
         match self.find_dynamic(context, key) {
             Some((Some((env, slot)), _)) => {
-                self.set_slot(Some(env), slot, value);
-                Ok(())
+                if self.slot(Some(env), slot) == Value::UNINITIALIZED {
+                    let name = self.key_display(key);
+                    return Err(self.throw_error(
+                        ErrorType::ReferenceError,
+                        messages::before_initialization(&name),
+                    ));
+                }
+                match self.slot_constant(env, slot) {
+                    1 => Err(self.throw_error(ErrorType::TypeError, messages::CONST_ASSIGNMENT)),
+                    2 if strict => {
+                        Err(self.throw_error(ErrorType::TypeError, messages::CONST_ASSIGNMENT))
+                    }
+                    2 => Ok(()),
+                    _ => {
+                        self.set_slot(Some(env), slot, value);
+                        Ok(())
+                    }
+                }
             }
             Some((None, object)) => self.set_value(object, key, value, strict),
             None => self.global_set(key, value, strict),
         }
+    }
+
+    /// What an assignment by name meets in environment `env`'s slot
+    /// ([`crate::compiler::ScopeInfo::constant`]).
+    fn slot_constant(&self, env: u32, slot: usize) -> u8 {
+        let Some(InternalCell::Env(e)) = self.heap.internals.get(env) else {
+            return 0;
+        };
+        e.scope
+            .and_then(|(unit, scope)| {
+                self.vm
+                    .units
+                    .get(unit as usize)?
+                    .code
+                    .scopes
+                    .get(scope as usize)?
+                    .constant
+                    .get(slot)
+                    .copied()
+            })
+            .unwrap_or(0)
     }
 
     pub(crate) fn dynamic_delete(&mut self, context: Value, key: PropertyKey) -> bool {

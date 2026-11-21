@@ -49,8 +49,17 @@ fn construct(agent: &mut Agent, c: Call, t: ErrorType) -> Res<Value> {
     agent.vm.temps.push(o);
     let result = (|| {
         let message = agent.arg(c, 0);
-        if !message.is_undefined() {
-            let m = agent.string_value(message)?;
+        let m = if message.is_undefined() {
+            Value::UNDEFINED
+        } else {
+            agent.string_value(message)?
+        };
+        // `stack` first, then `message`: the reference browser's order.
+        agent.vm.temps.push(m);
+        let captured = agent.capture_stack(o, m, true, Value::UNDEFINED);
+        agent.vm.temps.pop();
+        captured?;
+        if !m.is_undefined() {
             let key = agent.realm().message_key;
             if let Some(i) = o.as_object() {
                 agent.heap.define_own_property(i, key, hidden(m));
@@ -98,16 +107,32 @@ pub(crate) fn construct_uri_error(agent: &mut Agent, c: Call) -> Res<Value> {
     construct(agent, c, ErrorType::UriError)
 }
 
-/// `Error.captureStackTrace(object)`: gives `object` a `stack`.
+/// `Error.captureStackTrace(object, fn)`: gives `object` a `stack` of
+/// the frames below this call (below `fn`'s topmost, when given), headed
+/// by its `name` and its `message` as it is now.
 fn capture_stack_trace(agent: &mut Agent, c: Call) -> Res<Value> {
     let o = agent.arg(c, 0);
     if o.as_object().is_none() {
         let text = agent.display(o);
         return Err(agent.type_error(format!("Invalid argument: {text}")));
     }
-    let heading = error_heading(agent, o)?;
-    let key = agent.name_key(Name::Str("stack"));
-    agent.define_or_throw(o, key, hidden(heading))?;
+    let key = agent.realm().message_key;
+    let message = agent.get_value(o, key)?;
+    let message = if message.is_undefined() {
+        message
+    } else {
+        agent.string_value(message)?
+    };
+    let until = agent.arg(c, 1);
+    let until = if agent.is_callable(until) {
+        until
+    } else {
+        Value::UNDEFINED
+    };
+    agent.vm.temps.push(message);
+    let r = agent.capture_stack(o, message, true, until);
+    agent.vm.temps.pop();
+    r?;
     Ok(Value::UNDEFINED)
 }
 

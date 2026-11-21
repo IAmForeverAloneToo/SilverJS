@@ -3,21 +3,26 @@
 //! `print` made through the embedding API, and prints what each script
 //! threw.
 //!
-//!     cargo run --example shell -- [-e <source>] [file...]
+//!     cargo run --example shell -- [-n <url>] [-e <source>] [file...]
+//!
+//! A file is named in stack frames by its path, or by `-n`'s URL.
 
 use silverjs::agent::{Agent, AgentOptions, Outcome, PropertyDescriptor};
 
 fn main() {
     let mut sources = Vec::new();
     let mut args = std::env::args().skip(1);
+    let mut url: Option<String> = None;
     while let Some(arg) = args.next() {
-        if arg == "-e" {
+        if arg == "-n" {
+            url = args.next();
+        } else if arg == "-e" {
             if let Some(src) = args.next() {
                 sources.push(("-e".to_owned(), src));
             }
         } else {
             match std::fs::read_to_string(&arg) {
-                Ok(src) => sources.push((arg, src)),
+                Ok(src) => sources.push((url.take().unwrap_or(arg), src)),
                 Err(e) => {
                     eprintln!("shell: {arg}: {e}");
                     std::process::exit(2);
@@ -52,7 +57,7 @@ fn main() {
             );
         }
         for (name, src) in &sources {
-            scope.nested(|scope| match scope.run_script(src) {
+            scope.nested(|scope| match scope.run_script_named(src, name) {
                 Ok(Outcome::Value(_)) => {}
                 Ok(Outcome::Threw(e)) => {
                     let text = scope.to_text(e).unwrap_or_default();
