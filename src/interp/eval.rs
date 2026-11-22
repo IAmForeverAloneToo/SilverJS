@@ -268,7 +268,11 @@ impl Agent {
         // `new.target` is allowed in a function's code: an arrow's, or
         // eval code's, if a function encloses it (whose binding it reads).
         let new_target = match kind {
-            FunctionKind::Normal | FunctionKind::Method | FunctionKind::Generator => true,
+            FunctionKind::Normal
+            | FunctionKind::Method
+            | FunctionKind::Generator
+            | FunctionKind::ClassConstructor
+            | FunctionKind::DerivedConstructor => true,
             _ if in_eval || kind == FunctionKind::Arrow => {
                 self.slot_named(frame.context, "new.target").is_some()
             }
@@ -377,7 +381,7 @@ impl Agent {
     }
 
     /// A function's own `name`, if a string.
-    fn function_name(&self, f: Value) -> Option<String> {
+    pub(crate) fn function_name(&self, f: Value) -> Option<String> {
         let key = self.realm().name_key;
         match self.heap.get_own_property(f.as_object()?, key)? {
             OwnProperty::Data { value, .. } => self

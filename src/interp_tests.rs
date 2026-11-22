@@ -217,6 +217,17 @@ fn exceptions_unwind_through_handlers() {
         run("var e = null; try { undefined.x; } catch (x) { e = x; } '' + e"),
         "\"TypeError: Cannot read properties of undefined (reading 'x')\""
     );
+    // A finally block that completes normally keeps the try's
+    // completion value (section 14.15.3); a break in it does not.
+    assert_eq!(run("1; try { 2; } finally { 3; }"), "2");
+    assert_eq!(
+        run("try { throw 0; } catch (e) { 'c'; } finally { 'f'; }"),
+        "\"c\""
+    );
+    assert_eq!(
+        run("do { try { 2; } finally { 3; break; } } while (false)"),
+        "3"
+    );
 }
 
 #[test]

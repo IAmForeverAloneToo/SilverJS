@@ -35,7 +35,7 @@ cases = [
     (M, "for _ in 0..depth {", "for _ in 0..depth.min(0) {"),
     (M, "let at = f.positions.iter().rev().find(|p| p.pc <= pc);",
         "let at = f.positions.iter().find(|p| p.pc <= pc);"),
-    (M, ".is_some_and(|f| f.kind == FunctionKind::Normal),", ".is_some_and(|_| true),"),
+    (M, ".is_some_and(|f| {\n                    matches!(", ".is_some_and(|f| {\n                    true || matches!("),
     (M, "if self.vm.frames.len() >= MAX_FRAMES {\n            return Err(self.throw_error(ErrorType::RangeError,",
         "if self.vm.frames.len() >= MAX_FRAMES {\n            return Err(self.throw_error(ErrorType::TypeError,"),
     # Operations.

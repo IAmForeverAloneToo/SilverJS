@@ -77,6 +77,11 @@ pub(crate) enum BindingKind {
     This,
     NewTarget,
     Arguments,
+    /// A method's home object (`%home`), which `super.x` reads from.
+    Home,
+    /// The running function itself (`%fn`), whose prototype `super()`
+    /// constructs.
+    FunctionObject,
 }
 
 impl BindingKind {
@@ -153,6 +158,8 @@ pub(crate) struct FunctionInfo {
     pub registers: u32,
     /// Its `arguments` object maps to its parameters' slots.
     pub mapped_arguments: bool,
+    /// A derived class's constructor: its `this` is bound by `super()`.
+    pub derived: bool,
 }
 
 #[derive(Debug, Default)]
@@ -188,6 +195,15 @@ pub(crate) struct Resolved {
     pub tdz_end: u32,
     pub same_function: bool,
     pub in_switch: bool,
+    /// A derived class's constructor's `this`: uninitialized until its
+    /// `super()`, so every read checks it.
+    pub uninit_this: bool,
+}
+
+/// The names a non-arrow function's own scope holds for the arrows in
+/// it: `this`, `new.target`, its home object and itself.
+fn is_special(name: &str) -> bool {
+    matches!(name, "this" | "new.target" | "%home" | "%fn")
 }
 
 /// Scopes, bindings and functions are made by pushes and never removed,
@@ -213,7 +229,7 @@ impl Analysis {
 
     /// Where `name` resolves from `from`, as the code generator needs it.
     pub(crate) fn resolve(&self, from: ScopeId, name: &str) -> Resolved {
-        let special = name == "this" || name == "new.target";
+        let special = is_special(name);
         let here = self.scope(from).func;
         let mut depth = 0u32;
         let mut dynamic = false;
@@ -224,6 +240,7 @@ impl Analysis {
             tdz_end: 0,
             same_function: false,
             in_switch: false,
+            uninit_this: false,
         };
         while let Some(c) = cur {
             let scope = self.scope(c);
@@ -253,6 +270,8 @@ impl Analysis {
                     tdz_end: b.tdz_end,
                     same_function: scope.func == here,
                     in_switch: scope.kind == ScopeKind::Switch,
+                    uninit_this: b.kind == BindingKind::This
+                        && self.functions[scope.func as usize].derived,
                 };
             }
             if special && scope.kind == (ScopeKind::Function { arrow: false }) {
@@ -341,6 +360,7 @@ fn analyze_as(program: &Program, top_kind: ScopeKind) -> Analysis {
         param_count: 0,
         registers: 0,
         mapped_arguments: false,
+        derived: false,
     });
     let top = w.new_scope(top_kind, None, 0, ScopeKey::Program);
     w.current.push(top);
@@ -522,7 +542,10 @@ impl<'a> Walker<'a> {
                     self.enter(ScopeKind::Class, ScopeKey::Class(id));
                     if let Some(name) = &class.name {
                         let s = self.cur();
-                        self.declare(s, &name.name, BindingKind::Const, 0, None, None);
+                        // Initialized when the class is made: its heritage
+                        // and computed keys see it in its TDZ.
+                        let end = class.span.end;
+                        self.declare(s, &name.name, BindingKind::Const, end, None, None);
                     }
                     for m in class.members.iter().rev() {
                         if let Some(f) = m.value {
@@ -728,6 +751,7 @@ impl<'a> Walker<'a> {
             param_count: u32::try_from(f.params.len()).unwrap_or(u32::MAX),
             registers: 0,
             mapped_arguments: false,
+            derived: matches!(f.kind, FuncKind::Constructor { derived: true }),
         });
         self.a.func_index.insert(id, index);
         if let (Some(ns), Some(name)) = (name_scope, &f.name) {
@@ -850,6 +874,7 @@ impl<'a> Walker<'a> {
             }
             Expr::SuperMember(prop) => {
                 self.refs.push((cur, "this".into()));
+                self.refs.push((cur, "%home".into()));
                 if let MemberProp::Computed(e) = prop {
                     self.work.push(Item::Expr(*e));
                 }
@@ -866,7 +891,13 @@ impl<'a> Walker<'a> {
             Expr::SuperCall(args) => {
                 self.refs.push((cur, "this".into()));
                 self.refs.push((cur, "new.target".into()));
+                self.refs.push((cur, "%fn".into()));
                 self.push_args(args);
+            }
+            Expr::SuperCallForward => {
+                self.refs.push((cur, "this".into()));
+                self.refs.push((cur, "new.target".into()));
+                self.refs.push((cur, "%fn".into()));
             }
             Expr::New { callee, args } => {
                 self.push_args(args);
@@ -891,7 +922,7 @@ impl<'a> Walker<'a> {
     /// `new.target` and `arguments` are made in the first non-arrow
     /// function they reach.
     fn mark(&mut self, from: ScopeId, name: &str) {
-        let special = name == "this" || name == "new.target";
+        let special = is_special(name);
         let here = self.a.scope(from).func;
         let mut dynamic = false;
         let mut cur = Some(from);
@@ -913,6 +944,8 @@ impl<'a> Walker<'a> {
                     "this" => Some(BindingKind::This),
                     "new.target" => Some(BindingKind::NewTarget),
                     "arguments" => Some(BindingKind::Arguments),
+                    "%home" => Some(BindingKind::Home),
+                    "%fn" => Some(BindingKind::FunctionObject),
                     _ => None,
                 };
                 if let Some(kind) = kind {
@@ -1006,30 +1039,37 @@ impl<'a> Walker<'a> {
             for bi in 0..self.a.scopes[si].bindings.len() {
                 let b = &self.a.scopes[si].bindings[bi];
                 let (bkind, captured, param) = (b.kind, b.captured, b.param);
-                let loc = if sloppy_eval
-                    && matches!(bkind, BindingKind::Var | BindingKind::Function)
-                {
-                    Loc::Dynamic
-                } else if matches!(bkind, BindingKind::This | BindingKind::NewTarget) && !captured {
-                    Loc::Intrinsic
-                } else if captured {
-                    let name = b.name.clone();
-                    let slots = &mut self.a.scopes[home].slots;
-                    let slot = u32::try_from(slots.len()).unwrap_or(u32::MAX);
-                    let constant = match bkind {
-                        BindingKind::Const => 1,
-                        BindingKind::FuncSelf => 2,
-                        _ => 0,
+                let loc =
+                    if sloppy_eval && matches!(bkind, BindingKind::Var | BindingKind::Function) {
+                        Loc::Dynamic
+                    } else if matches!(
+                        bkind,
+                        BindingKind::This
+                            | BindingKind::NewTarget
+                            | BindingKind::Home
+                            | BindingKind::FunctionObject
+                    ) && !captured
+                        && !(bkind == BindingKind::This && self.a.functions[func as usize].derived)
+                    {
+                        Loc::Intrinsic
+                    } else if captured {
+                        let name = b.name.clone();
+                        let slots = &mut self.a.scopes[home].slots;
+                        let slot = u32::try_from(slots.len()).unwrap_or(u32::MAX);
+                        let constant = match bkind {
+                            BindingKind::Const => 1,
+                            BindingKind::FuncSelf => 2,
+                            _ => 0,
+                        };
+                        slots.push((name, bkind.lexical(), constant));
+                        Loc::Slot(slot)
+                    } else if let (BindingKind::Param, Some(p)) = (bkind, param) {
+                        Loc::Register(p)
+                    } else {
+                        let f = &mut self.a.functions[func as usize];
+                        f.registers += 1;
+                        Loc::Register(f.registers - 1)
                     };
-                    slots.push((name, bkind.lexical(), constant));
-                    Loc::Slot(slot)
-                } else if let (BindingKind::Param, Some(p)) = (bkind, param) {
-                    Loc::Register(p)
-                } else {
-                    let f = &mut self.a.functions[func as usize];
-                    f.registers += 1;
-                    Loc::Register(f.registers - 1)
-                };
                 self.a.scopes[si].bindings[bi].loc = loc;
             }
         }

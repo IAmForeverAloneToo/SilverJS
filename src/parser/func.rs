@@ -523,13 +523,48 @@ impl Parser<'_> {
         let scope = self.classes.pop().unwrap_or_default();
         let (constructor, members) = result?;
         self.resolve_privates(scope)?;
+        let span = Span::new(start, self.prev_end);
+        // The class's constructor is the class: its source text is the
+        // class's. One the class does not write is made (section
+        // 15.7.14, step 14).
+        let constructor = match constructor {
+            Some(f) => {
+                self.ast.func_mut(f).span = span;
+                f
+            }
+            None => self.default_constructor(extends.is_some(), span),
+        };
         Ok(self.ast.add_class(Class {
             name,
             extends,
-            constructor,
+            constructor: Some(constructor),
             members,
-            span: Span::new(start, self.prev_end),
+            span,
         }))
+    }
+
+    /// A class's default constructor: `constructor() {}`, or for a
+    /// derived class `constructor(...args) { super(...args); }` with its
+    /// arguments passed on as they came.
+    fn default_constructor(&mut self, derived: bool, span: Span) -> FuncId {
+        let body = if derived {
+            let e = self.ast.add_expr(Expr::SuperCallForward, span);
+            vec![self.ast.add_stmt(Stmt::Expr(e), span)]
+        } else {
+            Vec::new()
+        };
+        self.ast.add_func(Function {
+            kind: FuncKind::Constructor { derived },
+            name: None,
+            params: Vec::new(),
+            rest: None,
+            body: Body::Block(body),
+            is_async: false,
+            is_generator: false,
+            strict: true,
+            simple_params: true,
+            span,
+        })
     }
 
     /// Hands the private names a class used but did not declare to the

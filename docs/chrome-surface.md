@@ -38,6 +38,7 @@ test.
 | `prepareStackTrace` is not an own property of `Error` by default (Chrome 157) | J2.5 | `builtins_tests::own_keys_are_in_the_reference_browsers_order` |
 | A stack overflow's top frame stands at the callee's entry (`at r (url:54:57)`, its parameters' `(`) | J2.5 | not followed: SilverJS shows the call that overflowed (`at r (url:54:67)`), the frame count the same |
 | A generator's frame is followed by its resumption, a native named after the generator function: `at thrower (url:l:c)`, `at thrower.next (<anonymous>)`; a frame waiting in `yield*` stands at its operand (Chrome 157, the generator probe) | J3.2 | `generator_tests::a_generators_frames_show_on_the_stack` |
+| A class's frames: `new S` for its constructor (a derived class's `super()` at `super`), `S.m` and `S.st` for its methods and static methods, `get acc` for an accessor, `new <anonymous>` for an anonymous class (Chrome 157, the class probe) | J3.3a | `class_tests::class_frames_show_on_the_stack` |
 
 ## Error messages
 
@@ -57,6 +58,8 @@ test.
 | `Iterator result 1 is not an object` (from `next` and from `return`), `Result of the Symbol.iterator method is not an object` (Chrome 157) | J3.1 | `iteration_tests::iteration_errors_read_as_the_reference_browsers` |
 | `Method Array Iterator.prototype.next called on incompatible receiver #<Object>`, and String Iterator's (Chrome 157) | J3.1 | `iteration_tests::iteration_errors_read_as_the_reference_browsers` |
 | `Generator is already running`, `Method [Generator].prototype.next called on incompatible receiver #<Object>` (and `return`, `throw`), `The iterator does not provide a 'throw' method.`, a `yield*`'s value `number 1 is not iterable (cannot read property Symbol(Symbol.iterator))` (Chrome 157, the generator probe) | J3.2 | `generator_tests::generator_errors_read_as_the_reference_browsers` |
+| `Class constructor A cannot be invoked without 'new'`, `Class extends value 1 is not a constructor or null` (a function by its source text), `Class extends value does not have valid prototype property 1`, `Must call super constructor in derived class before accessing 'this' or returning from derived constructor`, `Super constructor may only be called once`, `Derived constructors may only return object or undefined`, `Super constructor max of X is not a constructor`, `Cannot read properties of null (reading 'm')` for `super.m` with no prototype (Chrome 157, the class probe) | J3.3a | `class_tests::classes_throw_chromes_errors`, `class_tests::a_derived_constructors_this_waits_for_super` |
+| `delete super.x`: `Unsupported reference to 'super'` (a ReferenceError); `new` of a class extending null: `Super constructor null of X is not a constructor` (`of anonymous class` for one with no name) (Chrome 157, the second class probe) | J3.3a | `class_tests::classes_throw_chromes_errors` |
 
 ## Function.prototype.toString
 
@@ -64,7 +67,7 @@ test.
 |---|---|---|
 | Natives, getters and the embedder's methods: `function name() { [native code] }` | J2.5 | `builtins_tests::natives_and_bound_functions_print_as_the_reference_browser_shows_them`, `builtins_tests::the_embedders_natives_run_and_throw_through_the_api` |
 | Bound functions: `function () { [native code] }` (not `function bound f()`) | J2.5 | `builtins_tests::natives_and_bound_functions_print_as_the_reference_browser_shows_them` |
-| Classes: their source text, `class A { m() {} }` (Chrome 157) | J3 | |
+| Classes: their source text, `class A { m() {} }`, a default constructor's too (`class D extends C {}`); a class's methods and accessors theirs, from their name (`m() {}`, `static sm() {}`, `get g() {}`) (Chrome 157, the class probe) | J3.3a | `class_tests::a_class_has_chromes_shape` |
 | `new Function` code: `function anonymous(a,b\n) {\nbody\n}`, and with no arguments `function anonymous(\n) {\n\n}` (Chrome 157) | J2.5 | `builtins_tests::natives_and_bound_functions_print_as_the_reference_browser_shows_them` |
 
 ## Function.prototype.caller and arguments
@@ -87,6 +90,7 @@ this reason.
 | The global object's ECMAScript names, `Object,Function,Array,Number,parseFloat,parseInt,Infinity,NaN,undefined,Boolean,String,Symbol,Date,...` (its web APIs after) (Chrome 157) | J2.5 | `builtins_tests::the_global_objects_built_ins_are_in_the_reference_browsers_order` |
 | `Object`, `Object.prototype`, `Function`, `Function.prototype`, `Error` and the native errors, `Array`, `Array.prototype` and its `@@unscopables`, `String`, `String.prototype`, `Number`, `Number.prototype`, `Boolean`, `Boolean.prototype`, `Symbol`, `Symbol.prototype`, `Math`, `Reflect` (Chrome 157) | J2.5 | `builtins_tests::own_keys_are_in_the_reference_browsers_order` |
 | `%GeneratorPrototype%`: `constructor,next,return,throw,@@toStringTag` (its methods of length 1); `%GeneratorFunction.prototype%`: `prototype,constructor,@@toStringTag`; `%GeneratorFunction%`: `length,name,prototype`; a generator function's and method's own keys `length,name,prototype`, its `prototype` writable only and without keys of its own (Chrome 157, the generator probe) | J3.2 | `builtins_tests::the_generator_objects_keys_are_in_the_reference_browsers_order` |
+| A class: `length,name,prototype`, then its static members in order; its `prototype` neither writable, enumerable nor configurable; the prototype's keys: integer keys, `constructor`, then its methods and accessors in order, not enumerable; a method's own keys `length,name`, with no `prototype` (Chrome 157, the class probe) | J3.3a | `class_tests::a_class_has_chromes_shape` |
 | `%ArrayIteratorPrototype%` and `%StringIteratorPrototype%`: `next,@@toStringTag`; `Array.prototype[@@iterator]` and an arguments object's are `Array.prototype.values`; `%IteratorPrototype%` is `constructor,reduce,toArray,forEach,some,every,find,map,filter,take,drop,flatMap,join,includes,@@iterator,@@toStringTag,@@dispose` (the iterator probe, Chrome 157), of which J3.1 brings `@@iterator` and J4's iterator helpers the rest | J3.1 | `builtins_tests::own_keys_are_in_the_reference_browsers_order` |
 | A function's own keys `length,name,prototype`, an arrow's and a bound function's `length,name`, an arguments object's `0,length,callee,@@iterator`, an error's `stack,message` (Chrome 157) | J2.5 | `builtins_tests::own_keys_are_in_the_reference_browsers_order` (the error's with the stack) |
 

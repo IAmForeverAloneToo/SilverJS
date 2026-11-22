@@ -69,7 +69,6 @@ cases = [
         "let _ = pop;\n                let label"),
     (T, "Some(Control::Context { save }) => pop = Some(*save),", "Some(Control::Context { .. }) => {}"),
     (T, "self.reg_op(Op::StoreContext, r);\n            Some(r)", "let _ = r;\n            None"),
-    (T, 'Stmt::Class(_) => return Err(unsupported("classes", span)),', "Stmt::Class(_) => {}"),
     # Encoding.
     (B, "(_, 1) => u8::try_from(value).is_ok(),", "(_, 1) => u16::try_from(value).is_ok(),"),
     (B, "(Operand::Imm, 1) => i8::try_from(value).is_ok(),", "(Operand::Imm, 1) => u8::try_from(value).is_ok(),"),

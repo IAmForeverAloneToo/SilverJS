@@ -67,14 +67,16 @@ impl Agent {
     }
 
     pub(crate) fn set_generator_state(&mut self, g: Value, state: i32) {
-        if let Some(cell) = g.as_object().and_then(|o| self.heap.objects.get_mut(o)) {
-            if state == COMPLETED {
-                // Its frame is no longer kept.
-                let mut slots = cell.internal().to_vec();
-                slots.truncate(SAVED);
-                cell.set_internal_slots(slots);
-            }
-            cell.set_internal(STATE, Value::int(state));
+        if let Some(o) = g.as_object() {
+            self.heap.with_internal_slots(o, |slots| {
+                if state == COMPLETED {
+                    // Its frame is no longer kept.
+                    slots.truncate(SAVED);
+                }
+                if let Some(s) = slots.get_mut(STATE) {
+                    *s = Value::int(state);
+                }
+            });
         }
     }
 
@@ -181,12 +183,8 @@ impl Agent {
             self.iter_result(v, false)?
         };
         let slots = self.saved_frame(SUSPENDED_YIELD, resume, mode as i64);
-        if let Some(cell) = top
-            .generator
-            .as_object()
-            .and_then(|o| self.heap.objects.get_mut(o))
-        {
-            cell.set_internal_slots(slots);
+        if let Some(o) = top.generator.as_object() {
+            self.heap.with_internal_slots(o, |s| *s = slots);
         }
         let frame = self.leave_generator_frame().ok_or(Abrupt::Throw)?;
         Ok((result, frame))
@@ -307,11 +305,14 @@ impl Agent {
             generator: g,
         });
         // Only its state: its saved frame is in the frame now.
-        if let Some(cell) = g.as_object().and_then(|o| self.heap.objects.get_mut(o)) {
-            let mut kept = slots;
-            kept.truncate(SAVED);
-            cell.set_internal_slots(kept);
-            cell.set_internal(STATE, Value::int(EXECUTING));
+        if let Some(o) = g.as_object() {
+            self.heap.with_internal_slots(o, |s| {
+                *s = slots;
+                s.truncate(SAVED);
+                if let Some(state) = s.get_mut(STATE) {
+                    *state = Value::int(EXECUTING);
+                }
+            });
         }
         if mode >= 0 {
             let base = args32 + base_offset;

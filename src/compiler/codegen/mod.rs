@@ -8,6 +8,7 @@
 //! parser did, each level checking the stack budget (see the module
 //! above).
 
+mod class;
 mod expr;
 mod pattern;
 mod stmt;
@@ -433,8 +434,9 @@ impl<'s, 'a> Gen<'s, 'a> {
 
     /// Whether a read of a binding at `at` must check its TDZ.
     pub(super) fn needs_tdz(r: &Resolved, at: u32) -> bool {
-        r.kind.is_some_and(BindingKind::lexical)
-            && !(r.same_function && !r.in_switch && at >= r.tdz_end)
+        r.uninit_this
+            || (r.kind.is_some_and(BindingKind::lexical)
+                && !(r.same_function && !r.in_switch && at >= r.tdz_end))
     }
 
     /// Stores the accumulator into a binding of the current scope at its
@@ -636,12 +638,10 @@ impl<'s, 'a> Gen<'s, 'a> {
         if f.is_async {
             return Err(unsupported("async functions", f.span));
         }
-        if matches!(
-            f.kind,
-            FuncKind::Constructor { .. } | FuncKind::ClassField | FuncKind::StaticBlock
-        ) {
-            return Err(unsupported("classes", f.span));
+        if matches!(f.kind, FuncKind::ClassField | FuncKind::StaticBlock) {
+            return Err(unsupported("class fields", f.span));
         }
+        let derived = self.is_derived();
         let fs = self.scope;
         let scope = self.a.scope(fs);
         if scope.has_env {
@@ -665,12 +665,26 @@ impl<'s, 'a> Gen<'s, 'a> {
                         self.emit(Op::StaSlot, &[0, i64::from(k)]);
                     }
                 }
+                // A derived constructor's `this` is uninitialized until
+                // super() binds it: its frame's own is.
                 (BindingKind::This, Loc::Slot(k)) => {
                     self.op(Op::LdaThis);
                     self.emit(Op::StaSlot, &[0, i64::from(k)]);
                 }
+                (BindingKind::This, Loc::Register(r)) => {
+                    self.op(Op::LdaThis);
+                    self.reg_op(Op::Star, r);
+                }
                 (BindingKind::NewTarget, Loc::Slot(k)) => {
                     self.op(Op::LdaNewTarget);
+                    self.emit(Op::StaSlot, &[0, i64::from(k)]);
+                }
+                (BindingKind::Home, Loc::Slot(k)) => {
+                    self.op(Op::LdaHomeObject);
+                    self.emit(Op::StaSlot, &[0, i64::from(k)]);
+                }
+                (BindingKind::FunctionObject, Loc::Slot(k)) => {
+                    self.op(Op::LdaClosure);
                     self.emit(Op::StaSlot, &[0, i64::from(k)]);
                 }
                 (BindingKind::Arguments, loc) => {
@@ -732,6 +746,10 @@ impl<'s, 'a> Gen<'s, 'a> {
                 self.pos(self.ast.expr(*e).span);
                 self.expr(*e)?;
             }
+        }
+        if derived {
+            self.pos(f.span);
+            self.derived_return()?;
         }
         self.op(Op::Return);
         Ok(())
@@ -803,10 +821,11 @@ impl<'s, 'a> Gen<'s, 'a> {
                 self.emit(op, &[n]);
             }
             Place::Intrinsic => {
-                self.op(if name == "this" {
-                    Op::LdaThis
-                } else {
-                    Op::LdaNewTarget
+                self.op(match name {
+                    "this" => Op::LdaThis,
+                    "%home" => Op::LdaHomeObject,
+                    "%fn" => Op::LdaClosure,
+                    _ => Op::LdaNewTarget,
                 });
             }
             Place::GlobalThis => self.op(Op::LdaGlobalThis),

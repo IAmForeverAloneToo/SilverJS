@@ -38,6 +38,8 @@ pub mod value;
 #[cfg(test)]
 mod builtins_tests;
 #[cfg(test)]
+mod class_tests;
+#[cfg(test)]
 mod compiler_tests;
 #[cfg(test)]
 mod generator_tests;

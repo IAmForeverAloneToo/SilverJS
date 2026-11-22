@@ -32,7 +32,7 @@ cases = [
     (G, '                Resume::Return => self.iter_result(sent, true).map(Some),', '                Resume::Return => self.iter_result(Value::UNDEFINED, true).map(Some),'),
     (G, '                *slot = Value::int(how as i32);', '                *slot = Value::int(0);'),
     (G, '            self.vm.acc = sent;\n', ''),
-    (G, '            cell.set_internal(STATE, Value::int(EXECUTING));', '            cell.set_internal(STATE, Value::int(SUSPENDED_YIELD));'),
+    (G, '                    *state = Value::int(EXECUTING);', '                    *state = Value::int(SUSPENDED_YIELD);'),
     (G, '        let result = self.iter_result(value, true)?;\n        self.set_generator_state(g, COMPLETED);',
         '        let result = self.iter_result(value, true)?;'),
     (G, '        self.vm.stack.truncate(frame.args as usize);\n        self.pop_resume_frame();', '        self.vm.stack.truncate(frame.args as usize);'),

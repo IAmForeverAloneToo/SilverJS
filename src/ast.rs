@@ -388,6 +388,10 @@ pub enum Expr {
         optional: bool,
     },
     SuperCall(Vec<Spreadable>),
+    /// A derived class's default constructor's `super(...args)`, which
+    /// passes its arguments on as they came (section 15.7.15: not through
+    /// an array iterator).
+    SuperCallForward,
     New {
         callee: ExprId,
         args: Vec<Spreadable>,

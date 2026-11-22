@@ -20,6 +20,7 @@
 //! accumulator, the exception being thrown, the realm, and the installed
 //! units' strings.
 
+mod class;
 mod eval;
 pub(crate) mod generator;
 mod iter;
@@ -660,7 +661,7 @@ impl Agent {
         match self.callable(callee) {
             Some(Callable::Code { unit, func, env }) => {
                 let (this, nt, construct) = match new_target {
-                    Some(nt) => (self.construct_this(nt)?, nt, true),
+                    Some(nt) => (self.construct_this_for(unit, func, nt)?, nt, true),
                     None => (this, Value::UNDEFINED, false),
                 };
                 // A copy of the arguments above everything: the callee's
@@ -767,7 +768,7 @@ impl Agent {
         match self.callable(callee) {
             Some(Callable::Code { unit, func, env }) => {
                 let (this, nt, construct) = match new_target {
-                    Some(nt) => match self.construct_this(nt) {
+                    Some(nt) => match self.construct_this_for(unit, func, nt) {
                         Ok(t) => (t, nt, true),
                         Err(e) => {
                             self.vm.stack.truncate(args);
@@ -836,6 +837,14 @@ impl Agent {
         let Some(f) = code.functions.get(func as usize) else {
             return Err(Abrupt::Throw);
         };
+        if !construct
+            && matches!(
+                f.kind,
+                FunctionKind::ClassConstructor | FunctionKind::DerivedConstructor
+            )
+        {
+            return Err(self.class_call_error(closure));
+        }
         let caller_realm = self.enter_realm(realm);
         let base = self.vm.stack.len();
         self.vm
@@ -1167,13 +1176,15 @@ impl Agent {
                         let k = r.u();
                         if self.vm.acc == Value::UNINITIALIZED {
                             let name = self.name_text(u, fi, k);
-                            tri!(
-                                Err::<(), Abrupt>(self.throw_error(
+                            let e = if name == "this" {
+                                self.this_before_super()
+                            } else {
+                                self.throw_error(
                                     ErrorType::ReferenceError,
-                                    messages::before_initialization(&name)
-                                )),
-                                start
-                            );
+                                    messages::before_initialization(&name),
+                                )
+                            };
+                            tri!(Err::<(), Abrupt>(e), start);
                         }
                     }
                     Op::CheckTdzRegister => {
@@ -1732,7 +1743,7 @@ impl Agent {
                                             messages::not_a_constructor(&text)
                                         ))
                                     }
-                                    let this = match self.construct_this(callee) {
+                                    let this = match self.construct_this_for(unit, func, callee) {
                                         Ok(t) => t,
                                         Err(e) => fail!(e),
                                     };
@@ -1805,6 +1816,78 @@ impl Agent {
                     Op::ForInEnumerate => {
                         let v = self.vm.acc;
                         self.vm.acc = tri!(self.for_in_start(v), start);
+                    }
+                    Op::CreateClass => {
+                        let (p, q, f, heritage) = (r.u(), r.u(), r.u(), r.u());
+                        let parent = self.reg(base, p);
+                        let env = self.top().context;
+                        let made = self.create_class(heritage == 1, parent, u, f as u32, env);
+                        let (ctor, proto) = tri!(made, start);
+                        self.set_reg(base, q, proto);
+                        self.vm.acc = ctor;
+                    }
+                    Op::SetHomeObject => {
+                        let h = r.u();
+                        let home = self.reg(base, h);
+                        let f = self.vm.acc;
+                        self.set_home_object(f, home);
+                    }
+                    Op::DefineMethod => {
+                        let (o, k, how) = (r.u(), r.u(), r.u());
+                        let (target, key, f) = (self.reg(base, o), self.reg(base, k), self.vm.acc);
+                        tri!(self.define_class_member(target, key, f, how), start);
+                    }
+                    Op::LdaHomeObject => {
+                        let f = self.top().closure;
+                        self.vm.acc = self.home_object(f);
+                    }
+                    Op::GetSuper => {
+                        let (h, t) = (r.u(), r.u());
+                        let (home, this, key) = (self.reg(base, h), self.reg(base, t), self.vm.acc);
+                        self.vm.acc = tri!(self.get_super(home, this, key), start);
+                    }
+                    Op::SetSuper => {
+                        let (h, t, k) = (r.u(), r.u(), r.u());
+                        let (home, this) = (self.reg(base, h), self.reg(base, t));
+                        let (key, v) = (self.reg(base, k), self.vm.acc);
+                        tri!(self.set_super(home, this, key, v), start);
+                    }
+                    Op::SuperCall | Op::SuperCallSpread | Op::SuperCallForward => {
+                        let (fr, ntr) = (r.u(), r.u());
+                        let args = match op {
+                            Op::SuperCall => {
+                                let (first, n) = (r.u(), r.u());
+                                self.push_registers(base, first, n)
+                            }
+                            Op::SuperCallSpread => {
+                                let a = r.u();
+                                let array = self.reg(base, a);
+                                tri!(self.push_array_elements(array), start)
+                            }
+                            _ => self.push_own_arguments(),
+                        };
+                        let (f, nt) = (self.reg(base, fr), self.reg(base, ntr));
+                        let at = (start as u32, r.pc as u32);
+                        match tri!(self.super_call(f, nt, args, at.0, at.1), start) {
+                            class::SuperCall::Value(v) => self.vm.acc = v,
+                            class::SuperCall::Frame => continue 'frames,
+                        }
+                    }
+                    Op::CheckSuperOnce => {
+                        if self.vm.acc != Value::UNINITIALIZED {
+                            let e =
+                                self.throw_error(ErrorType::ReferenceError, messages::SUPER_TWICE);
+                            tri!(Err::<(), Abrupt>(e), start);
+                        }
+                    }
+                    Op::ThrowSuperDelete => {
+                        let e = self.throw_error(ErrorType::ReferenceError, messages::SUPER_DELETE);
+                        tri!(Err::<(), Abrupt>(e), start);
+                    }
+                    Op::ReturnDerived => {
+                        let v = r.u();
+                        let (value, this) = (self.reg(base, v), self.vm.acc);
+                        self.vm.acc = tri!(self.derived_return(value, this), start);
                     }
                     Op::GeneratorStart => {
                         let (g, frame) = tri!(self.generator_start(r.pc as u32), start);
@@ -1950,7 +2033,14 @@ impl Agent {
                 .units
                 .get(unit as usize)
                 .and_then(|u| u.code.functions.get(func as usize))
-                .is_some_and(|f| f.kind == FunctionKind::Normal),
+                .is_some_and(|f| {
+                    matches!(
+                        f.kind,
+                        FunctionKind::Normal
+                            | FunctionKind::ClassConstructor
+                            | FunctionKind::DerivedConstructor
+                    )
+                }),
             Callable::Native { id, .. } => crate::builtins::native_constructs(id),
             // Answered by the target, in `is_constructor_value`.
             Callable::Bound => false,

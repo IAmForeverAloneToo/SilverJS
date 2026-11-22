@@ -80,6 +80,39 @@ pub(crate) fn not_iterable(what: &str) -> String {
 pub(crate) const ITERATOR_NOT_OBJECT: &str =
     "Result of the Symbol.iterator method is not an object";
 
+/// `Class extends value 1 is not a constructor or null`.
+pub(crate) fn extends_not_constructor(what: &str) -> String {
+    format!("Class extends value {what} is not a constructor or null")
+}
+
+/// `Class extends value does not have valid prototype property 1`.
+pub(crate) fn extends_bad_prototype(what: &str) -> String {
+    format!("Class extends value does not have valid prototype property {what}")
+}
+
+/// `Super constructor max of X is not a constructor` (`of anonymous
+/// class` for a class with no name).
+pub(crate) fn super_not_constructor(what: &str, class: &str) -> String {
+    format!("Super constructor {what} of {class} is not a constructor")
+}
+
+/// `Class constructor A cannot be invoked without 'new'`.
+pub(crate) fn class_without_new(name: &str) -> String {
+    format!("Class constructor {name} cannot be invoked without 'new'")
+}
+
+/// `Cannot redefine property: x`.
+pub(crate) fn cannot_redefine(key: &str) -> String {
+    format!("Cannot redefine property: {key}")
+}
+
+pub(crate) const THIS_BEFORE_SUPER: &str = "Must call super constructor in derived class before accessing 'this' or returning from derived constructor";
+
+pub(crate) const SUPER_DELETE: &str = "Unsupported reference to 'super'";
+pub(crate) const SUPER_TWICE: &str = "Super constructor may only be called once";
+
+pub(crate) const DERIVED_RETURN: &str = "Derived constructors may only return object or undefined";
+
 pub(crate) const GENERATOR_RUNNING: &str = "Generator is already running";
 
 pub(crate) const DELEGATE_NO_THROW: &str = "The iterator does not provide a 'throw' method.";

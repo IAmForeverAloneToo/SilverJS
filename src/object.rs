@@ -736,6 +736,21 @@ impl Heap {
         self.objects.get(o)
     }
 
+    /// Runs `f` on the object `o`'s internal slots, which it may grow or
+    /// shrink, and keeps the heap's count of its bytes right.
+    pub(crate) fn with_internal_slots<R>(
+        &mut self,
+        o: u32,
+        f: impl FnOnce(&mut Vec<Value>) -> R,
+    ) -> Option<R> {
+        self.with_object(o, |cell| {
+            let mut slots = cell.internal().to_vec();
+            let result = f(&mut slots);
+            cell.set_internal_slots(slots);
+            result
+        })
+    }
+
     /// Runs `f` on the object `o` and keeps the heap's count of its
     /// bytes right.
     fn with_object<R>(&mut self, o: u32, f: impl FnOnce(&mut ObjectCell) -> R) -> Option<R> {

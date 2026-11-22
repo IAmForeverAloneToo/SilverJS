@@ -66,7 +66,12 @@ impl Gen<'_, '_> {
             Stmt::Var(decl) => self.var_decl(decl, span)?,
             // Made at their scope's entry.
             Stmt::Function(_) | Stmt::Empty => {}
-            Stmt::Class(_) => return Err(unsupported("classes", span)),
+            Stmt::Class(c) => {
+                self.class(*c, None)?;
+                if let Some(n) = &self.ast.class(*c).name {
+                    self.store_name(&n.name, n.span, true)?;
+                }
+            }
             Stmt::Block(stmts) => self.block(ScopeKey::Stmt(id), stmts)?,
             Stmt::Debugger => self.op(Op::Debugger),
             Stmt::If {
@@ -375,6 +380,10 @@ impl Gen<'_, '_> {
             }
         }
         // Past every entry: a return.
+        if self.is_derived() {
+            // Its value is checked after its `finally` blocks have run.
+            let _ = self.derived_return();
+        }
         self.op(Op::Return);
     }
 
@@ -438,7 +447,20 @@ impl Gen<'_, '_> {
         if let Some(r) = context {
             self.free(r);
         }
+        // A finally block that completes normally leaves the script's
+        // completion value as the try gave it (section 14.15.3).
+        let saved = self.completion.map(|c| {
+            let s = self.alloc();
+            self.reg_op(Op::Ldar, c);
+            self.reg_op(Op::Star, s);
+            (c, s)
+        });
         self.block(ScopeKey::Finally(id), fin)?;
+        if let Some((c, s)) = saved {
+            self.reg_op(Op::Ldar, s);
+            self.reg_op(Op::Star, c);
+            self.free(s);
+        }
         // Then on as it was entered.
         for (k, c) in completions.iter().enumerate() {
             let next = self.new_label();

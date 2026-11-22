@@ -247,38 +247,45 @@ fn bind(agent: &mut Agent, c: Call) -> Res<Value> {
     result
 }
 
+impl Agent {
+    /// A function's source text, as `Function.prototype.toString` gives
+    /// it; `None` if `f` is no function.
+    pub(crate) fn function_source(&self, f: Value) -> Option<String> {
+        Some(match self.callable(f)? {
+            Callable::Code { unit, func, .. } => {
+                let code = self
+                    .vm
+                    .units
+                    .get(unit as usize)
+                    .map(|u| std::rc::Rc::clone(&u.code));
+                code.and_then(|code| {
+                    let f = code.functions.get(func as usize)?;
+                    code.source
+                        .get(f.span.0 as usize..f.span.1 as usize)
+                        .map(str::to_owned)
+                })
+                .unwrap_or_default()
+            }
+            Callable::Native { id, .. } => {
+                let name = match self.host_name(id) {
+                    Some(n) => n.to_owned(),
+                    None => super::native_name(id),
+                };
+                format!("function {name}() {{ [native code] }}")
+            }
+            Callable::Bound => "function () { [native code] }".to_owned(),
+        })
+    }
+}
+
 /// `Function.prototype.toString` (section 20.2.3.5): a function's source
 /// text; natives and bound functions as the reference browser shows
 /// them.
 fn to_string(agent: &mut Agent, c: Call) -> Res<Value> {
-    let text = match agent.callable(c.this) {
-        Some(Callable::Code { unit, func, .. }) => {
-            let code = agent
-                .vm
-                .units
-                .get(unit as usize)
-                .map(|u| std::rc::Rc::clone(&u.code));
-            code.and_then(|code| {
-                let f = code.functions.get(func as usize)?;
-                code.source
-                    .get(f.span.0 as usize..f.span.1 as usize)
-                    .map(str::to_owned)
-            })
-            .unwrap_or_default()
-        }
-        Some(Callable::Native { id, .. }) => {
-            let name = match agent.host_name(id) {
-                Some(n) => n.to_owned(),
-                None => super::native_name(id),
-            };
-            format!("function {name}() {{ [native code] }}")
-        }
-        Some(Callable::Bound) => "function () { [native code] }".to_owned(),
-        None => {
-            return Err(
-                agent.type_error("Function.prototype.toString requires that 'this' be a Function")
-            );
-        }
+    let Some(text) = agent.function_source(c.this) else {
+        return Err(
+            agent.type_error("Function.prototype.toString requires that 'this' be a Function")
+        );
     };
     agent.new_string(&text)
 }

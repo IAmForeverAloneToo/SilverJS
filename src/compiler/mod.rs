@@ -129,6 +129,10 @@ pub enum FunctionKind {
     Method,
     /// A generator function or method: its call makes a generator.
     Generator,
+    /// A class's constructor: constructible only, never called.
+    ClassConstructor,
+    /// A derived class's constructor: its `this` made by `super()`.
+    DerivedConstructor,
 }
 
 /// One function's code.

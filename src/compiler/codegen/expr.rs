@@ -86,6 +86,7 @@ impl Gen<'_, '_> {
     pub(super) fn is_anonymous_function(&self, id: ExprId) -> bool {
         match self.ast.expr(self.unparen(id)).kind {
             Expr::Function(f) | Expr::Arrow(f) => self.ast.func(f).name.is_none(),
+            Expr::Class(c) => self.ast.class(c).name.is_none(),
             _ => false,
         }
     }
@@ -125,7 +126,7 @@ impl Gen<'_, '_> {
             Expr::Array(elems) => self.array(elems)?,
             Expr::Object(props) => self.object(props)?,
             Expr::Function(f) | Expr::Arrow(f) => self.closure(*f, name)?,
-            Expr::Class(_) => return Err(unsupported("classes", span)),
+            Expr::Class(c) => self.class(*c, name)?,
             Expr::Unary { .. } | Expr::Binary { .. } | Expr::Logical { .. } => {
                 self.operators(id)?
             }
@@ -153,10 +154,27 @@ impl Gen<'_, '_> {
                 }
             }
             Expr::Paren(e) => self.expr_named(*e, name)?,
+            Expr::Call {
+                callee,
+                args,
+                optional,
+            } if matches!(
+                self.ast.expr(self.unparen(*callee)).kind,
+                Expr::SuperMember(_)
+            ) =>
+            {
+                let callee = self.unparen(*callee);
+                let cnode = self.ast.expr(callee);
+                if let Expr::SuperMember(prop) = &cnode.kind {
+                    self.super_method_call(prop, args, *optional, cnode.span)?;
+                }
+            }
             Expr::Member { .. } | Expr::Call { .. } | Expr::OptionalChain(_) => {
                 self.chain(id, ChainMode::Value)?;
             }
-            Expr::SuperMember(_) | Expr::SuperCall(_) => return Err(unsupported("super", span)),
+            Expr::SuperMember(prop) => self.super_get(prop, span)?,
+            Expr::SuperCall(args) => self.super_call(Some(args), span)?,
+            Expr::SuperCallForward => self.super_call(None, span)?,
             Expr::New { callee, args } => {
                 self.expr(*callee)?;
                 let c = self.alloc();
@@ -304,6 +322,14 @@ impl Gen<'_, '_> {
                 self.free(o);
             }
             Expr::OptionalChain(_) => self.chain(arg, ChainMode::Delete)?,
+            // A super reference is never deleted (section 13.5.1.2), its
+            // `this` and key evaluated first.
+            Expr::SuperMember(prop) => {
+                let r = self.super_ref(prop, node.span)?;
+                self.pos(span);
+                self.op(Op::ThrowSuperDelete);
+                self.super_ref_free(r);
+            }
             Expr::Ident(i) => match self.resolve(&i.name).place {
                 Place::Global | Place::Dynamic => {
                     let n = self.name(&i.name);
@@ -374,7 +400,7 @@ impl Gen<'_, '_> {
 
     /// Arguments: into consecutive registers, or with a spread into an
     /// array the call spreads.
-    fn args(&mut self, args: &[Spreadable]) -> R<Args> {
+    pub(super) fn args(&mut self, args: &[Spreadable]) -> R<Args> {
         if args.iter().any(|a| matches!(a, Spreadable::Spread(_))) {
             self.op(Op::CreateArray);
             let a = self.alloc();
@@ -399,7 +425,7 @@ impl Gen<'_, '_> {
     }
 
     /// Gives back the registers of `args`.
-    fn free_args(&mut self, args: Args) {
+    pub(super) fn free_args(&mut self, args: Args) {
         match args {
             Args::Regs(first, n) => self.free_n(first, n),
             Args::Array(a) => self.free(a),
@@ -437,6 +463,14 @@ impl Gen<'_, '_> {
                 Expr::Member { object, .. } => {
                     links.push(e);
                     e = *object;
+                }
+                Expr::Call { callee, .. }
+                    if matches!(
+                        self.ast.expr(self.unparen(*callee)).kind,
+                        Expr::SuperMember(_)
+                    ) =>
+                {
+                    break;
                 }
                 Expr::Call { callee, .. } => {
                     links.push(e);
@@ -733,6 +767,35 @@ impl Gen<'_, '_> {
                 }
                 self.free(o);
             }
+            Expr::SuperMember(prop) => {
+                let r = self.super_ref(prop, tnode.span)?;
+                match op {
+                    AssignOp::Assign => {
+                        self.expr(value)?;
+                        self.super_ref_set(r, tnode.span);
+                    }
+                    AssignOp::Binary(b) => {
+                        self.super_ref_get(r, tnode.span);
+                        let v = self.alloc();
+                        self.reg_op(Op::Star, v);
+                        self.expr(value)?;
+                        let (instr, _) = binary_op(b);
+                        self.pos(span);
+                        self.reg_op(instr, v);
+                        self.free(v);
+                        self.super_ref_set(r, tnode.span);
+                    }
+                    AssignOp::Logical(l) => {
+                        let end = self.new_label();
+                        self.super_ref_get(r, tnode.span);
+                        self.jump(logical_jump(l), end);
+                        self.expr(value)?;
+                        self.super_ref_set(r, tnode.span);
+                        self.bind(end);
+                    }
+                }
+                self.super_ref_free(r);
+            }
             _ => {
                 // `f() = 1`: run, then a ReferenceError (web compatible).
                 self.expr(t)?;
@@ -825,6 +888,26 @@ impl Gen<'_, '_> {
                     self.free(k);
                 }
                 self.free(o);
+            }
+            Expr::SuperMember(prop) => {
+                let r = self.super_ref(prop, tnode.span)?;
+                self.super_ref_get(r, tnode.span);
+                self.pos(span);
+                let old = if prefix {
+                    None
+                } else {
+                    self.op(Op::ToNumeric);
+                    let o = self.alloc();
+                    self.reg_op(Op::Star, o);
+                    Some(o)
+                };
+                self.op(step);
+                self.super_ref_set(r, tnode.span);
+                if let Some(o) = old {
+                    self.reg_op(Op::Ldar, o);
+                    self.free(o);
+                }
+                self.super_ref_free(r);
             }
             _ => {
                 self.expr(t)?;
@@ -925,6 +1008,9 @@ impl Gen<'_, '_> {
                         self.reg_op(Op::SetProtoLiteral, o);
                     } else if prefix == 0 {
                         self.expr_named(p.value, Some(&key))?;
+                        if p.kind == PropKind::Method {
+                            self.reg_op(Op::SetHomeObject, o);
+                        }
                         let n = self.string(&key);
                         self.emit(Op::DefineField, &[i64::from(o), n]);
                     } else {
@@ -935,6 +1021,7 @@ impl Gen<'_, '_> {
                         let k = self.alloc();
                         self.reg_op(Op::Star, k);
                         self.expr_named(p.value, Some(&name))?;
+                        self.reg_op(Op::SetHomeObject, o);
                         self.accessor(o, k, prefix);
                         self.free(k);
                     }
@@ -950,6 +1037,12 @@ impl Gen<'_, '_> {
                     self.expr(p.value)?;
                     if self.is_anonymous_function(p.value) {
                         self.emit(Op::SetFunctionName, &[i64::from(k), prefix]);
+                    }
+                    if matches!(
+                        p.kind,
+                        PropKind::Method | PropKind::Getter | PropKind::Setter
+                    ) {
+                        self.reg_op(Op::SetHomeObject, o);
                     }
                     if prefix == 0 {
                         self.emit(Op::DefineKeyed, &[i64::from(o), i64::from(k)]);
@@ -1051,7 +1144,7 @@ impl Gen<'_, '_> {
 
 /// A call's arguments as compiled.
 #[derive(Debug, Clone, Copy)]
-enum Args {
+pub(super) enum Args {
     /// In consecutive registers: the first and the count.
     Regs(u32, u32),
     /// In an array (a spread among them).
