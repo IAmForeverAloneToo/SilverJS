@@ -607,6 +607,32 @@ impl Agent {
         }
     }
 
+    /// A value with its type, as some of the reference browser's messages
+    /// name it (`number 1`): a primitive's type and text, an object as
+    /// `object`.
+    pub(crate) fn typed_display(&self, v: Value) -> String {
+        if v.is_nullish() {
+            return self.display(v);
+        }
+        if v.as_object().is_some() {
+            return if self.callable(v).is_some() {
+                "function".into()
+            } else {
+                "object".into()
+            };
+        }
+        let ty = if v.is_number() {
+            "number"
+        } else if v.as_bool().is_some() {
+            "boolean"
+        } else if self.string_units(v).is_some() {
+            "string"
+        } else {
+            "symbol"
+        };
+        format!("{ty} {}", self.display(v))
+    }
+
     /// A value's text for a message, as the reference browser shows it.
     pub(crate) fn display(&self, v: Value) -> String {
         if let Some(n) = v.as_number() {
@@ -1185,13 +1211,41 @@ impl Agent {
             Some(f) => (f.kind, f.length, f.name.clone()),
             None => return Err(Abrupt::Throw),
         };
-        let proto = self.realm().function_prototype;
+        let generator = kind == FunctionKind::Generator;
+        let proto = if generator {
+            self.realm().intrinsics.generator_function_prototype
+        } else {
+            self.realm().function_prototype
+        };
         let f = self.alloc_object(ObjectCell::function(
             proto,
             Callable::Code { unit, func, env },
         ))?;
         self.vm.temps.push(f);
-        let result = self.finish_function(f, length, &name, kind == FunctionKind::Normal);
+        let mut result = self.finish_function(f, length, &name, kind == FunctionKind::Normal);
+        if generator && result.is_ok() {
+            // Its `prototype`: what its generators inherit from, writable
+            // only, with no `constructor` (section 15.5.4).
+            let gp = self.realm().intrinsics.generator_prototype;
+            result = self
+                .alloc_object(ObjectCell::new(gp, ObjectKind::Ordinary))
+                .map(|p| {
+                    if let Some(o) = f.as_object() {
+                        let key = self.realm().prototype_key;
+                        self.heap.define_own_property(
+                            o,
+                            key,
+                            Descriptor {
+                                value: Some(p),
+                                writable: Some(true),
+                                enumerable: Some(false),
+                                configurable: Some(false),
+                                ..Descriptor::default()
+                            },
+                        );
+                    }
+                });
+        }
         self.vm.temps.pop();
         result.map(|()| f)
     }

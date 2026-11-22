@@ -80,6 +80,22 @@ pub(crate) fn not_iterable(what: &str) -> String {
 pub(crate) const ITERATOR_NOT_OBJECT: &str =
     "Result of the Symbol.iterator method is not an object";
 
+pub(crate) const GENERATOR_RUNNING: &str = "Generator is already running";
+
+pub(crate) const DELEGATE_NO_THROW: &str = "The iterator does not provide a 'throw' method.";
+
+/// `Method [Generator].prototype.next called on incompatible receiver
+/// #<Object>`.
+pub(crate) fn generator_incompatible(method: &str, what: &str) -> String {
+    format!("Method [Generator].prototype.{method} called on incompatible receiver {what}")
+}
+
+/// `number 1 is not iterable (cannot read property
+/// Symbol(Symbol.iterator))`: a `yield*`'s value.
+pub(crate) fn not_iterable_typed(what: &str) -> String {
+    format!("{what} is not iterable (cannot read property Symbol(Symbol.iterator))")
+}
+
 pub(crate) const SPREAD_NOT_ITERABLE: &str =
     "Spread syntax requires ...iterable[Symbol.iterator] to be a function";
 

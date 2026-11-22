@@ -37,8 +37,8 @@ cases = [
     (I, 'if flags & 1 != 0 && n > 0 && callee == self.realm().intrinsics.eval {', 'if false {'),
     (M, '            self.vm.stack.extend(internal.iter().skip(2).copied());\n            self.vm.stack.extend(tail);', '            self.vm.stack.extend(tail);'),
     # The protocol.
-    (I, '        if method.is_undefined() {\n            return Err(self.throw_error(ErrorType::TypeError, messages::not_iterable(text)));',
-        '        if false {\n            return Err(self.throw_error(ErrorType::TypeError, messages::not_iterable(text)));'),
+    (I, '        if method.is_undefined() {\n            return Err(self.throw_error(ErrorType::TypeError, message()));',
+        '        if false {\n            return Err(self.throw_error(ErrorType::TypeError, message()));'),
     (I, '        if iterator.as_object().is_none() {', '        if false {'),
     (I, '        let result = self.call_value(next, iterator, &[])?;\n        if result.as_object().is_none() {', '        let result = self.call_value(next, iterator, &[])?;\n        if false {'),
     (I, '        let result = self.call_value(method, iterator, &[])?;\n        if result.as_object().is_none() {', '        let result = self.call_value(method, iterator, &[])?;\n        if false {'),

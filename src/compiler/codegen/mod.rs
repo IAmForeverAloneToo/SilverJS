@@ -520,9 +520,15 @@ impl<'s, 'a> Gen<'s, 'a> {
                 let f = self.ast.func(fid);
                 let (name, kind) = match self.sh.names.get(self.index as usize).cloned().flatten() {
                     Some(nk) => nk,
+                    // A script's function declarations, which the
+                    // interpreter makes: their kind is their own.
                     None => (
                         f.name.as_ref().map(|n| units(&n.name)).unwrap_or_default(),
-                        FunctionKind::Normal,
+                        if f.is_generator {
+                            FunctionKind::Generator
+                        } else {
+                            FunctionKind::Normal
+                        },
                     ),
                 };
                 let length = f.params.iter().take_while(|p| p.default.is_none()).count();
@@ -627,9 +633,6 @@ impl<'s, 'a> Gen<'s, 'a> {
 
     fn body(&mut self, fid: FuncId) -> R {
         let f = self.ast.func(fid);
-        if f.is_generator {
-            return Err(unsupported("generators", f.span));
-        }
         if f.is_async {
             return Err(unsupported("async functions", f.span));
         }
@@ -717,6 +720,9 @@ impl<'s, 'a> Gen<'s, 'a> {
                 self.store_loc(b.loc);
             }
         }
+        if f.is_generator {
+            self.op(Op::GeneratorStart);
+        }
         match &f.body {
             Body::Block(stmts) => {
                 self.stmts(stmts)?;
@@ -736,9 +742,6 @@ impl<'s, 'a> Gen<'s, 'a> {
     pub(super) fn closure(&mut self, fid: FuncId, inferred: Option<&[u16]>) -> R {
         let f = self.ast.func(fid);
         let index = self.a.func_index.get(&fid).copied().unwrap_or(0);
-        if f.is_generator {
-            return Err(unsupported("generators", f.span));
-        }
         if f.is_async {
             return Err(unsupported("async functions", f.span));
         }
@@ -749,6 +752,11 @@ impl<'s, 'a> Gen<'s, 'a> {
             FuncKind::Constructor { .. } | FuncKind::ClassField | FuncKind::StaticBlock => {
                 return Err(unsupported("classes", f.span));
             }
+        };
+        let kind = if f.is_generator {
+            FunctionKind::Generator
+        } else {
+            kind
         };
         let name = match (&f.name, inferred) {
             (Some(n), _) => units(&n.name),

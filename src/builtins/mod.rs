@@ -15,6 +15,7 @@
 mod array;
 mod error;
 mod function;
+mod generator;
 mod global;
 mod iterator;
 mod math;
@@ -166,6 +167,8 @@ const TABLES: &[&[Entry]] = &[
     iterator::ITERATOR_PROTO,
     iterator::ARRAY_ITERATOR_PROTO,
     iterator::STRING_ITERATOR_PROTO,
+    generator::GENERATOR_PROTO,
+    generator::GENERATOR_FUNCTION_PROTO,
 ];
 
 /// The tables' indices.
@@ -195,6 +198,18 @@ pub(crate) mod table {
     pub const ITERATOR_PROTO: u32 = 22;
     pub const ARRAY_ITERATOR_PROTO: u32 = 23;
     pub const STRING_ITERATOR_PROTO: u32 = 24;
+    pub const GENERATOR_PROTO: u32 = 25;
+    pub const GENERATOR_FUNCTION_PROTO: u32 = 26;
+}
+
+/// How native `id` resumes a generator, if it is `%GeneratorPrototype%`'s
+/// `next`, `return` or `throw`.
+pub(crate) fn generator_resume(id: u32) -> Option<crate::interp::generator::Resume> {
+    if id >> 16 == table::GENERATOR_PROTO {
+        generator::resume_of(id & 0x7fff)
+    } else {
+        None
+    }
 }
 
 const SETTER: u32 = 0x8000;

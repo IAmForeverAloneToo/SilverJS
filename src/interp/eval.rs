@@ -268,7 +268,7 @@ impl Agent {
         // `new.target` is allowed in a function's code: an arrow's, or
         // eval code's, if a function encloses it (whose binding it reads).
         let new_target = match kind {
-            FunctionKind::Normal | FunctionKind::Method => true,
+            FunctionKind::Normal | FunctionKind::Method | FunctionKind::Generator => true,
             _ if in_eval || kind == FunctionKind::Arrow => {
                 self.slot_named(frame.context, "new.target").is_some()
             }

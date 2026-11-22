@@ -176,7 +176,7 @@ impl Gen<'_, '_> {
                 self.free(c);
             }
             Expr::ImportMeta | Expr::Import { .. } => return Err(unsupported("modules", span)),
-            Expr::Yield { .. } => return Err(unsupported("generators", span)),
+            Expr::Yield { arg, delegate } => self.yield_expr(*arg, *delegate, span)?,
             Expr::Await(_) => return Err(unsupported("async functions", span)),
         }
         Ok(())
@@ -972,6 +972,80 @@ impl Gen<'_, '_> {
             Op::DefineSetter
         };
         self.emit(op, &[i64::from(o), i64::from(k)]);
+    }
+}
+
+impl Gen<'_, '_> {
+    /// `yield` and `yield*` (sections 15.5.5 and 27.5.3.7): the frame
+    /// suspended; resumed by a throw, it throws; by a return, it returns
+    /// (its `finally` blocks run).
+    fn yield_expr(&mut self, arg: Option<ExprId>, delegate: bool, span: Span) -> R {
+        match arg {
+            Some(a) => self.expr(a)?,
+            None => self.op(Op::LdaUndefined),
+        }
+        let mode = self.alloc();
+        if !delegate {
+            self.pos(span);
+            self.reg_op(Op::Yield, mode);
+            let ret = self.new_label();
+            self.jump_with(Op::ResumeYield, &[i64::from(mode)], ret);
+            let past = self.new_label();
+            self.jump(Op::Jump, past);
+            self.bind(ret);
+            self.jump_out(super::Completion::Return);
+            self.bind(past);
+            self.free(mode);
+            return Ok(());
+        }
+        // yield*: the inner iterator, then a step each resume.
+        let (it, next, outcome, v) = (self.alloc(), self.alloc(), self.alloc(), self.alloc());
+        if let Some(a) = arg {
+            self.pos(self.ast.expr(a).span);
+        }
+        self.emit(Op::GetIterator, &[i64::from(it), i64::from(next), 2]);
+        self.emit(Op::LdaSmi, &[0]);
+        self.reg_op(Op::Star, mode);
+        self.op(Op::LdaUndefined);
+        let (head, done, ret) = (self.new_label(), self.new_label(), self.new_label());
+        self.bind(head);
+        // Its frame, waiting on the inner iterator, is shown at the
+        // operand (as the reference browser shows it).
+        match arg {
+            Some(a) => self.pos(self.ast.expr(a).span),
+            None => self.pos(span),
+        }
+        self.emit(
+            Op::DelegateStep,
+            &[
+                i64::from(it),
+                i64::from(next),
+                i64::from(mode),
+                i64::from(outcome),
+            ],
+        );
+        self.emit(Op::DelegateCheck, &[i64::from(mode), i64::from(outcome)]);
+        self.reg_op(Op::Star, v);
+        self.emit(Op::LdaSmi, &[1]);
+        self.reg_op(Op::TestStrictEq, outcome);
+        self.jump(Op::JumpIfTrue, done);
+        self.emit(Op::LdaSmi, &[2]);
+        self.reg_op(Op::TestStrictEq, outcome);
+        self.jump(Op::JumpIfTrue, ret);
+        self.reg_op(Op::Ldar, v);
+        self.reg_op(Op::YieldDelegate, mode);
+        self.jump(Op::JumpLoop, head);
+        self.bind(ret);
+        self.reg_op(Op::Ldar, v);
+        self.jump_out(super::Completion::Return);
+        self.bind(done);
+        self.reg_op(Op::Ldar, v);
+        self.free(v);
+        self.free(outcome);
+        self.free(next);
+        self.free(it);
+        self.free(mode);
+        Ok(())
     }
 }
 

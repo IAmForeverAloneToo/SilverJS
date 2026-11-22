@@ -339,7 +339,6 @@ fn wide_operands_are_used_past_a_byte() {
 fn what_is_not_compiled_yet_is_refused() {
     assert_eq!(refused("class A {}"), "classes");
     assert_eq!(refused("(class {})"), "classes");
-    assert_eq!(refused("function* g() {}"), "generators");
     assert_eq!(refused("async function a() {}"), "async functions");
     assert_eq!(refused("tag`x`"), "tagged templates");
     assert!(matches!(

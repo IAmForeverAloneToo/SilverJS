@@ -102,10 +102,27 @@ fn one_function(source: &str) -> bool {
     matches!(e.kind, Expr::Function(_)) && stmt.span.end as usize >= source.trim_end().len()
 }
 
-/// CreateDynamicFunction (section 20.2.1.1.1), for ordinary functions:
-/// the source text the reference browser gives them,
+/// `Function(...)`: CreateDynamicFunction (section 20.2.1.1.1) for an
+/// ordinary function, the source text the reference browser gives it
 /// `function anonymous(a,b\n) {\nbody\n}`.
 pub(crate) fn construct(agent: &mut Agent, c: Call) -> Res<Value> {
+    dynamic_function(agent, c, "function", |r| r.function_prototype)
+}
+
+/// `GeneratorFunction(...)`: the same for a generator,
+/// `function* anonymous(...`.
+pub(crate) fn construct_generator(agent: &mut Agent, c: Call) -> Res<Value> {
+    dynamic_function(agent, c, "function*", |r| {
+        r.intrinsics.generator_function_prototype
+    })
+}
+
+fn dynamic_function(
+    agent: &mut Agent,
+    c: Call,
+    keyword: &str,
+    default_proto: fn(&crate::interp::Realm) -> Value,
+) -> Res<Value> {
     let mut params = Vec::new();
     for i in 0..c.argc.saturating_sub(1) {
         let v = agent.arg(c, i);
@@ -128,12 +145,12 @@ pub(crate) fn construct(agent: &mut Agent, c: Call) -> Res<Value> {
     // function and go on, so the whole is the one function they make
     // (its own early errors, a repeated parameter under "use strict",
     // are the compiler's).
-    if !one_function(&format!("(function anonymous({params}\n) {{\n}})"))
-        || !one_function(&format!("(function anonymous(\n) {{\n{body}\n}})"))
+    if !one_function(&format!("({keyword} anonymous({params}\n) {{\n}})"))
+        || !one_function(&format!("({keyword} anonymous(\n) {{\n{body}\n}})"))
     {
         return Err(syntax(agent));
     }
-    let source = format!("(function anonymous({params}\n) {{\n{body}\n}})");
+    let source = format!("({keyword} anonymous({params}\n) {{\n{body}\n}})");
     let origin = crate::interp::Origin::Eval {
         caller: agent.caller_position(),
         caller_name: "<anonymous>".into(),
@@ -145,7 +162,7 @@ pub(crate) fn construct(agent: &mut Agent, c: Call) -> Res<Value> {
         && let Some(o) = f.as_object()
     {
         agent.vm.temps.push(f);
-        let proto = agent.prototype_from(c.new_target, |r| r.function_prototype);
+        let proto = agent.prototype_from(c.new_target, default_proto);
         agent.vm.temps.pop();
         agent.heap.set_prototype_of(o, proto?);
     }

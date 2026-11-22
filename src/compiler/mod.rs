@@ -127,6 +127,8 @@ pub enum FunctionKind {
     Arrow,
     /// An object literal's method, getter or setter: not constructible.
     Method,
+    /// A generator function or method: its call makes a generator.
+    Generator,
 }
 
 /// One function's code.

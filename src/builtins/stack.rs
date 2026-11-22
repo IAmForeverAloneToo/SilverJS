@@ -304,6 +304,10 @@ impl Agent {
         if self.callable(receiver).is_some() {
             return self.own_name(receiver).filter(|n| !n.is_empty());
         }
+        // A generator is named after its function (`thrower.next`).
+        if let Some(f) = self.generator_function(receiver) {
+            return self.own_name(f).filter(|n| !n.is_empty());
+        }
         let key = self.realm().constructor_key;
         let mut at = Some(o);
         while let Some(i) = at {

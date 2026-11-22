@@ -48,8 +48,8 @@ cases = [
     (P, "if key == self.heap.length_key {", "if false {"),
     (P, "if b.constant {", "if false {"),
     (P, "if still {", "if true {"),
-    (P, "let result = self.finish_function(f, length, &name, kind == FunctionKind::Normal);",
-        "let result = self.finish_function(f, length, &name, false);"),
+    (P, "let mut result = self.finish_function(f, length, &name, kind == FunctionKind::Normal);",
+        "let mut result = self.finish_function(f, length, &name, false);"),
     (P, 'messages::read_only(&k, "#<Object>")', 'messages::read_only(&k, "object")'),
     # The realm's natives.
     (R, "agent.put_index(o, len + i as f64, v)?;", "agent.put_index(o, len, v)?;"),

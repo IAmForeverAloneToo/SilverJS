@@ -185,6 +185,12 @@ ops! {
     CallSpread(R, R, R, U) "acc = callee(...array) with a receiver (callee, receiver, arguments array, flags: 1 a direct eval if %eval%).",
     NewSpread(R, R) "acc = new callee(...array) (callee, arguments array).",
     CopyRest(R) "acc = a new object with acc's own enumerable properties but the property keys in the array r.",
+    GeneratorStart() "A generator function's call: its generator object made, the frame suspended at its start in it, and the generator returned to the caller.",
+    Yield(R) "Suspends the generator, giving its caller {value: acc, done: false}; resumed, acc is the value sent and r how (0 next, 1 throw, 2 return).",
+    YieldDelegate(R) "Suspends the generator, giving its caller acc (an inner iterator's result) as it is; resumed as Yield is.",
+    ResumeYield(R, J) "After a yield: throws acc if r is 1 (a throw sent), jumps if it is 2 (a return sent).",
+    DelegateStep(R, R, R, R) "yield*'s call (iterator, next, how, outcome): the inner iterator's method for how called with acc, as Call calls; r4 = 3, the result to come in acc, or 2 and acc the value to return.",
+    DelegateCheck(R, R) "yield*'s check (how, outcome): unless r2 is decided, acc the inner result: r2 = 0 to yield it, 1 and acc the yield*'s value, 2 and acc the value to return.",
     RequireObjectCoercible(U, U) "Throws a TypeError if acc is null or undefined (an object pattern's value; u1 its first property's name, or empty; u2: 1 names the value itself, not its source).",
 }
 

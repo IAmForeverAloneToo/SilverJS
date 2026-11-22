@@ -126,6 +126,9 @@ pub(crate) enum ObjectKind {
     /// A string iterator: the string (undefined once done) and the next
     /// position.
     StringIterator,
+    /// A generator: its state and, suspended, its frame (internal slots,
+    /// [`crate::interp`]'s generator module).
+    Generator,
 }
 
 /// An object cell.
@@ -268,6 +271,11 @@ impl ObjectCell {
     /// Its internal slots.
     pub(crate) fn internal(&self) -> &[Value] {
         self.extra.as_ref().map_or(&[], |e| &e.internal)
+    }
+
+    /// Replaces its internal slots.
+    pub(crate) fn set_internal_slots(&mut self, slots: Vec<Value>) {
+        self.extra_mut().internal = slots;
     }
 
     /// Sets internal slot `i`, if it has one.

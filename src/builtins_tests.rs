@@ -1174,3 +1174,47 @@ fn the_iterator_prototypes_keys_are_in_the_reference_browsers_order() {
         &helpers,
     );
 }
+
+#[test]
+fn the_generator_objects_keys_are_in_the_reference_browsers_order() {
+    // The generator probe (Chrome 157).
+    let gp = "Object.getPrototypeOf(function* () {}).prototype";
+    keys_as_chrome(
+        gp,
+        &[
+            "constructor",
+            "next",
+            "return",
+            "throw",
+            "Symbol(Symbol.toStringTag)",
+        ],
+        &[],
+    );
+    keys_as_chrome(
+        "Object.getPrototypeOf(function* () {})",
+        &["prototype", "constructor", "Symbol(Symbol.toStringTag)"],
+        &[],
+    );
+    keys_as_chrome(
+        "Object.getPrototypeOf(function* () {}).constructor",
+        &["length", "name", "prototype"],
+        &[],
+    );
+    keys_as_chrome(
+        "(function* g(a, b) {})",
+        &["length", "name", "prototype"],
+        &[],
+    );
+    keys_as_chrome("(function* g() {}).prototype", &[], &[]);
+    keys_as_chrome("(function* g() {})()", &[], &[]);
+    keys_as_chrome("({ *m() {} }).m", &["length", "name", "prototype"], &[]);
+    // Their descriptors: next, return and throw of length 1; a generator
+    // function's prototype writable only.
+    assert_eq!(
+        text(&format!(
+            "var p = {gp}; var d = Object.getOwnPropertyDescriptor(function* () {{}}, 'prototype'); \
+             [p.next.length, p.return.length, p.throw.length, d.writable, d.enumerable, d.configurable].join()"
+        )),
+        "1,1,1,true,false,false"
+    );
+}

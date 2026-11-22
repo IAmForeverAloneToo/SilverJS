@@ -40,6 +40,8 @@ mod builtins_tests;
 #[cfg(test)]
 mod compiler_tests;
 #[cfg(test)]
+mod generator_tests;
+#[cfg(test)]
 mod heap_tests;
 #[cfg(test)]
 mod interp_tests;

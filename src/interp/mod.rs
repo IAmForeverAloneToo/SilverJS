@@ -21,6 +21,7 @@
 //! units' strings.
 
 mod eval;
+pub(crate) mod generator;
 mod iter;
 
 use iter::SpreadCall;
@@ -135,6 +136,8 @@ pub(crate) struct Frame {
     /// The realm current when it was pushed, made current again when
     /// it is popped.
     pub caller_realm: RealmIndex,
+    /// The generator whose frame this is (resumed), else undefined.
+    pub generator: Value,
 }
 
 /// The interpreter's state, which the agent owns.
@@ -209,7 +212,14 @@ impl Vm {
         let mut out = Vec::with_capacity(self.stack.len() + self.frames.len() * 5 + 64);
         out.extend_from_slice(&self.stack);
         for f in &self.frames {
-            out.extend([f.closure, f.this, f.new_target, f.context, f.fn_context]);
+            out.extend([
+                f.closure,
+                f.this,
+                f.new_target,
+                f.context,
+                f.fn_context,
+                f.generator,
+            ]);
         }
         out.extend([self.acc, self.exception]);
         out.extend_from_slice(&self.temps);
@@ -448,6 +458,7 @@ impl Agent {
             entry: true,
             accessor: false,
             caller_realm: self.vm.current,
+            generator: Value::UNDEFINED,
         });
         Ok(())
     }
@@ -673,6 +684,26 @@ impl Agent {
                 Ok(None)
             }
             Some(Callable::Native { id, realm }) => {
+                if let Some(how) = crate::builtins::generator_resume(id) {
+                    let sent = if argc > 0 {
+                        self.vm.stack.get(args).copied().unwrap_or(Value::UNDEFINED)
+                    } else {
+                        Value::UNDEFINED
+                    };
+                    // Its errors are its realm's; the frame it pushes
+                    // returns to the caller's.
+                    let outer = self.enter_realm(realm);
+                    let resumed = self.resume_generator(this, how, sent, entry, callee);
+                    match resumed {
+                        Ok(None) => {
+                            if let Some(top) = self.vm.frames.last_mut() {
+                                top.caller_realm = outer;
+                            }
+                        }
+                        _ => self.vm.current = outer,
+                    }
+                    return resumed;
+                }
                 self.tick()?;
                 self.vm.accessor_call = false;
                 let call = crate::builtins::Call {
@@ -755,7 +786,11 @@ impl Agent {
             }
             Some(Callable::Native { .. }) => {
                 let r = self.begin_call(callee, this, args, argc, new_target, false);
-                self.vm.stack.truncate(args);
+                // (A generator's frame pushed above them keeps them, to be
+                // dropped with the caller's registers.)
+                if !matches!(r, Ok(None)) {
+                    self.vm.stack.truncate(args);
+                }
                 r
             }
             Some(Callable::Bound) | None => {
@@ -850,6 +885,7 @@ impl Agent {
             entry,
             accessor: std::mem::take(&mut self.vm.accessor_call),
             caller_realm,
+            generator: Value::UNDEFINED,
         });
         self.tick()
     }
@@ -899,6 +935,10 @@ impl Agent {
             self.vm.frames.pop();
             self.vm.current = frame.caller_realm;
             self.vm.stack.truncate(frame.args as usize);
+            if frame.generator != Value::UNDEFINED {
+                self.set_generator_state(frame.generator, generator::COMPLETED);
+                self.pop_resume_frame();
+            }
             if frame.entry {
                 return Err(abrupt);
             }
@@ -1732,6 +1772,13 @@ impl Agent {
                         }
                     }
                     Op::Return => {
+                        // A generator's return completes it.
+                        if let Some(top) = self.vm.frames.last()
+                            && top.generator != Value::UNDEFINED
+                        {
+                            let (g, v) = (top.generator, self.vm.acc);
+                            self.vm.acc = tri!(self.generator_return(g, v), start);
+                        }
                         let mut value = self.vm.acc;
                         let Some(frame) = self.vm.frames.pop() else {
                             return Ok(value);
@@ -1759,10 +1806,54 @@ impl Agent {
                         let v = self.vm.acc;
                         self.vm.acc = tri!(self.for_in_start(v), start);
                     }
+                    Op::GeneratorStart => {
+                        let (g, frame) = tri!(self.generator_start(r.pc as u32), start);
+                        self.vm.acc = g;
+                        if frame.entry {
+                            return Ok(g);
+                        }
+                        continue 'frames;
+                    }
+                    Op::Yield | Op::YieldDelegate => {
+                        let m = r.u();
+                        let delegate = op == Op::YieldDelegate;
+                        let (v, frame) =
+                            tri!(self.generator_yield(r.pc as u32, m, delegate), start);
+                        self.vm.acc = v;
+                        if frame.entry {
+                            return Ok(v);
+                        }
+                        continue 'frames;
+                    }
+                    Op::ResumeYield => {
+                        let m = r.u();
+                        let off = r.j();
+                        let how = self.reg(base, m);
+                        if how == Value::int(generator::Resume::Throw as i32) {
+                            self.vm.exception = self.vm.acc;
+                            tri!(Err::<(), Abrupt>(Abrupt::Throw), start);
+                        } else if how == Value::int(generator::Resume::Return as i32) {
+                            r.pc = target(start, off);
+                        }
+                    }
+                    Op::DelegateStep => {
+                        let (it, nx, m, out) = (r.u(), r.u(), r.u(), r.u());
+                        let how = self.reg(base, m).as_number().unwrap_or(0.0) as i64;
+                        let (s, resume) = (start as u32, r.pc as u32);
+                        match tri!(self.delegate_step(base, it, nx, how, out, s, resume), start) {
+                            generator::DelegateCall::Value(v) => self.vm.acc = v,
+                            generator::DelegateCall::Frame => continue 'frames,
+                        }
+                    }
+                    Op::DelegateCheck => {
+                        let (m, out) = (r.u(), r.u());
+                        let how = self.reg(base, m).as_number().unwrap_or(0.0) as i64;
+                        tri!(self.delegate_check(base, how, out), start);
+                    }
                     Op::GetIterator => {
                         let (it, nx, plain) = (r.u(), r.u(), r.u());
                         tri!(
-                            self.op_get_iterator(base, it, nx, plain == 1, u, fi, start as u32),
+                            self.op_get_iterator(base, it, nx, plain, u, fi, start as u32),
                             start
                         );
                     }

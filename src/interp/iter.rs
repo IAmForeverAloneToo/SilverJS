@@ -23,6 +23,15 @@ impl Agent {
     /// `next` method. `text` names the iterable in the error if it has no
     /// iterator.
     pub(crate) fn get_iterator(&mut self, iterable: Value, text: &str) -> Res<(Value, Value)> {
+        self.get_iterator_or(iterable, || messages::not_iterable(text))
+    }
+
+    /// GetIterator, `message` the error if `iterable` has no iterator.
+    fn get_iterator_or(
+        &mut self,
+        iterable: Value,
+        message: impl FnOnce() -> String,
+    ) -> Res<(Value, Value)> {
         let key = self.well_known_key(Wk::Iterator);
         let method = if iterable.is_nullish() {
             Value::UNDEFINED
@@ -30,7 +39,7 @@ impl Agent {
             self.get_method(iterable, key)?
         };
         if method.is_undefined() {
-            return Err(self.throw_error(ErrorType::TypeError, messages::not_iterable(text)));
+            return Err(self.throw_error(ErrorType::TypeError, message()));
         }
         self.iterator_from_method(iterable, method)
     }
@@ -187,18 +196,28 @@ impl Agent {
         base: u32,
         it: usize,
         nx: usize,
-        plain: bool,
+        how: usize,
         unit: u32,
         func: u32,
         pc: u32,
     ) -> Res<()> {
         let v = self.vm.acc;
-        let text = if plain {
-            self.display(v)
-        } else {
-            self.text_at(unit, func, pc)
+        // How the error names the value: its source (0), itself (1), or
+        // itself with its type, as `yield*`'s does (2).
+        let (i, n) = match how {
+            0 => {
+                let text = self.text_at(unit, func, pc);
+                self.get_iterator(v, &text)?
+            }
+            1 => {
+                let text = self.display(v);
+                self.get_iterator(v, &text)?
+            }
+            _ => {
+                let text = self.typed_display(v);
+                self.get_iterator_or(v, || messages::not_iterable_typed(&text))?
+            }
         };
-        let (i, n) = self.get_iterator(v, &text)?;
         self.set_reg(base, it, i);
         self.set_reg(base, nx, n);
         Ok(())

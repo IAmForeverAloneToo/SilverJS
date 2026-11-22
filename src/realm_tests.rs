@@ -245,3 +245,17 @@ fn ran(scope: &mut Scope<'_>, src: &str) -> String {
         _ => "none".to_owned(),
     }
 }
+
+#[test]
+fn a_generator_of_another_realm_returns_to_this_one() {
+    // Resumed from here by its realm's own `next`: its frame runs in its
+    // realm, and back here this realm is current again.
+    assert_eq!(
+        run("var other = createRealm(), HomeArray = Array; \
+             var g = other.eval('(function* () { yield []; yield 2; })'); \
+             var it = g(); var first = it.next().value; it.next(); \
+             [first instanceof other.Array, [] instanceof HomeArray, \
+              it.next.call(it).done].join()"),
+        "true,true,true"
+    );
+}

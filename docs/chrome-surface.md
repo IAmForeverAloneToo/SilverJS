@@ -37,6 +37,7 @@ test.
 | A page's own `Error.prepareStackTrace` is called at the first read of `stack` (not at the error's making), with `Error` as `this`, the error and its CallSite objects; its value, of any type, is kept; what it throws, `stack` throws. CallSite's methods, in order: `constructor,getColumnNumber,...,toString` (Chrome 157) | J2.5 | `stack_tests::prepare_stack_trace_is_called_at_the_first_read_with_call_sites` |
 | `prepareStackTrace` is not an own property of `Error` by default (Chrome 157) | J2.5 | `builtins_tests::own_keys_are_in_the_reference_browsers_order` |
 | A stack overflow's top frame stands at the callee's entry (`at r (url:54:57)`, its parameters' `(`) | J2.5 | not followed: SilverJS shows the call that overflowed (`at r (url:54:67)`), the frame count the same |
+| A generator's frame is followed by its resumption, a native named after the generator function: `at thrower (url:l:c)`, `at thrower.next (<anonymous>)`; a frame waiting in `yield*` stands at its operand (Chrome 157, the generator probe) | J3.2 | `generator_tests::a_generators_frames_show_on_the_stack` |
 
 ## Error messages
 
@@ -55,6 +56,7 @@ test.
 | `Cannot destructure property 'a' of 'null' as it is null.` (Chrome 157); of a member's value, its text (`'o.x'`), and of a parameter's, the value (`'undefined'`) | J3.1 | `iteration_tests::iteration_errors_read_as_the_reference_browsers` |
 | `Iterator result 1 is not an object` (from `next` and from `return`), `Result of the Symbol.iterator method is not an object` (Chrome 157) | J3.1 | `iteration_tests::iteration_errors_read_as_the_reference_browsers` |
 | `Method Array Iterator.prototype.next called on incompatible receiver #<Object>`, and String Iterator's (Chrome 157) | J3.1 | `iteration_tests::iteration_errors_read_as_the_reference_browsers` |
+| `Generator is already running`, `Method [Generator].prototype.next called on incompatible receiver #<Object>` (and `return`, `throw`), `The iterator does not provide a 'throw' method.`, a `yield*`'s value `number 1 is not iterable (cannot read property Symbol(Symbol.iterator))` (Chrome 157, the generator probe) | J3.2 | `generator_tests::generator_errors_read_as_the_reference_browsers` |
 
 ## Function.prototype.toString
 
@@ -84,6 +86,7 @@ this reason.
 | `Function.prototype` has no `fileName`, `lineNumber` or `columnNumber` | J2.5 | `builtins_tests::own_keys_are_in_the_reference_browsers_order` |
 | The global object's ECMAScript names, `Object,Function,Array,Number,parseFloat,parseInt,Infinity,NaN,undefined,Boolean,String,Symbol,Date,...` (its web APIs after) (Chrome 157) | J2.5 | `builtins_tests::the_global_objects_built_ins_are_in_the_reference_browsers_order` |
 | `Object`, `Object.prototype`, `Function`, `Function.prototype`, `Error` and the native errors, `Array`, `Array.prototype` and its `@@unscopables`, `String`, `String.prototype`, `Number`, `Number.prototype`, `Boolean`, `Boolean.prototype`, `Symbol`, `Symbol.prototype`, `Math`, `Reflect` (Chrome 157) | J2.5 | `builtins_tests::own_keys_are_in_the_reference_browsers_order` |
+| `%GeneratorPrototype%`: `constructor,next,return,throw,@@toStringTag` (its methods of length 1); `%GeneratorFunction.prototype%`: `prototype,constructor,@@toStringTag`; `%GeneratorFunction%`: `length,name,prototype`; a generator function's and method's own keys `length,name,prototype`, its `prototype` writable only and without keys of its own (Chrome 157, the generator probe) | J3.2 | `builtins_tests::the_generator_objects_keys_are_in_the_reference_browsers_order` |
 | `%ArrayIteratorPrototype%` and `%StringIteratorPrototype%`: `next,@@toStringTag`; `Array.prototype[@@iterator]` and an arguments object's are `Array.prototype.values`; `%IteratorPrototype%` is `constructor,reduce,toArray,forEach,some,every,find,map,filter,take,drop,flatMap,join,includes,@@iterator,@@toStringTag,@@dispose` (the iterator probe, Chrome 157), of which J3.1 brings `@@iterator` and J4's iterator helpers the rest | J3.1 | `builtins_tests::own_keys_are_in_the_reference_browsers_order` |
 | A function's own keys `length,name,prototype`, an arrow's and a bound function's `length,name`, an arguments object's `0,length,callee,@@iterator`, an error's `stack,message` (Chrome 157) | J2.5 | `builtins_tests::own_keys_are_in_the_reference_browsers_order` (the error's with the stack) |
 

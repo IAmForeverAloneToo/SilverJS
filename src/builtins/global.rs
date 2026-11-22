@@ -105,6 +105,9 @@ pub(crate) struct Intrinsics {
     pub string_iterator_prototype: Value,
     /// `Array.prototype.values`, an arguments object's `@@iterator`.
     pub array_values: Value,
+    pub generator_prototype: Value,
+    pub generator_function_prototype: Value,
+    pub generator_function: Value,
 }
 
 impl Intrinsics {
@@ -130,6 +133,9 @@ impl Intrinsics {
         array_iterator_prototype: Value::UNDEFINED,
         string_iterator_prototype: Value::UNDEFINED,
         array_values: Value::UNDEFINED,
+        generator_prototype: Value::UNDEFINED,
+        generator_function_prototype: Value::UNDEFINED,
+        generator_function: Value::UNDEFINED,
     };
 
     pub(crate) fn trace(&self, out: &mut Vec<Value>) {
@@ -154,6 +160,9 @@ impl Intrinsics {
             self.array_iterator_prototype,
             self.string_iterator_prototype,
             self.array_values,
+            self.generator_prototype,
+            self.generator_function_prototype,
+            self.generator_function,
         ]);
         out.extend_from_slice(&self.errors);
     }
@@ -164,6 +173,7 @@ impl Intrinsics {
 pub(crate) const CTORS: &[Entry] = &[
     ctor("Object", 1, super::object::construct),
     ctor("Function", 1, super::function::construct),
+    ctor("GeneratorFunction", 1, super::function::construct_generator),
     ctor("Array", 1, super::array::construct),
     ctor("Number", 1, super::number::construct),
     ctor("Boolean", 1, super::primitive::construct_boolean),
@@ -394,6 +404,19 @@ impl Agent {
         self.set_intrinsics(|i| i.array_iterator_prototype = aip);
         let sip = self.alloc_object(ObjectCell::new(ip, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.string_iterator_prototype = sip);
+        // The generators': %GeneratorPrototype% inherits from
+        // %IteratorPrototype%, %GeneratorFunction.prototype% from
+        // Function.prototype, %GeneratorFunction% from Function.
+        let gp = self.alloc_object(ObjectCell::new(ip, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.generator_prototype = gp);
+        let gfp = self.alloc_object(ObjectCell::new(fp, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.generator_function_prototype = gfp);
+        let gf = self.make_ctor("GeneratorFunction", gfp)?;
+        self.set_intrinsics(|i| i.generator_function = gf);
+        let function = self.realm().intrinsics.function;
+        if let Some(o) = gf.as_object() {
+            self.heap.set_prototype_of(o, function);
+        }
         let math = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.math = math);
         let reflect = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
@@ -443,6 +466,18 @@ impl Agent {
             table::STRING_ITERATOR_PROTO,
             Value::UNDEFINED,
             &[],
+        )?;
+        self.install_table(
+            i.generator_prototype,
+            table::GENERATOR_PROTO,
+            Value::UNDEFINED,
+            &[i.generator_function_prototype],
+        )?;
+        self.install_table(
+            i.generator_function_prototype,
+            table::GENERATOR_FUNCTION_PROTO,
+            Value::UNDEFINED,
+            &[i.generator_prototype, i.generator_function],
         )?;
         self.install_table(i.string, table::STRING, Value::UNDEFINED, &[])?;
         self.install_table(sp, table::STRING_PROTO, i.string, &[])?;
