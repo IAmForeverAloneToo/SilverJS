@@ -9,10 +9,11 @@
 //! a binding of its own, which `super()` initializes once.
 
 use super::messages;
-use super::{Abrupt, ErrorType, Res};
+use super::{Abrupt, ErrorType, Reader, Res};
 use crate::agent::Agent;
 use crate::compiler::FunctionKind;
-use crate::heap::ObjectCell;
+use crate::compiler::Op;
+use crate::heap::{ObjectCell, PrivateKind, PrivateName};
 use crate::object::{Descriptor, Got, ObjectKind, SetOutcome};
 use crate::string::PropertyKey;
 use crate::value::Value;
@@ -82,12 +83,13 @@ impl Agent {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn create_class(
         &mut self,
-        heritage: bool,
+        flags: usize,
         parent: Value,
         unit: u32,
         func: u32,
         env: Value,
     ) -> Res<(Value, Value)> {
+        let (heritage, branded) = (flags & 1 != 0, flags & 2 != 0);
         let (proto_parent, ctor_parent) = if !heritage {
             let r = self.realm();
             (r.object_prototype, r.function_prototype)
@@ -146,7 +148,26 @@ impl Agent {
                     },
                 );
             }
-            self.set_home_object(f, proto);
+            // Its home object, the prototype; its brand, if it has
+            // private methods: a private name its instances hold,
+            // described by the class's name.
+            let brand = if branded {
+                let name = self.function_name(f).unwrap_or_default();
+                let d = self.new_string(&name)?;
+                self.vm.temps.push(d);
+                let b = self.new_private_name(d);
+                self.vm.temps.pop();
+                b?
+            } else {
+                Value::UNDEFINED
+            };
+            if let Some(o) = f.as_object() {
+                self.heap.with_internal_slots(o, |s| {
+                    s.clear();
+                    s.push(proto);
+                    s.push(brand);
+                });
+            }
             Ok((f, proto))
         })();
         self.vm.temps.truncate(base);
@@ -195,43 +216,50 @@ impl Agent {
         Ok(())
     }
 
-    /// `super[key]` (section 13.3.7.1): the home object's prototype's
-    /// property, read with `this` as the receiver.
+    /// `super[key]` read (section 13.3.7.1): `base`'s property (the home
+    /// object's prototype, read when the reference was made), with `this`
+    /// as the receiver; the key converted now (GetValue).
     #[inline(never)]
-    pub(super) fn get_super(&mut self, home: Value, this: Value, key: Value) -> Res<Value> {
+    pub(super) fn get_super(&mut self, base: Value, this: Value, key: Value) -> Res<Value> {
+        self.check_super_base(base, key)?;
         let key = self.property_key(key)?;
-        let base = self.super_base(home, key)?;
         self.get_value_with(base, key, this)
     }
 
-    /// `super[key] = value`, with `this` as the receiver; strict, as class
-    /// code is, a refusal throws.
+    /// `super[key] = value`, with `this` as the receiver; in strict code
+    /// a refusal throws.
     #[inline(never)]
     pub(super) fn set_super(
         &mut self,
-        home: Value,
+        base: Value,
         this: Value,
         key: Value,
         value: Value,
+        strict: bool,
     ) -> Res<()> {
+        self.check_super_base(base, key)?;
         let key = self.property_key(key)?;
-        let base = self.super_base(home, key)?;
-        self.set_value_with(base, key, value, this)
+        self.set_value_with(base, key, value, this, strict)
     }
 
-    /// The object `super.x` reads from: the home object's prototype.
-    fn super_base(&mut self, home: Value, key: PropertyKey) -> Res<Value> {
-        let base = home
-            .as_object()
-            .map_or(Value::NULL, |o| self.heap.get_prototype_of(o));
+    /// A super reference's base, null when the home object has no
+    /// prototype: then a TypeError, before the key is converted
+    /// (GetValue's ToObject).
+    fn check_super_base(&mut self, base: Value, key: Value) -> Res<()> {
         if base.is_nullish() {
             let text = self.display(base);
-            let k = self.key_display(key);
+            let k = match key.as_object() {
+                Some(_) => self.display(key),
+                None => {
+                    let k = self.property_key(key)?;
+                    self.key_display(k)
+                }
+            };
             return Err(
                 self.throw_error(ErrorType::TypeError, messages::read_properties(&text, &k))
             );
         }
-        Ok(base)
+        Ok(())
     }
 
     /// A heritage that is no constructor, as the reference browser names
@@ -317,6 +345,382 @@ impl Agent {
         self.throw_error(ErrorType::TypeError, messages::class_without_new(&name))
     }
 
+    /// A private name's record and its text (`#x`), if `name` is one.
+    fn private_of(&self, name: Value) -> Option<(PropertyKey, PrivateName)> {
+        let (_, i) = name.as_reference()?;
+        let p = *self.heap.symbols.get(i)?.private.as_deref()?;
+        Some((PropertyKey::Symbol(i), p))
+    }
+
+    /// The text of a symbol's description (a private name's `#x`, a
+    /// brand's class name).
+    fn description_text(&self, name: Value) -> String {
+        let d = name
+            .as_reference()
+            .and_then(|(_, i)| self.heap.symbols.get(i))
+            .map_or(Value::UNDEFINED, |c| c.description);
+        self.string_units(d)
+            .map(|u| String::from_utf16_lossy(&u))
+            .unwrap_or_default()
+    }
+
+    /// `DefinePrivateMethod`: the private name `name` made a method (how
+    /// 0), getter (1) or setter (2) of `class` (how & 4: static), `f`.
+    #[inline(never)]
+    pub(super) fn define_private_method(
+        &mut self,
+        name: Value,
+        class: Value,
+        f: Value,
+        how: usize,
+    ) {
+        let is_static = how & 4 != 0;
+        let brand = if is_static {
+            class
+        } else {
+            self.class_slot(class, 1)
+        };
+        let Some(cell) = name
+            .as_reference()
+            .and_then(|(_, i)| self.heap.symbols.get_mut(i))
+        else {
+            return;
+        };
+        let p = cell
+            .private
+            .get_or_insert_with(|| Box::new(PrivateName::field()));
+        p.brand = brand;
+        p.is_static = is_static;
+        match how & 3 {
+            0 => {
+                p.kind = PrivateKind::Method;
+                p.get = f;
+            }
+            1 => {
+                p.kind = PrivateKind::Accessor;
+                p.get = f;
+            }
+            _ => {
+                p.kind = PrivateKind::Accessor;
+                p.set = f;
+            }
+        }
+    }
+
+    /// A class constructor's internal slot `i`: its home object (0), its
+    /// brand (1), then its instance fields' keys and initializers.
+    fn class_slot(&self, class: Value, i: usize) -> Value {
+        class
+            .as_object()
+            .and_then(|o| self.heap.objects.get(o))
+            .and_then(|c| c.internal().get(i).copied())
+            .unwrap_or(Value::UNDEFINED)
+    }
+
+    /// `AddClassField`: an instance field of `class`, its key and its
+    /// initializer (undefined for none), kept for its constructions.
+    #[inline(never)]
+    pub(super) fn add_class_field(&mut self, class: Value, key: Value, init: Value) {
+        if let Some(o) = class.as_object() {
+            self.heap.with_internal_slots(o, |s| {
+                if s.len() < 2 {
+                    s.resize(2, Value::UNDEFINED);
+                }
+                s.extend([key, init]);
+            });
+        }
+    }
+
+    /// `GetClassField`: instance field `i`'s key (`which` 0) or
+    /// initializer (1).
+    #[inline(never)]
+    pub(super) fn class_field(&self, class: Value, i: usize, which: usize) -> Value {
+        self.class_slot(class, 2 + 2 * i + which.min(1))
+    }
+
+    /// `AddPrivateBrand` (PrivateMethodOrAccessorAdd, section 7.3.32, for
+    /// all of a class's at once): `obj` given `class`'s brand.
+    #[inline(never)]
+    pub(super) fn add_private_brand(&mut self, obj: Value, class: Value) -> Res<()> {
+        let brand = self.class_slot(class, 1);
+        let (Some(o), Some((_, i))) = (obj.as_object(), brand.as_reference()) else {
+            return Ok(());
+        };
+        if !self
+            .heap
+            .private_add(o, PropertyKey::Symbol(i), Value::TRUE)
+        {
+            let name = self.description_text(brand);
+            return Err(self.throw_error(ErrorType::TypeError, messages::brand_twice(&name)));
+        }
+        Ok(())
+    }
+
+    /// `DefineFieldKey` (DefineField, section 7.3.33): a private field
+    /// added, or a public one defined as CreateDataPropertyOrThrow does.
+    #[inline(never)]
+    pub(super) fn define_field_key(&mut self, obj: Value, key: Value, value: Value) -> Res<()> {
+        let Some(o) = obj.as_object() else {
+            return Ok(());
+        };
+        if let Some((k, _)) = self.private_of(key) {
+            if !self.heap.private_add(o, k, value) {
+                let name = self.description_text(key);
+                return Err(self.throw_error(ErrorType::TypeError, messages::private_twice(&name)));
+            }
+            return Ok(());
+        }
+        let k = self.property_key(key)?;
+        let desc = Descriptor {
+            value: Some(value),
+            writable: Some(true),
+            enumerable: Some(true),
+            configurable: Some(true),
+            ..Descriptor::default()
+        };
+        if !self.heap.define_own_property(o, k, desc) {
+            let text = self.key_display(k);
+            let message = if self.heap.objects.get(o).is_some_and(|c| !c.is_extensible()) {
+                messages::field_not_extensible(&text)
+            } else {
+                messages::cannot_redefine(&text)
+            };
+            return Err(self.throw_error(ErrorType::TypeError, message));
+        }
+        Ok(())
+    }
+
+    /// Whether `obj` reaches the private method or accessor `p`: the
+    /// class itself for a static one, else an instance with its brand.
+    fn has_brand(&self, obj: Value, p: &PrivateName) -> bool {
+        if p.is_static {
+            return obj == p.brand;
+        }
+        match (obj.as_object(), p.brand.as_reference()) {
+            (Some(o), Some((_, b))) => self.heap.private_get(o, PropertyKey::Symbol(b)).is_some(),
+            _ => false,
+        }
+    }
+
+    /// The error of a private method or accessor reached through what
+    /// has not its brand.
+    fn receiver_error(&mut self, p: &PrivateName) -> Abrupt {
+        let class = if p.is_static {
+            self.function_name(p.brand).unwrap_or_default()
+        } else {
+            self.description_text(p.brand)
+        };
+        let class = if class.is_empty() {
+            "anonymous".to_owned()
+        } else {
+            class
+        };
+        self.throw_error(
+            ErrorType::TypeError,
+            messages::private_receiver(&class, p.is_static),
+        )
+    }
+
+    /// `GetPrivate` (PrivateGet, section 7.3.30): `obj.#x`.
+    #[inline(never)]
+    pub(super) fn get_private(&mut self, obj: Value, name: Value) -> Res<Value> {
+        let Some((k, p)) = self.private_of(name) else {
+            return Ok(Value::UNDEFINED);
+        };
+        match p.kind {
+            PrivateKind::Field => match obj.as_object().and_then(|o| self.heap.private_get(o, k)) {
+                Some(v) => Ok(v),
+                None => {
+                    let text = self.description_text(name);
+                    Err(self.throw_error(ErrorType::TypeError, messages::private_read(&text)))
+                }
+            },
+            _ if !self.has_brand(obj, &p) => Err(self.receiver_error(&p)),
+            PrivateKind::Method => Ok(p.get),
+            PrivateKind::Accessor => {
+                if p.get.is_undefined() {
+                    let text = self.description_text(name);
+                    return Err(
+                        self.throw_error(ErrorType::TypeError, messages::private_no_getter(&text))
+                    );
+                }
+                self.call_value(p.get, obj, &[])
+            }
+        }
+    }
+
+    /// `SetPrivate` (PrivateSet, section 7.3.31): `obj.#x = value`.
+    #[inline(never)]
+    pub(super) fn set_private(&mut self, obj: Value, name: Value, value: Value) -> Res<()> {
+        let Some((k, p)) = self.private_of(name) else {
+            return Ok(());
+        };
+        match p.kind {
+            PrivateKind::Field => match obj.as_object() {
+                Some(o) if self.heap.private_get(o, k).is_some() => {
+                    self.heap.private_set(o, k, value);
+                    Ok(())
+                }
+                _ => {
+                    let text = self.description_text(name);
+                    Err(self.throw_error(ErrorType::TypeError, messages::private_write(&text)))
+                }
+            },
+            _ if !self.has_brand(obj, &p) => Err(self.receiver_error(&p)),
+            PrivateKind::Method => {
+                let text = self.description_text(name);
+                Err(self.throw_error(ErrorType::TypeError, messages::private_method_write(&text)))
+            }
+            PrivateKind::Accessor => {
+                if p.set.is_undefined() {
+                    let text = self.description_text(name);
+                    return Err(
+                        self.throw_error(ErrorType::TypeError, messages::private_no_setter(&text))
+                    );
+                }
+                self.call_value(p.set, obj, &[value]).map(|_| ())
+            }
+        }
+    }
+
+    /// `HasPrivate`: `#x in obj` (section 13.10.1).
+    #[inline(never)]
+    pub(super) fn has_private(&mut self, obj: Value, name: Value) -> Res<Value> {
+        let Some((k, p)) = self.private_of(name) else {
+            return Ok(Value::FALSE);
+        };
+        let Some(o) = obj.as_object() else {
+            let text = self.description_text(name);
+            let what = self.display(obj);
+            return Err(self.throw_error(ErrorType::TypeError, messages::private_in(&text, &what)));
+        };
+        let has = match p.kind {
+            PrivateKind::Field => self.heap.private_get(o, k).is_some(),
+            _ => self.has_brand(obj, &p),
+        };
+        Ok(Value::bool(has))
+    }
+
+    /// The class instructions that neither call nor jump, out of the
+    /// interpreter's loop: in it they would cost the arithmetic its own
+    /// registers (the micro-benches' numeric loop, 11% slower).
+    #[inline(never)]
+    pub(super) fn class_op(
+        &mut self,
+        op: Op,
+        r: &mut Reader<'_>,
+        base: u32,
+        u: u32,
+        fi: u32,
+    ) -> Res<()> {
+        match op {
+            Op::CreateClass => {
+                let (p, q, f, heritage) = (r.u(), r.u(), r.u(), r.u());
+                let parent = self.reg(base, p);
+                let env = self.top().context;
+                let made = self.create_class(heritage, parent, u, f as u32, env);
+                let (ctor, proto) = made?;
+                self.set_reg(base, q, proto);
+                self.vm.acc = ctor;
+            }
+            Op::SetHomeObject => {
+                let h = r.u();
+                let home = self.reg(base, h);
+                let f = self.vm.acc;
+                self.set_home_object(f, home);
+            }
+            Op::DefineMethod => {
+                let (o, k, how) = (r.u(), r.u(), r.u());
+                let (target, key, f) = (self.reg(base, o), self.reg(base, k), self.vm.acc);
+                self.define_class_member(target, key, f, how)?;
+            }
+            Op::LdaHomeObject => {
+                let f = self.top().closure;
+                self.vm.acc = self.home_object(f);
+            }
+            Op::GetSuperBase => {
+                let h = r.u();
+                let home = self.reg(base, h);
+                self.vm.acc = home
+                    .as_object()
+                    .map_or(Value::NULL, |o| self.heap.get_prototype_of(o));
+            }
+            Op::GetSuper => {
+                let (h, t) = (r.u(), r.u());
+                let (home, this, key) = (self.reg(base, h), self.reg(base, t), self.vm.acc);
+                self.vm.acc = self.get_super(home, this, key)?;
+            }
+            Op::SetSuper => {
+                let (h, t, k, strict) = (r.u(), r.u(), r.u(), r.u());
+                let (home, this) = (self.reg(base, h), self.reg(base, t));
+                let (key, v) = (self.reg(base, k), self.vm.acc);
+                self.set_super(home, this, key, v, strict == 1)?;
+            }
+            Op::CheckSuperOnce => {
+                if self.vm.acc != Value::UNINITIALIZED {
+                    let e = self.throw_error(ErrorType::ReferenceError, messages::SUPER_TWICE);
+                    return Err(e);
+                }
+            }
+            Op::CreatePrivateName => {
+                let k = r.u();
+                let d = self.constant(u, fi, k)?;
+                self.vm.acc = self.new_private_name(d)?;
+            }
+            Op::DefinePrivateMethod => {
+                let (n, c, how) = (r.u(), r.u(), r.u());
+                let (name, class, f) = (self.reg(base, n), self.reg(base, c), self.vm.acc);
+                self.define_private_method(name, class, f, how);
+            }
+            Op::AddClassField => {
+                let (c, k) = (r.u(), r.u());
+                let (class, key, init) = (self.reg(base, c), self.reg(base, k), self.vm.acc);
+                self.add_class_field(class, key, init);
+            }
+            Op::GetClassField => {
+                let (c, i, which) = (r.u(), r.u(), r.u());
+                let class = self.reg(base, c);
+                self.vm.acc = self.class_field(class, i, which);
+            }
+            Op::AddPrivateBrand => {
+                let (o, c) = (r.u(), r.u());
+                let (obj, class) = (self.reg(base, o), self.reg(base, c));
+                self.add_private_brand(obj, class)?;
+            }
+            Op::DefineFieldKey => {
+                let (o, k) = (r.u(), r.u());
+                let (obj, key, v) = (self.reg(base, o), self.reg(base, k), self.vm.acc);
+                self.define_field_key(obj, key, v)?;
+            }
+            Op::GetPrivate => {
+                let o = r.u();
+                let (obj, name) = (self.reg(base, o), self.vm.acc);
+                self.vm.acc = self.get_private(obj, name)?;
+            }
+            Op::SetPrivate => {
+                let (o, n) = (r.u(), r.u());
+                let (obj, name, v) = (self.reg(base, o), self.reg(base, n), self.vm.acc);
+                self.set_private(obj, name, v)?;
+            }
+            Op::HasPrivate => {
+                let n = r.u();
+                let (name, obj) = (self.reg(base, n), self.vm.acc);
+                self.vm.acc = self.has_private(obj, name)?;
+            }
+            Op::ThrowSuperDelete => {
+                let e = self.throw_error(ErrorType::ReferenceError, messages::SUPER_DELETE);
+                return Err(e);
+            }
+            Op::ReturnDerived => {
+                let v = r.u();
+                let (value, this) = (self.reg(base, v), self.vm.acc);
+                self.vm.acc = self.derived_return(value, this)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// The elements of the array `array` onto the top of the register
     /// file; gives back where they start.
     #[inline(never)]
@@ -377,19 +781,23 @@ impl Agent {
     }
 
     /// `base[key] = value` with `receiver` as the object set (and a
-    /// setter's `this`); a refusal throws, as in strict code.
+    /// setter's `this`); in strict code a refusal throws.
     fn set_value_with(
         &mut self,
         base: Value,
         key: PropertyKey,
         value: Value,
         receiver: Value,
+        strict: bool,
     ) -> Res<()> {
         let Some(o) = base.as_object() else {
-            return self.set_value(base, key, value, true);
+            return self.set_value(base, key, value, strict);
         };
         match self.heap.set(o, key, value, receiver) {
             SetOutcome::Done(true) => Ok(()),
+            // Sloppy code ignores a refusal.
+            SetOutcome::Done(false) if !strict => Ok(()),
+            SetOutcome::Setter(s) if s.is_undefined() && !strict => Ok(()),
             SetOutcome::Done(false) => {
                 let k = self.key_display(key);
                 Err(self.throw_error(ErrorType::TypeError, messages::read_only(&k, "#<Object>")))

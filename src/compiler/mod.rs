@@ -133,6 +133,10 @@ pub enum FunctionKind {
     ClassConstructor,
     /// A derived class's constructor: its `this` made by `super()`.
     DerivedConstructor,
+    /// A class field's initializer or a static block: called by the
+    /// class, never by a script; its frame shows its name alone
+    /// (`<instance_members_initializer>`, `<static_initializer>`).
+    Initializer,
 }
 
 /// One function's code.
@@ -203,9 +207,9 @@ pub fn compile(source: &str, goal: Goal) -> Result<CompiledUnit, CompileError> {
 pub fn compile_eval(
     source: &str,
     strict: bool,
-    new_target: bool,
+    cx: &crate::parser::EvalContext,
 ) -> Result<CompiledUnit, CompileError> {
-    let program = crate::parser::parse_eval(source, strict, new_target, DEFAULT_STACK_BUDGET)?;
+    let program = crate::parser::parse_eval(source, strict, cx, DEFAULT_STACK_BUDGET)?;
     let analysis = scope::analyze_eval(&program);
     codegen::generate(&program, &analysis, source, DEFAULT_STACK_BUDGET)
 }

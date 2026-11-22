@@ -69,20 +69,63 @@ pub fn parse_with_stack(
     parse_with_stats(source, goal, stack_budget).0
 }
 
+/// What the code calling a direct eval allows the eval's code
+/// (section 19.2.1.1's PerformEval, steps 7 to 11).
+#[derive(Debug, Clone, Default)]
+pub struct EvalContext {
+    /// `new.target`: a function's code.
+    pub new_target: bool,
+    /// `super.x`: a method's (one with a home object).
+    pub super_prop: bool,
+    /// A field initializer's or static block's: `arguments` refused.
+    pub class_field: bool,
+    /// The private names of the classes around it, without their `#`.
+    pub privates: Vec<String>,
+}
+
 /// Parses `source` as eval code (ECMA-262 section 19.2.1.1): a script,
-/// strict from the start if the code that called `eval` is, and with
-/// `new.target` allowed if that code is a function's.
+/// strict from the start if the code that called `eval` is, with what
+/// that code allows (`cx`).
 pub fn parse_eval(
     source: &str,
     strict: bool,
-    new_target: bool,
+    cx: &EvalContext,
     stack_budget: usize,
 ) -> Result<Program, SyntaxError> {
     let mut parser = Parser::new(source, Goal::Script)?;
     parser.cx.strict = strict;
-    parser.cx.new_target = new_target;
+    parser.cx.new_target = cx.new_target;
+    parser.cx.super_prop = cx.super_prop;
+    parser.cx.class_field = cx.class_field;
     parser.stack = StackGuard::new(stack_budget);
-    parser.program()
+    // The enclosing classes' private names, as one class around it.
+    let outer = !cx.privates.is_empty();
+    if outer {
+        parser.classes.push(ClassScope {
+            declared: cx
+                .privates
+                .iter()
+                .map(|n| (Name::from(n.as_str()), PrivateKind::Field))
+                .collect(),
+            used: Vec::new(),
+        });
+    }
+    let program = parser.program()?;
+    if outer && let Some(scope) = parser.classes.pop() {
+        for used in scope.used {
+            if !scope.declared.contains_key(&used.name) {
+                return Err(SyntaxError {
+                    message: format!(
+                        "Private field '#{}' must be declared in an enclosing class",
+                        used.name
+                    ),
+                    start: used.span.start,
+                    end: used.span.end,
+                });
+            }
+        }
+    }
+    Ok(program)
 }
 
 /// What a parse used: the deepest nesting it reached (levels of

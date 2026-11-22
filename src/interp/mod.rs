@@ -1817,40 +1817,26 @@ impl Agent {
                         let v = self.vm.acc;
                         self.vm.acc = tri!(self.for_in_start(v), start);
                     }
-                    Op::CreateClass => {
-                        let (p, q, f, heritage) = (r.u(), r.u(), r.u(), r.u());
-                        let parent = self.reg(base, p);
-                        let env = self.top().context;
-                        let made = self.create_class(heritage == 1, parent, u, f as u32, env);
-                        let (ctor, proto) = tri!(made, start);
-                        self.set_reg(base, q, proto);
-                        self.vm.acc = ctor;
-                    }
-                    Op::SetHomeObject => {
-                        let h = r.u();
-                        let home = self.reg(base, h);
-                        let f = self.vm.acc;
-                        self.set_home_object(f, home);
-                    }
-                    Op::DefineMethod => {
-                        let (o, k, how) = (r.u(), r.u(), r.u());
-                        let (target, key, f) = (self.reg(base, o), self.reg(base, k), self.vm.acc);
-                        tri!(self.define_class_member(target, key, f, how), start);
-                    }
-                    Op::LdaHomeObject => {
-                        let f = self.top().closure;
-                        self.vm.acc = self.home_object(f);
-                    }
-                    Op::GetSuper => {
-                        let (h, t) = (r.u(), r.u());
-                        let (home, this, key) = (self.reg(base, h), self.reg(base, t), self.vm.acc);
-                        self.vm.acc = tri!(self.get_super(home, this, key), start);
-                    }
-                    Op::SetSuper => {
-                        let (h, t, k) = (r.u(), r.u(), r.u());
-                        let (home, this) = (self.reg(base, h), self.reg(base, t));
-                        let (key, v) = (self.reg(base, k), self.vm.acc);
-                        tri!(self.set_super(home, this, key, v), start);
+                    Op::CreateClass
+                    | Op::SetHomeObject
+                    | Op::DefineMethod
+                    | Op::LdaHomeObject
+                    | Op::GetSuperBase
+                    | Op::GetSuper
+                    | Op::SetSuper
+                    | Op::CheckSuperOnce
+                    | Op::CreatePrivateName
+                    | Op::DefinePrivateMethod
+                    | Op::AddClassField
+                    | Op::GetClassField
+                    | Op::AddPrivateBrand
+                    | Op::DefineFieldKey
+                    | Op::GetPrivate
+                    | Op::SetPrivate
+                    | Op::HasPrivate
+                    | Op::ThrowSuperDelete
+                    | Op::ReturnDerived => {
+                        tri!(self.class_op(op, &mut r, base, u, fi), start);
                     }
                     Op::SuperCall | Op::SuperCallSpread | Op::SuperCallForward => {
                         let (fr, ntr) = (r.u(), r.u());
@@ -1872,22 +1858,6 @@ impl Agent {
                             class::SuperCall::Value(v) => self.vm.acc = v,
                             class::SuperCall::Frame => continue 'frames,
                         }
-                    }
-                    Op::CheckSuperOnce => {
-                        if self.vm.acc != Value::UNINITIALIZED {
-                            let e =
-                                self.throw_error(ErrorType::ReferenceError, messages::SUPER_TWICE);
-                            tri!(Err::<(), Abrupt>(e), start);
-                        }
-                    }
-                    Op::ThrowSuperDelete => {
-                        let e = self.throw_error(ErrorType::ReferenceError, messages::SUPER_DELETE);
-                        tri!(Err::<(), Abrupt>(e), start);
-                    }
-                    Op::ReturnDerived => {
-                        let v = r.u();
-                        let (value, this) = (self.reg(base, v), self.vm.acc);
-                        self.vm.acc = tri!(self.derived_return(value, this), start);
                     }
                     Op::GeneratorStart => {
                         let (g, frame) = tri!(self.generator_start(r.pc as u32), start);

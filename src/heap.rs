@@ -275,11 +275,62 @@ impl Trace for StringCell {
 /// A symbol: its description (a string, or undefined).
 pub(crate) struct SymbolCell {
     pub(crate) description: Value,
+    /// A private name's (section 6.2.12), which no object's own keys
+    /// show: what it names.
+    pub(crate) private: Option<Box<PrivateName>>,
+}
+
+/// What a private name names: a field, which each object holds as an
+/// own property keyed by the name, or a method or accessor, which the
+/// class holds once and its instances reach through their brand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PrivateName {
+    pub(crate) kind: PrivateKind,
+    /// A method's function, or an accessor's getter.
+    pub(crate) get: Value,
+    /// An accessor's setter.
+    pub(crate) set: Value,
+    /// Where a method or accessor is found: for a static one its class
+    /// (the one object it is on); else the class's brand, a private name
+    /// each instance holds as an own key.
+    pub(crate) brand: Value,
+    pub(crate) is_static: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrivateKind {
+    Field,
+    Method,
+    Accessor,
+}
+
+impl PrivateName {
+    pub(crate) fn field() -> PrivateName {
+        PrivateName {
+            kind: PrivateKind::Field,
+            get: Value::UNDEFINED,
+            set: Value::UNDEFINED,
+            brand: Value::UNDEFINED,
+            is_static: false,
+        }
+    }
+}
+
+impl SymbolCell {
+    pub(crate) fn new(description: Value) -> SymbolCell {
+        SymbolCell {
+            description,
+            private: None,
+        }
+    }
 }
 
 impl Trace for SymbolCell {
     fn trace(&self, out: &mut Vec<Value>) {
         out.push(self.description);
+        if let Some(p) = &self.private {
+            out.extend([p.get, p.set, p.brand]);
+        }
     }
 }
 

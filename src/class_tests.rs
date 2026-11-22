@@ -94,7 +94,7 @@ fn a_class_has_chromes_shape() {
              [String(C), String(D), String(class {}), String(A.prototype.m), String(A.sm), \
              String(Object.getOwnPropertyDescriptor(A.prototype, 'g').get)].join(' | ')"
         ),
-        "class C {} | class D extends C {} | class {} | m() { return 7; } | static sm() {} | get g() { return 1; }"
+        "class C {} | class D extends C {} | class {} | m() { return 7; } | sm() {} | get g() { return 1; }"
     );
 }
 
@@ -338,5 +338,241 @@ fn classes_survive_collection() {
              out.join()"
         ),
         "3,6,9,12,15,18,21,24,27,30,33,36,39,42,45,48,51,54,57,60"
+    );
+}
+
+/// `pkeys(o)`: own keys in order, with their attributes.
+const PKEYS: &str = "function pkeys(o) { return Reflect.ownKeys(o).map(function (k) { \
+    var d = Object.getOwnPropertyDescriptor(o, k); \
+    return String(k) + ' ' + (d.writable ? 'w' : '-') + (d.enumerable ? 'e' : '-') + (d.configurable ? 'c' : '-'); \
+    }).join(', '); }\n";
+
+fn fields(body: &str) -> String {
+    run(&format!("{ERR}{PKEYS}{body}"))
+}
+
+#[test]
+fn fields_are_defined_in_order() {
+    // Chrome 157, the second class probe: data properties, integer keys
+    // first; private ones show nowhere.
+    assert_eq!(
+        fields(
+            "class X { b = 1; a = 2; #p = 0; static z = 1; ['c'] = 3; 1 = 4; static #q = 0; } \
+             pkeys(new X()) + ' / ' + pkeys(X) + ' / ' + Object.getOwnPropertySymbols(new X()).length"
+        ),
+        "1 wec, b wec, a wec, c wec / length --c, name --c, prototype ---, z wec / 0"
+    );
+    // Keys are evaluated with the class, values at each construction;
+    // static elements run in order once the class is made.
+    assert_eq!(
+        fields(
+            "var log = []; class X { [(log.push('k1'), 'a')] = log.push('v1'); [(log.push('k2'), 'b')] = log.push('v2'); } \
+             log.push('made'); new X(); var a = log.join(); log = []; \
+             class Y { a = log.push('ia'); static b = log.push('sb'); static { log.push('blk'); } static c = log.push('sc'); } \
+             log.push('made'); new Y(); a + ' / ' + log.join()"
+        ),
+        "k1,k2,made,v1,v2 / sb,blk,sc,made,ia"
+    );
+    // Defined, not set: a setter on the parent is not called. A frozen
+    // object takes no public field, but private ones.
+    assert_eq!(
+        fields(
+            "class P { set f(v) { throw new Error('setter'); } } class X extends P { f = 1; } \
+             class Q { constructor() { return Object.freeze({}); } } \
+             class Y extends Q { f = 1; } class Z extends Q { #f = 1; static has(o) { return #f in o; } } \
+             [pkeys(new X()), err(function () { new Y(); }), Z.has(new Z())].join('\\n')"
+        ),
+        "f wec\nTypeError: Cannot define property f, object is not extensible\ntrue"
+    );
+    // An initializer's this, arrows in it, super, new.target; a static
+    // one's this is the class; names given to anonymous functions.
+    assert_eq!(
+        fields(
+            "class P { m() { return 'pm'; } constructor() { this.seen = this.f; } } \
+             class X extends P { f = 1; g = () => this; h = super.m(); nt = new.target; } \
+             var x = new X(); \
+             class S { static a = 1; static b = this.a + 1; static { this.k = 'blk' + S.b; } } \
+             class N { f = function () {}; g = () => {}; #h = function () {}; static s = class {}; getH() { return this.#h; } } \
+             var n = new N(); \
+             class SP { static sm() { return 'sm'; } } \
+             class SC extends SP { static t = super.sm(); static { this.u = super.sm(); } } \
+             [x.seen, x.g() === x, x.h, x.nt, S.b, S.k, n.f.name, n.g.name, n.getH().name, N.s.name, SC.t + SC.u].join()"
+        ),
+        ",true,pm,,2,blk2,f,g,#h,s,smsm"
+    );
+    assert_eq!(
+        fields(
+            "class X { f = (() => { throw new Error('in field'); })(); } err(function () { new X(); })"
+        ),
+        "Error: in field"
+    );
+}
+
+#[test]
+fn private_names_reach_what_their_class_declared() {
+    assert_eq!(
+        fields(
+            "class X { #p = 1; #m() { return this.#p; } get #g() { return this.#p * 10; } set #g(v) { this.#p = v; } \
+             static #s = 's'; static #sm() { return X.#s; } \
+             run() { this.#g = 4; this.#p++; this.#p += 1; return [this.#m(), this.#g, X.#sm(), #p in this, #m in this, #g in {}].join(); } } \
+             new X().run()"
+        ),
+        "6,60,s,true,true,false"
+    );
+    // Each evaluation of a class makes new names.
+    assert_eq!(
+        fields(
+            "function make() { return class { #p = 1; static has(o) { return #p in o; } }; } \
+             var A = make(), B = make(); [A.has(new A()), A.has(new B())].join()"
+        ),
+        "true,false"
+    );
+    // Chrome 157's messages, from the class probes.
+    assert_eq!(
+        fields(
+            "class Base { constructor(o) { return o; } } \
+             [err(function () { class X { #p = 1; static read(o) { return o.#p; } } X.read({}); }), \
+             err(function () { class X { #p = 1; static write(o) { o.#p = 2; } } X.write({}); }), \
+             err(function () { class X { #m() {} static call(o) { o.#m(); } } X.call({}); }), \
+             err(function () { class X { get #g() { return 1; } static w(o) { o.#g = 2; } } X.w(new X()); }), \
+             err(function () { class X { set #s(v) {} static r(o) { return o.#s; } } X.r(new X()); }), \
+             err(function () { class X { #m() {} static w(o) { o.#m = 1; } } X.w(new X()); }), \
+             err(function () { class X extends Base { #p = 1; } var o = {}; new X(o); new X(o); }), \
+             err(function () { class X extends Base { #m() {} } var o = {}; new X(o); new X(o); }), \
+             err(function () { class X { #p; static has(o) { return #p in o; } } X.has(1); }), \
+             err(function () { class X { static #p = 1; static r(o) { return o.#p; } } class Y extends X {} return Y.r(Y); }), \
+             err(function () { class X { static #m() {} static c(o) { o.#m(); } } X.c({}); }), \
+             err(function () { class X { get #a() { return 1; } static r(o) { return o.#a; } } X.r({}); }), \
+             err(function () { class X { static set #s(v) {} static r() { return X.#s; } } X.r(); }), \
+             err(function () { class X { set #s(v) {} static w(o) { o.#s = 1; } } X.w({}); })].join('\\n')"
+        ),
+        "TypeError: Cannot read private member #p from an object whose class did not declare it\n\
+         TypeError: Cannot write private member #p to an object whose class did not declare it\n\
+         TypeError: Receiver must be an instance of class X\n\
+         TypeError: '#g' was defined without a setter\n\
+         TypeError: '#s' was defined without a getter\n\
+         TypeError: Private method '#m' is not writable\n\
+         TypeError: Cannot initialize #p twice on the same object\n\
+         TypeError: Cannot initialize private methods of class X twice on the same object\n\
+         TypeError: Cannot use 'in' operator to search for '#p' in 1\n\
+         TypeError: Cannot read private member #p from an object whose class did not declare it\n\
+         TypeError: Receiver must be class X\n\
+         TypeError: Receiver must be an instance of class X\n\
+         TypeError: '#s' was defined without a getter\n\
+         TypeError: Receiver must be an instance of class X"
+    );
+    // A private method's name and source text.
+    assert_eq!(
+        fields(
+            "class X { #m() {} get #g() { return 1; } static #sm() {} \
+             static n(o) { return [o.#m.name, String(o.#m), X.#sm.name].join(); } } X.n(new X())"
+        ),
+        "#m,#m() {},#sm"
+    );
+}
+
+#[test]
+fn initializer_frames_show_on_the_stack() {
+    // Chrome 157: `<instance_members_initializer>` called from the
+    // constructor (a default one's at its class, a derived one's at its
+    // super()), `<static_initializer>`, and private methods by their
+    // names alone.
+    let src = "function top(e) { return e.stack.split('\\n').slice(0, 3).join(' | '); }\n\
+               class S {\n\
+               f = new Error('field');\n\
+               static sf = new Error('static field');\n\
+               static { S.blk = new Error('block'); }\n\
+               #pm() { return new Error('privm'); }\n\
+               static #spm() { return new Error('sprivm'); }\n\
+               get #pg() { return new Error('privg'); }\n\
+               callPm() { return this.#pm(); }\n\
+               static callSpm() { return S.#spm(); }\n\
+               callPg() { return this.#pg; }\n\
+               }\n\
+               class T extends S { g = new Error('derived field'); constructor() { super(); } }\n\
+               var s = new S();\n\
+               [top(s.f), top(S.sf).split(' | ')[1], top(S.blk).split(' | ')[1], top(s.callPm()), \
+               top(S.callSpm()), top(s.callPg()), top(new T().g)].join('\\n')";
+    assert_eq!(
+        run(src),
+        "Error: field |     at <instance_members_initializer> (u.js:3:5) |     at new S (u.js:2:1)\n    \
+         at <static_initializer> (u.js:4:13)\n    \
+         at <static_initializer> (u.js:5:18)\n\
+         Error: privm |     at #pm (u.js:6:16) |     at S.callPm (u.js:9:27)\n\
+         Error: sprivm |     at #spm (u.js:7:24) |     at S.callSpm (u.js:10:33)\n\
+         Error: privg |     at get #pg (u.js:8:20) |     at S.callPg (u.js:11:24)\n\
+         Error: derived field |     at <instance_members_initializer> (u.js:13:25) |     at new T (u.js:13:69)"
+    );
+}
+
+#[test]
+fn fields_and_private_names_survive_collection() {
+    let mut agent = Agent::new(AgentOptions::default());
+    agent.set_stress(true);
+    assert_eq!(
+        run_in(
+            &mut agent,
+            "var out = []; for (var i = 0; i < 20; i++) { \
+             var K = class { #n = i; tag = 't' + i; #m() { return this.#n * 2; } get v() { return this.#m() + this.tag.length; } \
+             static #count = 0; static inc() { return ++K.#count; } }; \
+             out.push(new K().v + K.inc()); } out.join()"
+        ),
+        "3,5,7,9,11,13,15,17,19,21,24,26,28,30,32,34,36,38,40,42"
+    );
+}
+
+#[test]
+fn a_super_reference_reads_its_base_before_converting_its_key() {
+    // The base is the home object's prototype when the reference is
+    // made; the key is converted when it is read or written, once for a
+    // compound form (section 13.3.7, Test262's getsuperbase tests).
+    assert_eq!(
+        run(
+            "var log = []; var proto = { p: 'ok', set q(v) { log.push('ok' + v); } }; \
+             var proto2 = { p: 'bad', set q(v) { log.push('bad' + v); } }; \
+             var obj = { __proto__: proto, m() { return super[key]; }, w() { super[wkey] = 1; } }; \
+             var key = { toString() { Object.setPrototypeOf(obj, proto2); return 'p'; } }; \
+             var wkey = { toString() { Object.setPrototypeOf(obj, proto2); return 'q'; } }; \
+             var r = obj.m(); Object.setPrototypeOf(obj, proto); obj.w(); \
+             var n = 0; var once = { toString() { n++; return 'c'; } }; \
+             var o2 = { __proto__: { c: 1 }, m() { super[once] += 1; super[once]++; return this.c; } }; \
+             [r, log.join(), o2.m(), n].join()"
+        ),
+        "ok,ok1,2,2"
+    );
+    // A sloppy method's write that the target refuses is ignored; a
+    // strict one's throws.
+    assert_eq!(
+        run(
+            "var proto = {}; Object.defineProperty(proto, 'x', { value: 1, writable: false }); \
+             var sloppy = { __proto__: proto, m() { super.x = 2; return this.x; } }; \
+             var strict = { __proto__: proto, m() { 'use strict'; super.x = 2; } }; \
+             var r; try { strict.m(); r = 'no throw'; } catch (e) { r = e.constructor.name; } \
+             [sloppy.m(), r].join()"
+        ),
+        "1,TypeError"
+    );
+}
+
+#[test]
+fn eval_in_class_code_sees_super_and_private_names() {
+    // Chrome 157, the second class probe.
+    assert_eq!(
+        fields(
+            "class P { get q() { return 'Q'; } } \
+             class X extends P { #p = 'P'; f = eval('super.q'); g = eval('new.target'); m() { return eval('this.#p + super.q'); } \
+             n() { return (() => eval('super.q'))(); } } \
+             var x = new X(); \
+             [x.f, x.g, x.m(), x.n(), \
+             err(function () { class Y { #a; m() { return eval('this.#q'); } } return new Y().m(); }), \
+             err(function () { return eval('(class { f = () => eval(\"arguments\"); })'); }), \
+             err(function () { class Z { f = eval('arguments'); } new Z(); }), \
+             err(function () { function plain() { return eval('super.x'); } plain(); })].join('\\n')"
+        ),
+        "Q\n\nPQ\nQ\n\
+         SyntaxError: Private field '#q' must be declared in an enclosing class\n\
+         no throw class { f = () => eval(\"arguments\"); }\n\
+         SyntaxError: 'arguments' is not allowed in class field initializer or static initialization block\n\
+         SyntaxError: 'super' keyword unexpected here"
     );
 }

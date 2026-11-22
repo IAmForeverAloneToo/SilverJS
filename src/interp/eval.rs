@@ -25,10 +25,10 @@ impl Agent {
         &mut self,
         source: Value,
         strict: bool,
-        new_target: bool,
+        cx: &crate::parser::EvalContext,
     ) -> Res<crate::compiler::CompiledUnit> {
         let text = String::from_utf16_lossy(&self.string_units(source).unwrap_or_default());
-        match crate::compiler::compile_eval(&text, strict, new_target) {
+        match crate::compiler::compile_eval(&text, strict, cx) {
             Ok(u) => Ok(u),
             Err(CompileError::Syntax(e)) => {
                 Err(self.throw_error(ErrorType::SyntaxError, e.message))
@@ -229,6 +229,27 @@ impl Agent {
         Ok(())
     }
 
+    /// The private names (`#x`, given without the `#`) of the classes
+    /// around `context`.
+    fn private_names_around(&self, context: Value) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut at = context;
+        while let Some((RefKind::Internal, e)) = at.as_reference() {
+            let Some(InternalCell::Env(env)) = self.heap.internals.get(e) else {
+                break;
+            };
+            if let Some((slots, _, _)) = self.env_names(e) {
+                for n in slots.iter() {
+                    if n.first() == Some(&u16::from(b'#')) {
+                        names.push(String::from_utf16_lossy(n.get(1..).unwrap_or(&[])));
+                    }
+                }
+            }
+            at = env.parent;
+        }
+        names
+    }
+
     /// The value of the binding `name` found from `context`, if a slot
     /// holds it.
     fn slot_named(&self, context: Value, name: &str) -> Option<Value> {
@@ -272,13 +293,23 @@ impl Agent {
             | FunctionKind::Method
             | FunctionKind::Generator
             | FunctionKind::ClassConstructor
-            | FunctionKind::DerivedConstructor => true,
+            | FunctionKind::DerivedConstructor
+            | FunctionKind::Initializer => true,
             _ if in_eval || kind == FunctionKind::Arrow => {
                 self.slot_named(frame.context, "new.target").is_some()
             }
             _ => false,
         };
-        let unit = self.compile_eval_code(source, strict, new_target)?;
+        let cx = crate::parser::EvalContext {
+            new_target,
+            // A method's code (or an arrow's in it): its home object.
+            super_prop: self
+                .slot_named(frame.context, "%home")
+                .is_some_and(|h| h.as_object().is_some()),
+            class_field: self.slot_named(frame.context, "%field").is_some(),
+            privates: self.private_names_around(frame.context),
+        };
+        let unit = self.compile_eval_code(source, strict, &cx)?;
         let sloppy = unit.functions.first().is_some_and(|f| !f.strict);
         let decls = if sloppy {
             unit.globals.clone()
@@ -343,7 +374,7 @@ impl Agent {
     /// Indirect eval (section 19.2.1.1 with direct false): sloppy unless
     /// it says otherwise, in the global scope, run to its value.
     pub(crate) fn indirect_eval(&mut self, source: Value) -> Res<Value> {
-        let unit = self.compile_eval_code(source, false, false)?;
+        let unit = self.compile_eval_code(source, false, &crate::parser::EvalContext::default())?;
         let sloppy = unit.functions.first().is_some_and(|f| !f.strict);
         let decls = if sloppy {
             unit.globals.clone()

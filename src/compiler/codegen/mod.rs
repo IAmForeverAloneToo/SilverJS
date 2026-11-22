@@ -49,6 +49,9 @@ struct Shared<'a> {
     scope_index: HashMap<ScopeId, u32>,
     /// Each function's name and kind, as its maker found them.
     names: Vec<Option<(Box<[u16]>, FunctionKind)>>,
+    /// The name a field's initializer gives an anonymous function it
+    /// makes (`f = () => {}`), by the initializer's index.
+    field_names: HashMap<u32, Box<[u16]>>,
 }
 
 impl Shared<'_> {
@@ -94,6 +97,7 @@ pub(super) fn generate_with_stats(
         scopes: Vec::new(),
         scope_index: HashMap::new(),
         names: vec![None; a.functions.len()],
+        field_names: HashMap::new(),
     };
     let mut functions = Vec::with_capacity(a.functions.len());
     for fi in 0..a.functions.len() {
@@ -638,10 +642,23 @@ impl<'s, 'a> Gen<'s, 'a> {
         if f.is_async {
             return Err(unsupported("async functions", f.span));
         }
-        if matches!(f.kind, FuncKind::ClassField | FuncKind::StaticBlock) {
-            return Err(unsupported("class fields", f.span));
-        }
         let derived = self.is_derived();
+        // A base class's constructor initializes its instance elements
+        // before anything of its own (section 10.2.2, step 6.b).
+        if matches!(f.kind, FuncKind::Constructor { derived: false })
+            && let Some(id) = self.a.ctor_class.get(&fid).copied()
+            && self.has_instance_elements(id)
+        {
+            let c = self.alloc();
+            self.op(Op::LdaClosure);
+            self.reg_op(Op::Star, c);
+            let t = self.alloc();
+            self.op(Op::LdaThis);
+            self.reg_op(Op::Star, t);
+            self.init_instance(id, c, t, f.span, f.span.start)?;
+            self.free(t);
+            self.free(c);
+        }
         let fs = self.scope;
         let scope = self.a.scope(fs);
         if scope.has_env {
@@ -744,7 +761,8 @@ impl<'s, 'a> Gen<'s, 'a> {
             }
             Body::Expr(e) => {
                 self.pos(self.ast.expr(*e).span);
-                self.expr(*e)?;
+                let name = self.sh.field_names.get(&self.index).cloned();
+                self.expr_named(*e, name.as_deref())?;
             }
         }
         if derived {

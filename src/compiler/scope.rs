@@ -82,6 +82,9 @@ pub(crate) enum BindingKind {
     /// The running function itself (`%fn`), whose prototype `super()`
     /// constructs.
     FunctionObject,
+    /// A class's private name (`#x`): made when the class is, before
+    /// anything in it can read it.
+    Private,
 }
 
 impl BindingKind {
@@ -168,6 +171,9 @@ pub(crate) struct Analysis {
     pub functions: Vec<FunctionInfo>,
     pub keys: HashMap<ScopeKey, ScopeId>,
     pub func_index: HashMap<FuncId, u32>,
+    /// Each class constructor's class, whose instance elements it (or
+    /// its `super()`) initializes.
+    pub ctor_class: HashMap<FuncId, ClassId>,
 }
 
 /// Where a name resolves, from a scope.
@@ -292,9 +298,10 @@ impl Analysis {
             .is_some_and(|s| s.kind == ScopeKind::Eval);
         if name == "this" && !eval {
             none(Place::GlobalThis)
-        } else if special {
+        } else if special && !(eval && matches!(name, "%home" | "%fn")) {
             // Eval code's `this` and `new.target`: its caller's, which
-            // its frame is given.
+            // its frame is given. Its home object and function are its
+            // caller's bindings, found by name.
             none(Place::Intrinsic)
         } else if dynamic || eval {
             none(Place::Dynamic)
@@ -540,8 +547,17 @@ impl<'a> Walker<'a> {
                 Item::Class(id) => {
                     let class = ast.class(id);
                     self.enter(ScopeKind::Class, ScopeKey::Class(id));
+                    let s = self.cur();
+                    for m in &class.members {
+                        if let PropKey::Private(p) = &m.key {
+                            let name = format!("#{}", p.name);
+                            self.declare(s, &name, BindingKind::Private, 0, None, None);
+                        }
+                    }
+                    if let Some(c) = class.constructor {
+                        self.a.ctor_class.insert(c, id);
+                    }
                     if let Some(name) = &class.name {
-                        let s = self.cur();
                         // Initialized when the class is made: its heritage
                         // and computed keys see it in its TDZ.
                         let end = class.span.end;
@@ -835,9 +851,12 @@ impl<'a> Walker<'a> {
             Expr::Function(f) => self.work.push(Item::Func(*f, true)),
             Expr::Arrow(f) => self.work.push(Item::Func(*f, false)),
             Expr::Class(c) => self.work.push(Item::Class(*c)),
+            Expr::PrivateIn { name, right } => {
+                self.refs.push((cur, format!("#{}", name.name).into()));
+                self.work.push(Item::Expr(*right));
+            }
             Expr::Unary { arg: e, .. }
             | Expr::Update { target: e, .. }
-            | Expr::PrivateIn { right: e, .. }
             | Expr::Paren(e)
             | Expr::OptionalChain(e)
             | Expr::Await(e) => self.work.push(Item::Expr(*e)),
@@ -867,8 +886,12 @@ impl<'a> Walker<'a> {
                 }
             }
             Expr::Member { object, prop, .. } => {
-                if let MemberProp::Computed(e) = prop {
-                    self.work.push(Item::Expr(*e));
+                match prop {
+                    MemberProp::Computed(e) => self.work.push(Item::Expr(*e)),
+                    MemberProp::Private(i) => {
+                        self.refs.push((cur, format!("#{}", i.name).into()));
+                    }
+                    MemberProp::Ident(_) => {}
                 }
                 self.work.push(Item::Expr(*object));
             }
@@ -938,7 +961,7 @@ impl<'a> Walker<'a> {
             // Eval code's top level holds its own `this` and `new.target`
             // (its caller's), for the arrows inside it.
             if scope.kind == (ScopeKind::Function { arrow: false })
-                || (scope.kind == ScopeKind::Eval && special)
+                || (scope.kind == ScopeKind::Eval && special && !matches!(name, "%home" | "%fn"))
             {
                 let kind = match name {
                     "this" => Some(BindingKind::This),
@@ -979,8 +1002,27 @@ impl<'a> Walker<'a> {
                 scope.has_eval = true;
                 scope.dynamic |= !strict;
             }
-            for name in ["this", "new.target", "arguments"] {
+            for name in ["this", "new.target", "arguments", "%home", "%fn"] {
                 self.mark(s, name);
+            }
+            // A field initializer's or static block's eval refuses
+            // `arguments`: a marker its eval finds.
+            let mut at = Some(s);
+            while let Some(c) = at {
+                let scope = self.a.scope(c);
+                if scope.kind == (ScopeKind::Function { arrow: false }) {
+                    let field = self.a.functions[scope.func as usize].func.is_some_and(|f| {
+                        matches!(
+                            self.program.ast.func(f).kind,
+                            FuncKind::ClassField | FuncKind::StaticBlock
+                        )
+                    });
+                    if field {
+                        self.declare(c, "%field", BindingKind::Var, 0, None, None);
+                    }
+                    break;
+                }
+                at = scope.parent;
             }
             let mut cur = Some(s);
             while let Some(c) = cur {

@@ -108,6 +108,64 @@ pub(crate) fn cannot_redefine(key: &str) -> String {
 
 pub(crate) const THIS_BEFORE_SUPER: &str = "Must call super constructor in derived class before accessing 'this' or returning from derived constructor";
 
+/// `Cannot read private member #p from an object whose class did not
+/// declare it`.
+pub(crate) fn private_read(name: &str) -> String {
+    format!("Cannot read private member {name} from an object whose class did not declare it")
+}
+
+/// `Cannot write private member #p to an object whose class did not
+/// declare it`.
+pub(crate) fn private_write(name: &str) -> String {
+    format!("Cannot write private member {name} to an object whose class did not declare it")
+}
+
+/// `Receiver must be an instance of class X` (a private method's or
+/// accessor's), or `Receiver must be class X` (a static one's).
+pub(crate) fn private_receiver(class: &str, is_static: bool) -> String {
+    if is_static {
+        format!("Receiver must be class {class}")
+    } else {
+        format!("Receiver must be an instance of class {class}")
+    }
+}
+
+/// `'#g' was defined without a setter`.
+pub(crate) fn private_no_setter(name: &str) -> String {
+    format!("'{name}' was defined without a setter")
+}
+
+/// `'#s' was defined without a getter`.
+pub(crate) fn private_no_getter(name: &str) -> String {
+    format!("'{name}' was defined without a getter")
+}
+
+/// `Private method '#m' is not writable`.
+pub(crate) fn private_method_write(name: &str) -> String {
+    format!("Private method '{name}' is not writable")
+}
+
+/// `Cannot initialize #p twice on the same object`.
+pub(crate) fn private_twice(name: &str) -> String {
+    format!("Cannot initialize {name} twice on the same object")
+}
+
+/// `Cannot initialize private methods of class X twice on the same
+/// object`.
+pub(crate) fn brand_twice(class: &str) -> String {
+    format!("Cannot initialize private methods of class {class} twice on the same object")
+}
+
+/// `Cannot use 'in' operator to search for '#p' in 1`.
+pub(crate) fn private_in(name: &str, what: &str) -> String {
+    format!("Cannot use 'in' operator to search for '{name}' in {what}")
+}
+
+/// `Cannot define property f, object is not extensible`.
+pub(crate) fn field_not_extensible(key: &str) -> String {
+    format!("Cannot define property {key}, object is not extensible")
+}
+
 pub(crate) const SUPER_DELETE: &str = "Unsupported reference to 'super'";
 pub(crate) const SUPER_TWICE: &str = "Super constructor may only be called once";
 

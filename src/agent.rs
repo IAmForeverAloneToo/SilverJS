@@ -512,7 +512,7 @@ impl<'a> Scope<'a> {
             None => Value::UNDEFINED,
         };
         self.agent.reserve(32)?;
-        let (index, _) = self.agent.heap.symbols.alloc(SymbolCell { description });
+        let (index, _) = self.agent.heap.symbols.alloc(SymbolCell::new(description));
         Ok(self.local(Value::reference(RefKind::Symbol, index)))
     }
 

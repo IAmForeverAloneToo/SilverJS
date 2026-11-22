@@ -468,8 +468,22 @@ impl Agent {
         let (i, _) = self
             .heap
             .symbols
-            .alloc(crate::heap::SymbolCell { description });
+            .alloc(crate::heap::SymbolCell::new(description));
         Ok(Value::reference(RefKind::Symbol, i))
+    }
+
+    /// A new private name described `#name` (a field's until a method
+    /// or accessor is defined under it).
+    #[inline(never)]
+    pub(crate) fn new_private_name(&mut self, description: Value) -> Res<Value> {
+        let s = self.new_symbol(description)?;
+        if let Some(cell) = s
+            .as_reference()
+            .and_then(|(_, i)| self.heap.symbols.get_mut(i))
+        {
+            cell.private = Some(Box::new(crate::heap::PrivateName::field()));
+        }
+        Ok(s)
     }
 
     // Conversions.

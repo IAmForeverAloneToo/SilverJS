@@ -131,7 +131,19 @@ impl Gen<'_, '_> {
                 self.operators(id)?
             }
             Expr::Update { op, prefix, target } => self.update(*op, *prefix, *target, span)?,
-            Expr::PrivateIn { .. } => return Err(unsupported("private names", span)),
+            Expr::PrivateIn { name, right } => {
+                self.expr(*right)?;
+                let o = self.alloc();
+                self.reg_op(Op::Star, o);
+                let n = self.alloc();
+                self.load_name(&format!("#{}", name.name), name.span, false)?;
+                self.reg_op(Op::Star, n);
+                self.reg_op(Op::Ldar, o);
+                self.pos(span);
+                self.reg_op(Op::HasPrivate, n);
+                self.free(n);
+                self.free(o);
+            }
             Expr::Assign { op, target, value } => self.assign(*op, *target, *value, span)?,
             Expr::Conditional {
                 test,
@@ -325,7 +337,7 @@ impl Gen<'_, '_> {
             // A super reference is never deleted (section 13.5.1.2), its
             // `this` and key evaluated first.
             Expr::SuperMember(prop) => {
-                let r = self.super_ref(prop, node.span)?;
+                let r = self.super_ref(prop, node.span, false)?;
                 self.pos(span);
                 self.op(Op::ThrowSuperDelete);
                 self.super_ref_free(r);
@@ -366,8 +378,10 @@ impl Gen<'_, '_> {
         let node = self.ast.expr(callee);
         match &node.kind {
             Expr::Ident(i) => i.span.start,
+            // A private method's call stands at its `(`, as Chrome 157's
+            // frames show it.
             Expr::Member {
-                prop: MemberProp::Ident(i) | MemberProp::Private(i),
+                prop: MemberProp::Ident(i),
                 ..
             } => i.span.start,
             Expr::Member {
@@ -393,7 +407,11 @@ impl Gen<'_, '_> {
                 self.pos_at(span, at);
                 self.emit(Op::GetKeyed, &[i64::from(o), ic]);
             }
-            MemberProp::Private(i) => return Err(unsupported("private names", i.span)),
+            MemberProp::Private(i) => {
+                self.load_name(&format!("#{}", i.name), i.span, false)?;
+                self.pos_at(span, i.span.start);
+                self.reg_op(Op::GetPrivate, o);
+            }
         }
         Ok(())
     }
@@ -717,7 +735,12 @@ impl Gen<'_, '_> {
                         Some(r)
                     }
                     MemberProp::Ident(_) => None,
-                    MemberProp::Private(i) => return Err(unsupported("private names", i.span)),
+                    MemberProp::Private(i) => {
+                        self.load_name(&format!("#{}", i.name), i.span, false)?;
+                        let r = self.alloc();
+                        self.reg_op(Op::Star, r);
+                        Some(r)
+                    }
                 };
                 let get = |g: &mut Self| -> R {
                     match (prop, key) {
@@ -726,6 +749,11 @@ impl Gen<'_, '_> {
                             let ic = g.ic();
                             g.pos(tnode.span);
                             g.emit(Op::GetNamed, &[i64::from(o), n, ic]);
+                        }
+                        (MemberProp::Private(_), Some(k)) => {
+                            g.reg_op(Op::Ldar, k);
+                            g.pos(tnode.span);
+                            g.reg_op(Op::GetPrivate, o);
                         }
                         (_, Some(k)) => {
                             g.reg_op(Op::Ldar, k);
@@ -768,7 +796,8 @@ impl Gen<'_, '_> {
                 self.free(o);
             }
             Expr::SuperMember(prop) => {
-                let r = self.super_ref(prop, tnode.span)?;
+                let compound = !matches!(op, AssignOp::Assign);
+                let r = self.super_ref(prop, tnode.span, compound)?;
                 match op {
                     AssignOp::Assign => {
                         self.expr(value)?;
@@ -813,6 +842,9 @@ impl Gen<'_, '_> {
             (MemberProp::Ident(i), _) => {
                 let n = self.name(&i.name);
                 self.emit(Op::SetNamed, &[i64::from(o), n, ic]);
+            }
+            (MemberProp::Private(_), Some(k)) => {
+                self.emit(Op::SetPrivate, &[i64::from(o), i64::from(k)]);
             }
             (_, Some(k)) => self.emit(Op::SetKeyed, &[i64::from(o), i64::from(k), ic]),
             _ => {}
@@ -859,9 +891,18 @@ impl Gen<'_, '_> {
                         Some(r)
                     }
                     MemberProp::Ident(_) => None,
-                    MemberProp::Private(i) => return Err(unsupported("private names", i.span)),
+                    MemberProp::Private(i) => {
+                        self.load_name(&format!("#{}", i.name), i.span, false)?;
+                        let r = self.alloc();
+                        self.reg_op(Op::Star, r);
+                        Some(r)
+                    }
                 };
-                if let Some(k) = key {
+                if let (MemberProp::Private(_), Some(k)) = (prop, key) {
+                    self.reg_op(Op::Ldar, k);
+                    self.pos(tnode.span);
+                    self.reg_op(Op::GetPrivate, o);
+                } else if let Some(k) = key {
                     self.reg_op(Op::Ldar, k);
                     let ic = self.ic();
                     self.pos(tnode.span);
@@ -890,7 +931,7 @@ impl Gen<'_, '_> {
                 self.free(o);
             }
             Expr::SuperMember(prop) => {
-                let r = self.super_ref(prop, tnode.span)?;
+                let r = self.super_ref(prop, tnode.span, true)?;
                 self.super_ref_get(r, tnode.span);
                 self.pos(span);
                 let old = if prefix {

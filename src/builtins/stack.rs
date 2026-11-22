@@ -346,6 +346,25 @@ impl Agent {
         self.own_name(f.callee).filter(|n| !n.is_empty())
     }
 
+    /// Whether a frame shows its function's name with no receiver: a
+    /// class's initializer (`<static_initializer>`) and a private method
+    /// or accessor (`#m`, `get #g`), as Chrome 157 shows them.
+    fn bare_frame(&self, f: &StackFrame, name: Option<&str>) -> bool {
+        if f.native {
+            return false;
+        }
+        let kind = self
+            .vm
+            .units
+            .get(f.unit as usize)
+            .and_then(|u| u.code.functions.get(f.func as usize))
+            .map(|c| c.kind);
+        kind == Some(crate::compiler::FunctionKind::Initializer)
+            || name.is_some_and(|n| {
+                n.starts_with('#') || n.starts_with("get #") || n.starts_with("set #")
+            })
+    }
+
     /// The name `receiver` holds `callee` under, along its prototype
     /// chain (data properties only), if it does.
     fn method_name_of(&self, receiver: Value, callee: Value) -> Option<String> {
@@ -380,7 +399,7 @@ impl Agent {
         let name = self.frame_name(f);
         let shown = if f.construct {
             Some(format!("new {}", name.as_deref().unwrap_or("<anonymous>")))
-        } else if f.accessor || (!f.native && f.func == 0) {
+        } else if f.accessor || (!f.native && f.func == 0) || self.bare_frame(f, name.as_deref()) {
             name
         } else {
             match self.receiver_type(f.receiver) {

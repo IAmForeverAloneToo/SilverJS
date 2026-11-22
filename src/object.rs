@@ -751,6 +751,41 @@ impl Heap {
         })
     }
 
+    /// A private element of `o` (a field's value, or a brand): its own
+    /// property keyed by the private name, if it has one.
+    pub(crate) fn private_get(&self, o: u32, key: PropertyKey) -> Option<Value> {
+        match self.get_own_property(o, key)? {
+            OwnProperty::Data { value, .. } => Some(value),
+            OwnProperty::Accessor { .. } => None,
+        }
+    }
+
+    /// Adds a private element to `o` (PrivateFieldAdd, section 7.3.31):
+    /// whether `o` extensible or not; false if it has it already.
+    pub(crate) fn private_add(&mut self, o: u32, key: PropertyKey, value: Value) -> bool {
+        if self.private_get(o, key).is_some() {
+            return false;
+        }
+        let prop = OwnProperty::Data {
+            value,
+            writable: true,
+            enumerable: false,
+            configurable: false,
+        };
+        self.with_object(o, |c| c.put(key, prop)).is_some()
+    }
+
+    /// Writes a private field `o` has.
+    pub(crate) fn private_set(&mut self, o: u32, key: PropertyKey, value: Value) {
+        let prop = OwnProperty::Data {
+            value,
+            writable: true,
+            enumerable: false,
+            configurable: false,
+        };
+        self.with_object(o, |c| c.put(key, prop));
+    }
+
     /// Runs `f` on the object `o` and keeps the heap's count of its
     /// bytes right.
     fn with_object<R>(&mut self, o: u32, f: impl FnOnce(&mut ObjectCell) -> R) -> Option<R> {
@@ -1197,9 +1232,15 @@ impl Heap {
             return Vec::new();
         };
         let mut keys = cell.own_keys(self.length_key);
-        if let Some(h) = self.hidden_symbol {
-            keys.retain(|k| *k != PropertyKey::Symbol(h));
-        }
+        // The engine's own symbol, and private names, are no keys a
+        // script sees.
+        keys.retain(|k| match *k {
+            PropertyKey::Symbol(s) => {
+                Some(s) != self.hidden_symbol
+                    && self.symbols.get(s).is_none_or(|c| c.private.is_none())
+            }
+            _ => true,
+        });
         // A `String` wrapper's indices, then `length`, come first
         // (section 10.4.3.3); its other indices are past the string's.
         if cell.kind == ObjectKind::String

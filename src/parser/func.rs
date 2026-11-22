@@ -631,6 +631,9 @@ impl Parser<'_> {
                     self.bump()?;
                 }
             }
+            // A method's source text starts past `static` (section 15.4's
+            // MethodDefinition), as Chrome 157 prints it.
+            let method_start = self.tok.start;
             let (is_async, is_generator, accessor) = self.method_modifiers()?;
             let key_span = self.tok_span();
             let key = self.property_key(true)?;
@@ -693,7 +696,7 @@ impl Parser<'_> {
                     self.declare_private(p, private_kind)?;
                 }
                 self.enter()?;
-                let f = self.function_rest(func_kind, is_async, is_generator, None, start);
+                let f = self.function_rest(func_kind, is_async, is_generator, None, method_start);
                 self.leave();
                 let f = f?;
                 if is_constructor {
