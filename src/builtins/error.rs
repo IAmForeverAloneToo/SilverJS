@@ -43,8 +43,7 @@ fn construct(agent: &mut Agent, c: Call, t: ErrorType) -> Res<Value> {
     } else {
         c.new_target
     };
-    let default = agent.realm().error_proto(t);
-    let proto = agent.prototype_from(nt, default)?;
+    let proto = agent.prototype_from(nt, |r| r.error_proto(t))?;
     let o = agent.alloc_object(ObjectCell::new(proto, ObjectKind::Error))?;
     agent.vm.temps.push(o);
     let result = (|| {

@@ -980,7 +980,7 @@ impl Agent {
             if b.constant {
                 return Err(self.throw_error(ErrorType::TypeError, messages::CONST_ASSIGNMENT));
             }
-            if let Some(realm) = self.vm.realm.as_mut()
+            if let Some(realm) = self.realm_mut()
                 && let Some(b) = realm.lexical.get_mut(&key)
             {
                 b.value = value;

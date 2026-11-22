@@ -323,7 +323,7 @@ impl Agent {
     fn frame_name(&self, f: &StackFrame) -> Option<String> {
         if f.native {
             return match self.callable(f.callee) {
-                Some(Callable::Native { id }) => Some(match self.host_name(id) {
+                Some(Callable::Native { id, .. }) => Some(match self.host_name(id) {
                     Some(n) => n.to_owned(),
                     None => super::native_name(id),
                 }),
@@ -364,7 +364,7 @@ impl Agent {
     /// Whether a native's frame is shown: `Function.prototype.call` and
     /// `apply` are not, as the reference browser shows them.
     fn native_shown(&self, callee: Value) -> bool {
-        let Some(Callable::Native { id }) = self.callable(callee) else {
+        let Some(Callable::Native { id, .. }) = self.callable(callee) else {
             return true;
         };
         let table = super::table::FUNCTION_PROTO;

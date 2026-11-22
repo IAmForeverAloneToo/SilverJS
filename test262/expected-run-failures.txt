@@ -628,7 +628,6 @@ test/built-ins/AggregateError/prototype/proto.js throws
 test/built-ins/Array/from/elements-deleted-after.js throws
 test/built-ins/Array/from/items-is-arraybuffer.js throws
 test/built-ins/Array/from/iter-set-elem-prop-non-writable.js generators
-test/built-ins/Array/from/proto-from-ctor-realm.js throws
 test/built-ins/Array/from/source-object-constructor.js throws
 test/built-ins/Array/fromAsync/async-iterable-async-mapped-awaits-once.js async-functions
 test/built-ins/Array/fromAsync/async-iterable-input-does-not-await-input.js async-functions
@@ -731,12 +730,7 @@ test/built-ins/Array/isArray/15.4.3.2-1-9.js throws
 test/built-ins/Array/isArray/proxy-revoked.js throws
 test/built-ins/Array/isArray/proxy.js throws
 test/built-ins/Array/length/define-own-prop-length-coercion-order.js throws
-test/built-ins/Array/length/define-own-prop-length-overflow-realm.js throws
-test/built-ins/Array/of/proto-from-ctor-realm.js throws
 test/built-ins/Array/of/return-abrupt-from-data-property-using-proxy.js throws
-test/built-ins/Array/proto-from-ctor-realm-one.js throws
-test/built-ins/Array/proto-from-ctor-realm-two.js throws
-test/built-ins/Array/proto-from-ctor-realm-zero.js throws
 test/built-ins/Array/prototype/Symbol.iterator.js throws
 test/built-ins/Array/prototype/Symbol.iterator/not-a-constructor.js throws
 test/built-ins/Array/prototype/Symbol.unscopables/change-array-by-copy.js for-of
@@ -747,8 +741,6 @@ test/built-ins/Array/prototype/concat/Array.prototype.concat_non-array.js classe
 test/built-ins/Array/prototype/concat/Array.prototype.concat_small-typed-array.js throws
 test/built-ins/Array/prototype/concat/Array.prototype.concat_spreadable-reg-exp.js throws
 test/built-ins/Array/prototype/concat/arg-length-exceeding-integer-limit.js throws
-test/built-ins/Array/prototype/concat/create-proto-from-ctor-realm-array.js throws
-test/built-ins/Array/prototype/concat/create-proto-from-ctor-realm-non-array.js throws
 test/built-ins/Array/prototype/concat/create-proxy.js throws
 test/built-ins/Array/prototype/concat/create-revoked-proxy.js throws
 test/built-ins/Array/prototype/concat/is-concat-spreadable-is-array-proxy-revoked.js throws
@@ -793,8 +785,6 @@ test/built-ins/Array/prototype/filter/15.4.4.20-9-c-iii-22.js throws
 test/built-ins/Array/prototype/filter/15.4.4.20-9-c-iii-23.js throws
 test/built-ins/Array/prototype/filter/15.4.4.20-9-c-iii-24.js throws
 test/built-ins/Array/prototype/filter/callbackfn-resize-arraybuffer.js throws
-test/built-ins/Array/prototype/filter/create-proto-from-ctor-realm-array.js throws
-test/built-ins/Array/prototype/filter/create-proto-from-ctor-realm-non-array.js throws
 test/built-ins/Array/prototype/filter/create-proxy.js throws
 test/built-ins/Array/prototype/filter/create-revoked-proxy.js throws
 test/built-ins/Array/prototype/filter/resizable-buffer-grow-mid-iteration.js for-of
@@ -875,8 +865,6 @@ test/built-ins/Array/prototype/map/15.4.4.19-5-15.js throws
 test/built-ins/Array/prototype/map/15.4.4.19-5-16.js throws
 test/built-ins/Array/prototype/map/15.4.4.19-5-17.js throws
 test/built-ins/Array/prototype/map/callbackfn-resize-arraybuffer.js throws
-test/built-ins/Array/prototype/map/create-proto-from-ctor-realm-array.js throws
-test/built-ins/Array/prototype/map/create-proto-from-ctor-realm-non-array.js throws
 test/built-ins/Array/prototype/map/create-proxy.js throws
 test/built-ins/Array/prototype/map/create-revoked-proxy.js throws
 test/built-ins/Array/prototype/map/create-species-undef-invalid-len.js throws
@@ -907,8 +895,6 @@ test/built-ins/Array/prototype/reverse/length-exceeding-integer-limit-with-proxy
 test/built-ins/Array/prototype/reverse/resizable-buffer.js for-of
 test/built-ins/Array/prototype/slice/coerced-start-end-grow.js for-of
 test/built-ins/Array/prototype/slice/coerced-start-end-shrink.js for-of
-test/built-ins/Array/prototype/slice/create-proto-from-ctor-realm-array.js throws
-test/built-ins/Array/prototype/slice/create-proto-from-ctor-realm-non-array.js throws
 test/built-ins/Array/prototype/slice/create-proxied-array-invalid-len.js throws
 test/built-ins/Array/prototype/slice/create-proxy.js throws
 test/built-ins/Array/prototype/slice/create-revoked-proxy.js throws
@@ -933,8 +919,6 @@ test/built-ins/Array/prototype/sort/comparefn-nonfunction-call-throws.js throws
 test/built-ins/Array/prototype/sort/comparefn-resizable-buffer.js for-of
 test/built-ins/Array/prototype/sort/comparefn-shrink.js for-of
 test/built-ins/Array/prototype/sort/resizable-buffer-default-comparator.js for-of
-test/built-ins/Array/prototype/splice/create-proto-from-ctor-realm-array.js throws
-test/built-ins/Array/prototype/splice/create-proto-from-ctor-realm-non-array.js throws
 test/built-ins/Array/prototype/splice/create-proxy.js throws
 test/built-ins/Array/prototype/splice/create-revoked-proxy.js throws
 test/built-ins/Array/prototype/splice/create-species-length-exceeding-integer-limit.js throws
@@ -1514,7 +1498,6 @@ test/built-ins/BigInt/tostring-throws.js throws
 test/built-ins/BigInt/valueof-throws.js throws
 test/built-ins/BigInt/wrapper-object-ordinary-toprimitive.js throws
 test/built-ins/Boolean/S9.2_A6_T1.js throws
-test/built-ins/Boolean/proto-from-ctor-realm.js throws
 test/built-ins/Boolean/prototype/toString/S15.6.4.2_A2_T3.js throws
 test/built-ins/Boolean/prototype/valueOf/S15.6.4.3_A2_T3.js throws
 test/built-ins/DataView/buffer-does-not-have-arraybuffer-data-throws.js throws
@@ -2744,10 +2727,8 @@ test/built-ins/DisposableStack/undefined-newtarget-throws.js throws
 test/built-ins/Error/cause_abrupt.js throws
 test/built-ins/Error/isError/bigints.js throws
 test/built-ins/Error/isError/error-subclass.js classes
-test/built-ins/Error/isError/errors-other-realm.js throws
 test/built-ins/Error/isError/non-error-objects-other-realm.js throws
 test/built-ins/Error/isError/non-error-objects.js throws
-test/built-ins/Error/proto-from-ctor-realm.js throws
 test/built-ins/FinalizationRegistry/constructor.js throws
 test/built-ins/FinalizationRegistry/instance-extensible.js throws
 test/built-ins/FinalizationRegistry/is-a-constructor.js throws
@@ -2795,8 +2776,6 @@ test/built-ins/FinalizationRegistry/returns-new-object-from-constructor.js for-o
 test/built-ins/FinalizationRegistry/target-not-callable-throws.js throws
 test/built-ins/FinalizationRegistry/undefined-newtarget-throws.js throws
 test/built-ins/FinalizationRegistry/unnaffected-by-poisoned-cleanupCallback.js for-of
-test/built-ins/Function/call-bind-this-realm-undef.js throws
-test/built-ins/Function/call-bind-this-realm-value.js throws
 test/built-ins/Function/internals/Call/class-ctor-realm.js throws
 test/built-ins/Function/internals/Call/class-ctor.js classes
 test/built-ins/Function/internals/Construct/base-ctor-revoked-proxy-realm.js throws
@@ -2805,10 +2784,7 @@ test/built-ins/Function/internals/Construct/derived-return-val-realm.js throws
 test/built-ins/Function/internals/Construct/derived-return-val.js classes
 test/built-ins/Function/internals/Construct/derived-this-uninitialized-realm.js throws
 test/built-ins/Function/internals/Construct/derived-this-uninitialized.js classes
-test/built-ins/Function/proto-from-ctor-realm-prototype.js throws
-test/built-ins/Function/proto-from-ctor-realm.js throws
 test/built-ins/Function/prototype/Symbol.hasInstance/value-get-prototype-of-err.js throws
-test/built-ins/Function/prototype/apply/argarray-not-object-realm.js throws
 test/built-ins/Function/prototype/apply/resizable-buffer.js for-of
 test/built-ins/Function/prototype/apply/this-not-callable-realm.js throws
 test/built-ins/Function/prototype/apply/this-not-callable.js throws
@@ -2817,9 +2793,7 @@ test/built-ins/Function/prototype/bind/15.3.4.5-2-7.js throws
 test/built-ins/Function/prototype/bind/15.3.4.5-2-9.js throws
 test/built-ins/Function/prototype/bind/S15.3.4.5_A16.js throws
 test/built-ins/Function/prototype/bind/S15.3.4.5_A5.js throws
-test/built-ins/Function/prototype/bind/get-fn-realm-recursive.js throws
 test/built-ins/Function/prototype/bind/get-fn-realm.js throws
-test/built-ins/Function/prototype/bind/proto-from-ctor-realm.js throws
 test/built-ins/Function/prototype/call/S15.3.4.4_A16.js throws
 test/built-ins/Function/prototype/caller-arguments/accessor-properties.js chrome-surface
 test/built-ins/Function/prototype/caller/prop-desc.js chrome-surface
@@ -4041,14 +4015,7 @@ test/built-ins/Math/sumPrecise/sum-is-minus-zero.js throws
 test/built-ins/Math/sumPrecise/sum.js throws
 test/built-ins/Math/sumPrecise/takes-iterable.js generators
 test/built-ins/Math/sumPrecise/throws-on-non-number.js throws
-test/built-ins/NativeErrors/EvalError/proto-from-ctor-realm.js throws
-test/built-ins/NativeErrors/RangeError/proto-from-ctor-realm.js throws
-test/built-ins/NativeErrors/ReferenceError/proto-from-ctor-realm.js throws
-test/built-ins/NativeErrors/SyntaxError/proto-from-ctor-realm.js throws
-test/built-ins/NativeErrors/TypeError/proto-from-ctor-realm.js throws
-test/built-ins/NativeErrors/URIError/proto-from-ctor-realm.js throws
 test/built-ins/Number/bigint-conversion.js throws
-test/built-ins/Number/proto-from-ctor-realm.js throws
 test/built-ins/Number/prototype/toFixed/toFixed-tonumber-throws-typeerror-bigint.js throws
 test/built-ins/Number/prototype/toString/S15.7.4.2_A4_T03.js throws
 test/built-ins/Number/prototype/valueOf/S15.7.4.4_A2_T03.js throws
@@ -4353,7 +4320,6 @@ test/built-ins/Object/preventExtensions/15.2.3.10-3-8.js throws
 test/built-ins/Object/preventExtensions/15.2.3.10-3-9.js throws
 test/built-ins/Object/preventExtensions/abrupt-completion.js throws
 test/built-ins/Object/preventExtensions/throws-when-false.js throws
-test/built-ins/Object/proto-from-ctor-realm.js throws
 test/built-ins/Object/prototype/__defineGetter__/define-abrupt.js throws
 test/built-ins/Object/prototype/__defineSetter__/define-abrupt.js throws
 test/built-ins/Object/prototype/__lookupGetter__/lookup-own-get-err.js throws
@@ -7585,7 +7551,6 @@ test/built-ins/SetIteratorPrototype/next/this-not-object-throw-keys.js throws
 test/built-ins/SetIteratorPrototype/next/this-not-object-throw-prototype-iterator.js throws
 test/built-ins/SetIteratorPrototype/next/this-not-object-throw-values.js throws
 test/built-ins/String/fromCharCode/touint16-tonumber-throws-bigint.js throws
-test/built-ins/String/proto-from-ctor-realm.js throws
 test/built-ins/String/prototype/Symbol.iterator/length.js throws
 test/built-ins/String/prototype/Symbol.iterator/name.js throws
 test/built-ins/String/prototype/Symbol.iterator/not-a-constructor.js throws
@@ -7806,11 +7771,9 @@ test/built-ins/String/prototype/startsWith/searchstring-is-regexp-throws.js thro
 test/built-ins/String/prototype/toLocaleLowerCase/S15.5.4.17_A1_T14.js throws
 test/built-ins/String/prototype/toLocaleUpperCase/S15.5.4.19_A1_T14.js throws
 test/built-ins/String/prototype/toLowerCase/S15.5.4.16_A1_T14.js throws
-test/built-ins/String/prototype/toString/non-generic-realm.js throws
 test/built-ins/String/prototype/toUpperCase/S15.5.4.18_A1_T14.js throws
 test/built-ins/String/prototype/toWellFormed/to-string-primitive.js for-of
 test/built-ins/String/prototype/trim/15.5.4.20-2-49.js throws
-test/built-ins/String/prototype/valueOf/non-generic-realm.js throws
 test/built-ins/String/raw/return-the-string-value-from-template.js tagged-templates
 test/built-ins/String/raw/special-characters.js tagged-templates
 test/built-ins/String/raw/template-substitutions-are-appended-on-same-index.js tagged-templates
@@ -7844,27 +7807,10 @@ test/built-ins/SuppressedError/prototype/message.js throws
 test/built-ins/SuppressedError/prototype/name.js throws
 test/built-ins/SuppressedError/prototype/prop-desc.js throws
 test/built-ins/SuppressedError/prototype/proto.js throws
-test/built-ins/Symbol/asyncDispose/cross-realm.js throws
-test/built-ins/Symbol/asyncIterator/cross-realm.js throws
-test/built-ins/Symbol/dispose/cross-realm.js throws
-test/built-ins/Symbol/for/cross-realm.js throws
-test/built-ins/Symbol/hasInstance/cross-realm.js throws
-test/built-ins/Symbol/isConcatSpreadable/cross-realm.js throws
-test/built-ins/Symbol/iterator/cross-realm.js throws
-test/built-ins/Symbol/keyFor/cross-realm.js throws
-test/built-ins/Symbol/match/cross-realm.js throws
-test/built-ins/Symbol/matchAll/cross-realm.js throws
 test/built-ins/Symbol/prototype/Symbol.toPrimitive/removed-symbol-wrapper-ordinary-toprimitive.js throws
 test/built-ins/Symbol/prototype/description/this-val-non-symbol.js throws
-test/built-ins/Symbol/replace/cross-realm.js throws
-test/built-ins/Symbol/search/cross-realm.js throws
 test/built-ins/Symbol/species/builtin-getter-name.js throws
-test/built-ins/Symbol/species/cross-realm.js throws
 test/built-ins/Symbol/species/subclassing.js classes
-test/built-ins/Symbol/split/cross-realm.js throws
-test/built-ins/Symbol/toPrimitive/cross-realm.js throws
-test/built-ins/Symbol/toStringTag/cross-realm.js throws
-test/built-ins/Symbol/unscopables/cross-realm.js throws
 test/built-ins/Temporal/Duration/basic.js for-of
 test/built-ins/Temporal/Duration/builtin.js throws
 test/built-ins/Temporal/Duration/call-builtin.js for-of
@@ -12481,7 +12427,6 @@ test/built-ins/Temporal/keys.js throws
 test/built-ins/Temporal/prop-desc.js throws
 test/built-ins/Temporal/toStringTag/prop-desc.js throws
 test/built-ins/Temporal/toStringTag/string.js throws
-test/built-ins/ThrowTypeError/distinct-cross-realm.js throws
 test/built-ins/ThrowTypeError/unique-per-realm-function-proto.js chrome-surface
 test/built-ins/TypedArray/Symbol.species/length.js throws
 test/built-ins/TypedArray/Symbol.species/name.js throws
@@ -15356,7 +15301,6 @@ test/language/eval-code/indirect/lex-env-no-init-cls.js throws
 test/language/eval-code/indirect/non-definable-function-with-function.js throws
 test/language/eval-code/indirect/non-definable-function-with-variable.js throws
 test/language/eval-code/indirect/non-definable-global-generator.js throws
-test/language/eval-code/indirect/realm.js throws
 test/language/export/escaped-as-export-specifier.js modules
 test/language/export/escaped-default.js modules
 test/language/export/escaped-from.js modules
@@ -16549,7 +16493,6 @@ test/language/expressions/bitwise-xor/bigint-non-primitive.js throws
 test/language/expressions/bitwise-xor/bigint-toprimitive.js throws
 test/language/expressions/bitwise-xor/bigint-wrapped-values.js throws
 test/language/expressions/bitwise-xor/bigint.js throws
-test/language/expressions/call/eval-realm-indirect.js throws
 test/language/expressions/call/eval-spread-empty-leading.js spread
 test/language/expressions/call/eval-spread-empty-trailing.js spread
 test/language/expressions/call/eval-spread-empty.js spread
@@ -21251,7 +21194,6 @@ test/language/expressions/new.target/unary-expr.js async-functions
 test/language/expressions/new.target/value-via-super-call.js classes
 test/language/expressions/new.target/value-via-super-property.js classes
 test/language/expressions/new.target/value-via-tagged-template.js tagged-templates
-test/language/expressions/new/non-ctor-err-realm.js throws
 test/language/expressions/new/spread-err-mult-err-expr-throws.js spread
 test/language/expressions/new/spread-err-mult-err-iter-get-value.js spread
 test/language/expressions/new/spread-err-mult-err-itr-get-call.js spread
@@ -30177,7 +30119,6 @@ test/language/statements/with/set-mutable-binding-idref-with-proxy-env.js throws
 test/language/statements/with/unscopables-get-err.js throws
 test/language/statements/with/unscopables-inc-dec.js throws
 test/language/statements/with/unscopables-prop-get-err.js throws
-test/language/types/reference/get-value-prop-base-primitive-realm.js throws
 test/language/types/reference/put-value-prop-base-primitive-realm.js throws
 test/language/types/reference/put-value-prop-base-primitive.js throws
 test/language/white-space/after-regular-expression-literal-carriage-return.js throws

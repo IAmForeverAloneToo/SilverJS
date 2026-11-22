@@ -34,6 +34,7 @@ use crate::string::PropertyKey;
 use crate::value::{RefKind, Value};
 
 pub(crate) use global::{Intrinsics, Wk, function_prototype_id};
+pub(crate) use math::random_state;
 
 /// A native's call: `this`, the `argc` arguments from `args` on the
 /// register file, `new.target` (undefined for a call) and the function
@@ -288,7 +289,13 @@ impl Agent {
     /// `name`.
     pub(crate) fn native_function(&mut self, id: u32, length: u32, name: &str) -> Res<Value> {
         let fp = self.realm().function_prototype;
-        let f = self.alloc_object(ObjectCell::function(fp, Callable::Native { id }))?;
+        let f = self.alloc_object(ObjectCell::function(
+            fp,
+            Callable::Native {
+                id,
+                realm: self.vm.current,
+            },
+        ))?;
         self.vm.temps.push(f);
         let units: Vec<u16> = name.encode_utf16().collect();
         let done = self.finish_function(f, length, &units, false);

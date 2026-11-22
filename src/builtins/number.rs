@@ -49,8 +49,7 @@ pub(crate) fn construct(agent: &mut Agent, c: Call) -> Res<Value> {
     if c.new_target.is_undefined() {
         return Ok(n);
     }
-    let default = agent.realm().number_prototype;
-    let proto = agent.prototype_from(c.new_target, default)?;
+    let proto = agent.prototype_from(c.new_target, |r| r.number_prototype)?;
     agent.wrap(n, Some(proto))
 }
 

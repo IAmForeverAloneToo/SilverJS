@@ -1119,3 +1119,19 @@ fn the_realm_survives_a_collection_at_every_allocation() {
         "2s"
     );
 }
+
+#[test]
+fn a_seeded_math_random_repeats() {
+    let draw = |seed: u64| {
+        let mut agent = Agent::new(AgentOptions::default());
+        agent.set_random_seed(seed);
+        text_in(
+            &mut agent,
+            "[Math.random(), Math.random(), Math.random()].every(function (x) { return x >= 0 && x < 1; }) + ':' + Math.random()",
+        )
+    };
+    let a = draw(7);
+    assert!(a.starts_with("true:0."), "{a}");
+    assert_eq!(a, draw(7));
+    assert_ne!(a, draw(8));
+}

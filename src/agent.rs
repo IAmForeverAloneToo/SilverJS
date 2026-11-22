@@ -117,6 +117,12 @@ impl Agent {
         self.stress = stress;
     }
 
+    /// Seeds `Math.random` (otherwise seeded from the clock at its first
+    /// call), so that a run can be repeated.
+    pub fn set_random_seed(&mut self, seed: u64) {
+        self.vm.random = crate::builtins::random_state(seed);
+    }
+
     /// Runs `f` with a scope of its own; its locals are dropped after.
     pub fn scope<R>(&mut self, f: impl FnOnce(&mut Scope<'_>) -> R) -> R {
         let base = self.handles.len();

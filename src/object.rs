@@ -64,8 +64,9 @@ pub(crate) enum Callable {
     /// Function `func` of the agent's installed unit `unit`, over the
     /// environment it was made in (undefined: the global one).
     Code { unit: u32, func: u32, env: Value },
-    /// The native `id` of the built-ins' tables ([`crate::builtins`]).
-    Native { id: u32 },
+    /// The native `id` of the built-ins' tables ([`crate::builtins`]),
+    /// made in the agent's realm `realm`.
+    Native { id: u32, realm: u32 },
     /// A bound function (section 10.4.1): its target, `this` and leading
     /// arguments are the object's internal slots.
     Bound,

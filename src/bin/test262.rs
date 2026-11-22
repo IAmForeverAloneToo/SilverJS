@@ -9,11 +9,12 @@
 //! strict by default, `onlyStrict`, `noStrict`, `raw`, `module`). With
 //! `--run` it runs the tests (J2.5): the harness's `assert.js` and
 //! `sta.js` and the test's `includes`, then the test, in a fresh agent
-//! for each mode, with `print` and `$262` made through the embedding API
-//! as any embedder would; a negative runtime test must throw an error of
-//! its type, an `async` test must print its completion. Tests of
-//! features the reference browser does not ship are counted as not
-//! applicable, as are those of tail calls, which it does not implement.
+//! for each mode, with `print` and `$262` (`global`, `evalScript`, `gc`,
+//! `createRealm`) made through the embedding API as any embedder would;
+//! a negative runtime test must throw an error of its type, an `async`
+//! test must print its completion. Tests of features the reference
+//! browser does not ship are counted as not applicable, as are those of
+//! tail calls, which it does not implement.
 //!
 //! Options:
 //!   --run                  run the tests, not only parse them
@@ -41,12 +42,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use silverjs::JsResult;
 use silverjs::agent::{
     Agent, AgentOptions, Local, Outcome as RunOutcome, PropertyDescriptor, Scope,
 };
 use silverjs::compiler::CompileError;
 use silverjs::parser::{Goal, parse_with_stack};
+use silverjs::{JsResult, Thrown};
 
 /// The Test262 revision the expectations are measured on.
 const REVISION: &str = "2e58f87d8350ad51224617a041c6e041d52f8444";
@@ -278,10 +279,14 @@ fn define<'s>(scope: &mut Scope<'s>, on: Local<'s>, name: &str, value: Local<'s>
     );
 }
 
-/// `print` and `$262` on the global object.
-fn install_host<'s>(scope: &mut Scope<'s>, printed: &Rc<RefCell<Vec<String>>>) -> JsResult<'s, ()> {
+/// `print` and `$262` on the current realm's global object; gives back
+/// that `$262`.
+fn install_host<'s>(
+    scope: &mut Scope<'s>,
+    printed: &Rc<RefCell<Vec<String>>>,
+) -> JsResult<'s, Local<'s>> {
     let Ok(global) = scope.global_object() else {
-        return Ok(());
+        return Err(Thrown::Terminated);
     };
     let out = Rc::clone(printed);
     let print = scope.native_function("print", 1, move |scope, _, args| {
@@ -298,7 +303,7 @@ fn install_host<'s>(scope: &mut Scope<'s>, printed: &Rc<RefCell<Vec<String>>>) -
     let key = scope.key("prototype");
     let proto = scope.get_property(object, key)?;
     let Ok(host) = scope.object(Some(proto)) else {
-        return Ok(());
+        return Err(Thrown::Terminated);
     };
     define(scope, host, "global", global);
     let eval_script = scope.native_function("evalScript", 1, |scope, _, args| {
@@ -314,8 +319,15 @@ fn install_host<'s>(scope: &mut Scope<'s>, printed: &Rc<RefCell<Vec<String>>>) -
         Ok(scope.undefined())
     })?;
     define(scope, host, "gc", gc);
+    // A new realm, with its own `print` and `$262`: the new `$262`.
+    let out = Rc::clone(printed);
+    let create_realm = scope.native_function("createRealm", 0, move |scope, _, _| {
+        let realm = scope.new_realm()?;
+        scope.in_realm(realm, |scope| install_host(scope, &out))
+    })?;
+    define(scope, host, "createRealm", create_realm);
     define(scope, global, "$262", host);
-    Ok(())
+    Ok(host)
 }
 
 /// Runs a test in one mode: a fresh agent, the harness, then the test.

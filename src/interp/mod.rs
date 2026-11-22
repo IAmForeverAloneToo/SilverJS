@@ -67,6 +67,8 @@ pub(crate) struct Installed {
     pub keys: Vec<Vec<Option<PropertyKey>>>,
     /// Where its source came from, for its stack frames.
     pub origin: Origin,
+    /// The realm it was installed in, its functions' realm.
+    pub realm: RealmIndex,
     /// The UTF-8 offsets its lines begin at, made when a frame of it is
     /// first shown.
     pub lines: std::cell::OnceCell<Vec<u32>>,
@@ -97,6 +99,9 @@ pub(crate) struct NativeFrame {
     pub construct: bool,
 }
 
+/// The index of a realm of the agent's.
+pub(crate) type RealmIndex = u32;
+
 /// A function's activation.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Frame {
@@ -124,6 +129,9 @@ pub(crate) struct Frame {
     pub entry: bool,
     /// Called as a getter or setter (its stack frame names no type).
     pub accessor: bool,
+    /// The realm current when it was pushed, made current again when
+    /// it is popped.
+    pub caller_realm: RealmIndex,
 }
 
 /// The interpreter's state, which the agent owns.
@@ -133,7 +141,10 @@ pub(crate) struct Vm {
     pub frames: Vec<Frame>,
     pub acc: Value,
     pub exception: Value,
-    pub realm: Option<Realm>,
+    /// The agent's realms; the first is made on first use.
+    pub realms: Vec<Realm>,
+    /// The running execution context's realm.
+    pub current: RealmIndex,
     pub steps: u32,
     pub interrupt: Option<Box<dyn FnMut() -> bool>>,
     pub reentry: u32,
@@ -170,7 +181,8 @@ impl Default for Vm {
             frames: Vec::new(),
             acc: Value::UNDEFINED,
             exception: Value::UNDEFINED,
-            realm: None,
+            realms: Vec::new(),
+            current: 0,
             steps: STEPS_PER_CHECK,
             interrupt: None,
             reentry: 0,
@@ -205,7 +217,7 @@ impl Vm {
         for n in &self.natives {
             out.extend([n.callee, n.this]);
         }
-        if let Some(realm) = &self.realm {
+        for realm in &self.realms {
             realm.trace(&mut out);
         }
         for u in &self.units {
@@ -297,9 +309,45 @@ impl Agent {
 
     pub(crate) fn realm(&self) -> &Realm {
         // Made before any code runs (`ensure_realm`).
-        match &self.vm.realm {
+        match self.vm.realms.get(self.vm.current as usize) {
             Some(r) => r,
             None => unreachable_realm(),
+        }
+    }
+
+    pub(crate) fn realm_mut(&mut self) -> Option<&mut Realm> {
+        self.vm.realms.get_mut(self.vm.current as usize)
+    }
+
+    /// Makes `r` the current realm; gives back the one that was.
+    pub(crate) fn enter_realm(&mut self, r: RealmIndex) -> RealmIndex {
+        std::mem::replace(&mut self.vm.current, r)
+    }
+
+    /// GetFunctionRealm (section 7.3.24): the realm a function was made
+    /// in (a bound function's target's); anything else, the current.
+    pub(crate) fn function_realm(&self, f: Value) -> RealmIndex {
+        let mut at = f;
+        // A chain of bound functions, each made over a function already.
+        loop {
+            match self.callable(at) {
+                Some(Callable::Code { unit, .. }) => {
+                    return self
+                        .vm
+                        .units
+                        .get(unit as usize)
+                        .map_or(self.vm.current, |u| u.realm);
+                }
+                Some(Callable::Native { realm, .. }) => return realm,
+                Some(Callable::Bound) => {
+                    at = at
+                        .as_object()
+                        .and_then(|o| self.heap.objects.get(o))
+                        .and_then(|c| c.internal().first().copied())
+                        .unwrap_or(Value::UNDEFINED);
+                }
+                None => return self.vm.current,
+            }
         }
     }
 
@@ -318,6 +366,7 @@ impl Agent {
             keys: Vec::new(),
             origin,
             lines: std::cell::OnceCell::new(),
+            realm: self.vm.current,
         });
         for f in &code.functions {
             let mut strings = Vec::with_capacity(f.constants.len());
@@ -395,6 +444,7 @@ impl Agent {
             construct: false,
             entry: true,
             accessor: false,
+            caller_realm: self.vm.current,
         });
         Ok(())
     }
@@ -472,7 +522,7 @@ impl Agent {
                 GlobalDecl::Let(name) | GlobalDecl::Const(name) => {
                     let key = self.heap.atoms.key(name);
                     let constant = matches!(decl, GlobalDecl::Const(_));
-                    if let Some(realm) = self.vm.realm.as_mut() {
+                    if let Some(realm) = self.realm_mut() {
                         realm.lexical.insert(
                             key,
                             realm::Lexical {
@@ -619,7 +669,7 @@ impl Agent {
                 }
                 Ok(None)
             }
-            Some(Callable::Native { id }) => {
+            Some(Callable::Native { id, realm }) => {
                 self.tick()?;
                 self.vm.accessor_call = false;
                 let call = crate::builtins::Call {
@@ -635,7 +685,9 @@ impl Agent {
                     this,
                     construct: new_target.is_some(),
                 });
+                let caller = self.enter_realm(realm);
                 let r = crate::builtins::call_native(self, id, call);
+                self.vm.current = caller;
                 self.vm.natives.pop();
                 r.map(Some)
             }
@@ -670,12 +722,18 @@ impl Agent {
         if self.vm.frames.len() >= MAX_FRAMES {
             return Err(self.throw_error(ErrorType::RangeError, messages::STACK_OVERFLOW));
         }
-        let Some(code) = self.vm.units.get(unit as usize).map(|u| Rc::clone(&u.code)) else {
+        let Some((code, realm)) = self
+            .vm
+            .units
+            .get(unit as usize)
+            .map(|u| (Rc::clone(&u.code), u.realm))
+        else {
             return Err(Abrupt::Throw);
         };
         let Some(f) = code.functions.get(func as usize) else {
             return Err(Abrupt::Throw);
         };
+        let caller_realm = self.enter_realm(realm);
         let base = self.vm.stack.len();
         self.vm
             .stack
@@ -701,6 +759,7 @@ impl Agent {
                 Ok(w) => w,
                 Err(e) => {
                     self.vm.stack.truncate(base);
+                    self.vm.current = caller_realm;
                     return Err(e);
                 }
             },
@@ -722,6 +781,7 @@ impl Agent {
             construct,
             entry,
             accessor: std::mem::take(&mut self.vm.accessor_call),
+            caller_realm,
         });
         self.tick()
     }
@@ -769,6 +829,7 @@ impl Agent {
                 return Ok(());
             }
             self.vm.frames.pop();
+            self.vm.current = frame.caller_realm;
             self.vm.stack.truncate(frame.args as usize);
             if frame.entry {
                 return Err(abrupt);
@@ -1078,7 +1139,7 @@ impl Agent {
                         let k = r.u();
                         let key = self.key_constant(u, fi, k);
                         let v = self.vm.acc;
-                        if let Some(realm) = self.vm.realm.as_mut()
+                        if let Some(realm) = self.realm_mut()
                             && let Some(b) = realm.lexical.get_mut(&key)
                         {
                             b.value = v;
@@ -1607,6 +1668,7 @@ impl Agent {
                         let Some(frame) = self.vm.frames.pop() else {
                             return Ok(value);
                         };
+                        self.vm.current = frame.caller_realm;
                         self.vm.stack.truncate(frame.args as usize);
                         if frame.construct && value.as_object().is_none() {
                             value = frame.this;
@@ -1668,7 +1730,7 @@ impl Agent {
                 .get(unit as usize)
                 .and_then(|u| u.code.functions.get(func as usize))
                 .is_some_and(|f| f.kind == FunctionKind::Normal),
-            Callable::Native { id } => crate::builtins::native_constructs(id),
+            Callable::Native { id, .. } => crate::builtins::native_constructs(id),
             // Answered by the target, in `is_constructor_value`.
             Callable::Bound => false,
         }
@@ -1696,23 +1758,30 @@ impl Agent {
     /// The object `new F` makes: its prototype `newTarget.prototype` if
     /// an object, else the realm's `Object.prototype`.
     fn construct_this(&mut self, new_target: Value) -> Res<Value> {
-        let proto = self.prototype_from(new_target, self.realm().object_prototype)?;
+        let proto = self.prototype_from(new_target, |r| r.object_prototype)?;
         self.alloc_object(ObjectCell::new(proto, ObjectKind::Ordinary))
     }
 
     /// GetPrototypeFromConstructor (section 10.1.14): `ctor.prototype`
-    /// if an object, else `default`.
-    pub(crate) fn prototype_from(&mut self, ctor: Value, default: Value) -> Res<Value> {
-        if ctor.as_object().is_none() {
-            return Ok(default);
+    /// if an object, else what `default` picks of `ctor`'s realm.
+    pub(crate) fn prototype_from(
+        &mut self,
+        ctor: Value,
+        default: impl Fn(&Realm) -> Value,
+    ) -> Res<Value> {
+        if ctor.as_object().is_some() {
+            let key = self.realm().prototype_key;
+            let proto = self.get_value(ctor, key)?;
+            if proto.as_object().is_some() {
+                return Ok(proto);
+            }
         }
-        let key = self.realm().prototype_key;
-        let proto = self.get_value(ctor, key)?;
-        Ok(if proto.as_object().is_some() {
-            proto
-        } else {
-            default
-        })
+        let realm = self.function_realm(ctor);
+        Ok(self
+            .vm
+            .realms
+            .get(realm as usize)
+            .map_or(Value::NULL, &default))
     }
 }
 

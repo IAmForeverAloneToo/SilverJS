@@ -237,7 +237,7 @@ impl Agent {
     }
 
     fn set_intrinsics(&mut self, f: impl FnOnce(&mut Intrinsics)) {
-        if let Some(r) = self.vm.realm.as_mut() {
+        if let Some(r) = self.realm_mut() {
             f(&mut r.intrinsics);
         }
     }

@@ -4,8 +4,8 @@
 
 use std::collections::HashMap;
 
-use super::Res;
 use super::messages::ErrorType;
+use super::{RealmIndex, Res};
 use crate::agent::Agent;
 use crate::builtins::Intrinsics;
 use crate::heap::ObjectCell;
@@ -99,22 +99,39 @@ impl Realm {
 }
 
 impl Agent {
-    fn realm_mut(&mut self) -> Option<&mut Realm> {
-        self.vm.realm.as_mut()
-    }
-
     fn key_named(&mut self, name: &str) -> PropertyKey {
         let units: Vec<u16> = name.encode_utf16().collect();
         self.heap.atoms.key(&units)
     }
 
-    /// Makes the realm on first use. Each value is stored into the realm
-    /// as soon as it is made, so that it is rooted before the next
-    /// allocation.
+    /// Makes the agent's first realm on first use.
     pub(crate) fn ensure_realm(&mut self) -> Res<()> {
-        if self.vm.realm.is_some() {
-            return Ok(());
+        if self.vm.realms.is_empty() {
+            self.create_realm()?;
         }
+        Ok(())
+    }
+
+    /// CreateRealm and SetDefaultGlobalBindings (sections 9.3.1 and
+    /// 9.3.3): a new realm of the agent's, its intrinsics made while it
+    /// is current. The current realm is the same after.
+    pub(crate) fn create_realm(&mut self) -> Res<RealmIndex> {
+        let index = RealmIndex::try_from(self.vm.realms.len()).unwrap_or(RealmIndex::MAX);
+        let fresh = self.new_realm_record();
+        self.vm.realms.push(fresh);
+        let caller = self.enter_realm(index);
+        let made = self.fill_realm();
+        // The first realm stays current.
+        self.vm.current = if self.vm.realms.len() == 1 {
+            index
+        } else {
+            caller
+        };
+        made.map(|()| index)
+    }
+
+    /// A realm with nothing made yet.
+    fn new_realm_record(&mut self) -> Realm {
         let u = Value::UNDEFINED;
         let strings = Strings {
             empty: u,
@@ -130,7 +147,7 @@ impl Agent {
             function: u,
             object: u,
         };
-        let realm = Realm {
+        Realm {
             global: u,
             object_prototype: u,
             function_prototype: u,
@@ -150,8 +167,13 @@ impl Agent {
             to_string_key: self.key_named("toString"),
             value_of_key: self.key_named("valueOf"),
             stack_trace_limit_key: self.key_named("stackTraceLimit"),
-        };
-        self.vm.realm = Some(realm);
+        }
+    }
+
+    /// Makes the current realm's objects. Each value is stored into the
+    /// realm as soon as it is made, so that it is rooted before the next
+    /// allocation.
+    fn fill_realm(&mut self) -> Res<()> {
         macro_rules! set {
             ($field:ident, $v:expr) => {{
                 let v = $v;
@@ -205,7 +227,8 @@ impl Agent {
             self.alloc_object(ObjectCell::function(
                 op,
                 Callable::Native {
-                    id: crate::builtins::function_prototype_id()
+                    id: crate::builtins::function_prototype_id(),
+                    realm: self.vm.current,
                 }
             ))?
         );

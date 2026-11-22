@@ -49,6 +49,10 @@ impl ErrorKind {
     }
 }
 
+/// A realm of an agent's, by its index there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RealmId(u32);
+
 /// A native written by the embedder: given the scope of its call, its
 /// `this` and its arguments; it returns a value or what it throws.
 pub type HostFn =
@@ -194,6 +198,34 @@ impl<'a> Scope<'a> {
     pub fn is_function(&self, v: Local<'_>) -> bool {
         let v = self.value_of(v);
         self.agent_ref().callable(v).is_some()
+    }
+
+    /// A new realm of the agent's (ECMA-262 section 9.3): its own global
+    /// object and built-ins. The current realm stays current.
+    pub fn new_realm(&mut self) -> JsResult<'a, RealmId> {
+        self.realm_ready()?;
+        let r = self.agent_mut().create_realm();
+        self.lift(r).map(RealmId)
+    }
+
+    /// The running code's realm (the first made if none was).
+    pub fn current_realm(&mut self) -> JsResult<'a, RealmId> {
+        self.realm_ready()?;
+        Ok(RealmId(self.agent_ref().vm.current))
+    }
+
+    /// Runs `f` with `realm` current: the scripts it runs, the objects
+    /// and natives it makes, are that realm's. A realm of another agent
+    /// (no such index here) leaves the current one current.
+    pub fn in_realm<R>(&mut self, realm: RealmId, f: impl FnOnce(&mut Scope<'a>) -> R) -> R {
+        let known = (realm.0 as usize) < self.agent_ref().vm.realms.len();
+        if !known {
+            return f(self);
+        }
+        let caller = self.agent_mut().enter_realm(realm.0);
+        let out = f(self);
+        self.agent_mut().vm.current = caller;
+        out
     }
 
     /// Runs `source` as a script in the realm from inside a native (an

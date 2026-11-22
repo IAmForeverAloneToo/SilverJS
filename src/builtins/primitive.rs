@@ -58,8 +58,7 @@ pub(crate) fn construct_boolean(agent: &mut Agent, c: Call) -> Res<Value> {
     if c.new_target.is_undefined() {
         return Ok(b);
     }
-    let default = agent.realm().boolean_prototype;
-    let proto = agent.prototype_from(c.new_target, default)?;
+    let proto = agent.prototype_from(c.new_target, |r| r.boolean_prototype)?;
     agent.wrap(b, Some(proto))
 }
 

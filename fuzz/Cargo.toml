@@ -26,5 +26,19 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "silverjs_run"
+path = "fuzz_targets/silverjs_run.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "silverjs_gc"
+path = "fuzz_targets/silverjs_gc.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

@@ -591,10 +591,14 @@ which natives use far less than `Local`s; J6's benches report it.
     compared (section 1.7);
   - `silverjs_regexp`: pattern, flags and input; no panic, budget-bound,
     and compared with QuickJS-ng's result;
-  - `silverjs_gc`: generated programs under `gc-stress` with the heap
-    verifier after every collection, in two agents at once, holding
-    that every handle resolves in its own agent and a stale one
-    panics rather than resolves;
+  - `silverjs_gc`: any bytes run twice, in two agents, once as usual
+    and once collecting at every allocation, the heap verifier after
+    every collection (fuzz builds keep debug assertions): a collection
+    is never observable, so the two must end the same (`Math.random`
+    seeded alike). Generated programs join the bytes when
+    `silverjs_gen` is written, and with them the check that every
+    handle resolves in its own agent and a stale one panics rather
+    than resolves;
   - `silverjs_bytecode`: any bytes to the compiled-unit reader, which
     must refuse what it did not write (a checksum and a structural
     validation), never panic, never run it.

@@ -56,8 +56,7 @@ pub(crate) const PROTO: &[Entry] = &[
 /// `Object(value)` (section 20.1.1.1).
 pub(crate) fn construct(agent: &mut Agent, c: Call) -> Res<Value> {
     if !c.new_target.is_undefined() && c.new_target != c.callee {
-        let default = agent.realm().object_prototype;
-        let proto = agent.prototype_from(c.new_target, default)?;
+        let proto = agent.prototype_from(c.new_target, |r| r.object_prototype)?;
         return agent.alloc_object(ObjectCell::new(proto, ObjectKind::Ordinary));
     }
     let v = agent.arg(c, 0);

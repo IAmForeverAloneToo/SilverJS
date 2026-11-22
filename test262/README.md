@@ -21,10 +21,12 @@ which only ever shrinks.
 
 From J2.5, `--run` runs the tests: the harness's `assert.js` and
 `sta.js`, the test's `includes`, then the test, in a fresh agent for
-each mode, with `print` and `$262` made through the embedding API (the
-runner uses nothing private). A negative runtime test must throw an
-error of its type; an `async` test must print its completion. Each run
-stops at ten seconds through the agent's interrupt hook.
+each mode, with `print` and `$262` (`global`, `evalScript`, `gc`, and
+`createRealm`, a new realm of the same agent with its own `$262`) made
+through the embedding API (the runner uses nothing private). A
+negative runtime test must throw an error of its type; an `async` test
+must print its completion. Each run stops at ten seconds through the
+agent's interrupt hook.
 `expected-run-failures.txt` is this mode's file, with the same rules.
 Not applicable, as well as the features the reference browser does not
 ship: tail calls, which it does not implement, and the

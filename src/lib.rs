@@ -50,9 +50,11 @@ mod object_tests;
 #[cfg(test)]
 mod parser_tests;
 #[cfg(test)]
+mod realm_tests;
+#[cfg(test)]
 mod stack_tests;
 
-pub use embed::{ErrorKind, HostFn, JsResult, Thrown};
+pub use embed::{ErrorKind, HostFn, JsResult, RealmId, Thrown};
 pub use heap::HeapStats;
 pub use string::{Atom, PropertyKey};
 pub use unicode_tables::UNICODE_VERSION;

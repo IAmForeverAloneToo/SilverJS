@@ -88,8 +88,7 @@ pub(crate) fn construct(agent: &mut Agent, c: Call) -> Res<Value> {
         return Ok(s);
     }
     agent.vm.temps.push(s);
-    let default = agent.realm().string_prototype;
-    let proto = agent.prototype_from(c.new_target, default);
+    let proto = agent.prototype_from(c.new_target, |r| r.string_prototype);
     let w = proto.and_then(|p| agent.wrap(s, Some(p)));
     agent.vm.temps.pop();
     w

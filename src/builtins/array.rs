@@ -112,6 +112,19 @@ impl Agent {
         }
         let key = self.realm().constructor_key;
         let mut c = self.get_value(original, key)?;
+        // Another realm's `Array` makes this realm's arrays.
+        if self.is_constructor_value(c) {
+            let realm = self.function_realm(c);
+            if realm != self.vm.current
+                && self
+                    .vm
+                    .realms
+                    .get(realm as usize)
+                    .is_some_and(|r| r.intrinsics.array == c)
+            {
+                c = Value::UNDEFINED;
+            }
+        }
         if c.as_object().is_some() {
             let key = self.well_known_key(Wk::Species);
             c = self.get_value(c, key)?;
@@ -185,8 +198,7 @@ pub(crate) fn construct(agent: &mut Agent, c: Call) -> Res<Value> {
     } else {
         c.new_target
     };
-    let default = agent.realm().array_prototype;
-    let proto = agent.prototype_from(nt, default)?;
+    let proto = agent.prototype_from(nt, |r| r.array_prototype)?;
     match c.argc {
         0 => agent.array_create(0.0, Some(proto)),
         1 => {

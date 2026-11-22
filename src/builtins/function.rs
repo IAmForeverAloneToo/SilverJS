@@ -145,8 +145,7 @@ pub(crate) fn construct(agent: &mut Agent, c: Call) -> Res<Value> {
         && let Some(o) = f.as_object()
     {
         agent.vm.temps.push(f);
-        let default = agent.realm().function_prototype;
-        let proto = agent.prototype_from(c.new_target, default);
+        let proto = agent.prototype_from(c.new_target, |r| r.function_prototype);
         agent.vm.temps.pop();
         agent.heap.set_prototype_of(o, proto?);
     }
@@ -250,7 +249,7 @@ fn to_string(agent: &mut Agent, c: Call) -> Res<Value> {
             })
             .unwrap_or_default()
         }
-        Some(Callable::Native { id }) => {
+        Some(Callable::Native { id, .. }) => {
             let name = match agent.host_name(id) {
                 Some(n) => n.to_owned(),
                 None => super::native_name(id),

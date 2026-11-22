@@ -223,16 +223,22 @@ fn pow(agent: &mut Agent, c: Call) -> Res<Value> {
     Ok(Value::number(crate::interp::ops::exponentiate(b, e)))
 }
 
-/// `Math.random`: xorshift128+, seeded from the clock (an embedder's
-/// seed hook replaces it, design note section 1.10).
+/// The xorshift128+ state a seed starts (never all zero).
+pub(crate) fn random_state(seed: u64) -> (u64, u64) {
+    (seed | 1, seed.rotate_left(29) ^ 0x9e37_79b9_7f4a_7c15)
+}
+
+/// `Math.random`: xorshift128+, seeded from the clock unless the
+/// embedder seeded it (`Agent::set_random_seed`, design note section
+/// 1.10).
 fn random(agent: &mut Agent, _: Call) -> Res<Value> {
-    let state = &mut agent.vm.random;
-    if *state == (0, 0) {
+    if agent.vm.random == (0, 0) {
         let t = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0x9e37_79b9_7f4a_7c15, |d| d.as_nanos() as u64);
-        *state = (t | 1, t.rotate_left(29) ^ 0x9e37_79b9_7f4a_7c15);
+        agent.vm.random = random_state(t);
     }
+    let state = &mut agent.vm.random;
     let (mut s1, s0) = *state;
     s1 ^= s1 << 23;
     s1 ^= s1 >> 17;
