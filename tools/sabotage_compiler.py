@@ -59,7 +59,7 @@ cases = [
     (E, "BinaryOp::NotEq => (Op::TestEq, true),", "BinaryOp::NotEq => (Op::TestEq, false),"),
     (E, "                        LogicalOp::Coalesce => Op::JumpIfNotNullish,\n                    },\n                    end,",
         "                        LogicalOp::Coalesce => Op::JumpIfNullish,\n                    },\n                    end,"),
-    (E, "if matches!(elems.last(), Some(None)) {", "if false {"),
+    (E, "if !dynamic && matches!(elems.last(), Some(None)) {", "if false {"),
     (E, "Expr::Member { prop, optional, .. } => {\n                    if *optional && let Some(t) = target {\n                        self.jump(Op::JumpIfNullish, t);\n                    }",
         "Expr::Member { prop, .. } => {"),
     (E, "self.op(Op::ToNumeric);\n                    let old = self.alloc();", "let old = self.alloc();"),

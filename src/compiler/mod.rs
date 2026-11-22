@@ -374,7 +374,8 @@ fn idx_kind(op: Op, i: usize) -> IdxKind {
             Op::CheckTdzRegister | Op::DefineField | Op::GetNamed | Op::SetNamed | Op::CreateRegExp,
             1,
         )
-        | (Op::CheckTdzSlot, 2) => IdxKind::Name,
+        | (Op::CheckTdzSlot, 2)
+        | (Op::RequireObjectCoercible, 0) => IdxKind::Name,
         (Op::LdaGlobal | Op::LdaGlobalTypeof | Op::StaGlobal | Op::GetKeyed, 1)
         | (Op::GetNamed | Op::SetNamed | Op::SetKeyed, 2)
         | (Op::CallUndefined | Op::New, 3)

@@ -31,8 +31,53 @@ pub(crate) const STATICS: &[Entry] = &[
     method("isSealed", 1, is_sealed),
     method("keys", 1, keys),
     method("entries", 1, entries),
+    method("fromEntries", 1, from_entries),
     method("values", 1, values),
 ];
+
+/// `Object.fromEntries(iterable)` (section 20.1.2.7): each entry an
+/// object whose `0` is a key and `1` a value; the iterator closed if an
+/// entry fails.
+fn from_entries(agent: &mut Agent, c: Call) -> Res<Value> {
+    let iterable = agent.arg(c, 0);
+    if iterable.is_nullish() {
+        let text = agent.display(iterable);
+        return Err(agent.type_error(messages::not_iterable(&text)));
+    }
+    let proto = agent.realm().object_prototype;
+    let o = agent.alloc_object(ObjectCell::new(proto, ObjectKind::Ordinary))?;
+    let base = agent.vm.temps.len();
+    agent.vm.temps.push(o);
+    let result = (|| {
+        let text = agent.display(iterable);
+        let (iterator, next) = agent.get_iterator(iterable, &text)?;
+        agent.vm.temps.extend([iterator, next]);
+        while let Some(entry) = agent.iterator_step(iterator, next)? {
+            let added = (|| {
+                if entry.as_object().is_none() {
+                    let text = agent.display(entry);
+                    return Err(
+                        agent.type_error(format!("Iterator value {text} is not an entry object"))
+                    );
+                }
+                agent.vm.temps.push(entry);
+                let k = agent.get_value(entry, PropertyKey::Index(0))?;
+                agent.vm.temps.push(k);
+                let v = agent.get_value(entry, PropertyKey::Index(1))?;
+                agent.vm.temps.push(v);
+                let key = agent.property_key(k)?;
+                agent.define_value(o, key, v)
+            })();
+            if let Err(e) = added {
+                agent.iterator_close_quiet(iterator)?;
+                return Err(e);
+            }
+        }
+        Ok(o)
+    })();
+    agent.vm.temps.truncate(base);
+    result
+}
 
 pub(crate) const PROTO: &[Entry] = &[
     CONSTRUCTOR,

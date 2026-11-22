@@ -17,7 +17,7 @@ SyntaxError must fail to parse, and every other test must parse, in
 each mode its flags ask for. `expected-parse-failures.txt` lists every
 test that does not yet, with a one-word reason; a run that fails a test
 not listed, or passes one listed, fails. `--update` rewrites the file,
-which only ever shrinks.
+which only ever shrinks, each test's reason what it fails of then.
 
 From J2.5, `--run` runs the tests: the harness's `assert.js` and
 `sta.js`, the test's `includes`, then the test, in a fresh agent for

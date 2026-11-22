@@ -86,7 +86,7 @@ fn own_keys_are_in_the_reference_browsers_order() {
             "values",
             "groupBy",
         ],
-        &["fromEntries", "groupBy"],
+        &["groupBy"],
     );
     keys_as_chrome(
         "Object.prototype",
@@ -206,7 +206,7 @@ fn own_keys_are_in_the_reference_browsers_order() {
             "Symbol(Symbol.iterator)",
             "Symbol(Symbol.unscopables)",
         ],
-        &["keys", "entries", "values", "Symbol(Symbol.iterator)"],
+        &[],
     );
     keys_as_chrome(
         "String",
@@ -277,13 +277,7 @@ fn own_keys_are_in_the_reference_browsers_order() {
             "valueOf",
             "Symbol(Symbol.iterator)",
         ],
-        &[
-            "match",
-            "matchAll",
-            "normalize",
-            "search",
-            "Symbol(Symbol.iterator)",
-        ],
+        &["match", "matchAll", "normalize", "search"],
     );
     keys_as_chrome(
         "Number",
@@ -467,7 +461,7 @@ fn own_keys_are_in_the_reference_browsers_order() {
     keys_as_chrome(
         "(function () { return arguments; })(1)",
         &["0", "length", "callee", "Symbol(Symbol.iterator)"],
-        &["Symbol(Symbol.iterator)"],
+        &[],
     );
 }
 
@@ -1134,4 +1128,49 @@ fn a_seeded_math_random_repeats() {
     assert!(a.starts_with("true:0."), "{a}");
     assert_eq!(a, draw(7));
     assert_ne!(a, draw(8));
+}
+
+#[test]
+fn the_iterator_prototypes_keys_are_in_the_reference_browsers_order() {
+    // The iterator probe (Chrome 157), less what J4's iterator helpers
+    // bring.
+    keys_as_chrome(
+        "Object.getPrototypeOf([].values())",
+        &["next", "Symbol(Symbol.toStringTag)"],
+        &[],
+    );
+    keys_as_chrome(
+        "Object.getPrototypeOf(''[Symbol.iterator]())",
+        &["next", "Symbol(Symbol.toStringTag)"],
+        &[],
+    );
+    let helpers = [
+        "constructor",
+        "reduce",
+        "toArray",
+        "forEach",
+        "some",
+        "every",
+        "find",
+        "map",
+        "filter",
+        "take",
+        "drop",
+        "flatMap",
+        "join",
+        "includes",
+        "Symbol(Symbol.toStringTag)",
+        "Symbol(Symbol.dispose)",
+    ];
+    let mut chrome = helpers[..14].to_vec();
+    chrome.extend([
+        "Symbol(Symbol.iterator)",
+        "Symbol(Symbol.toStringTag)",
+        "Symbol(Symbol.dispose)",
+    ]);
+    keys_as_chrome(
+        "Object.getPrototypeOf(Object.getPrototypeOf([].values()))",
+        &chrome,
+        &helpers,
+    );
 }

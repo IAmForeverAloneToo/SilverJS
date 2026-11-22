@@ -120,6 +120,12 @@ pub(crate) enum ObjectKind {
     Number,
     String,
     Symbol,
+    /// An array iterator: the array-like (undefined once done), the next
+    /// index and what it gives, in its internal slots.
+    ArrayIterator,
+    /// A string iterator: the string (undefined once done) and the next
+    /// position.
+    StringIterator,
 }
 
 /// An object cell.

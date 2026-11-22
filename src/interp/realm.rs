@@ -58,6 +58,11 @@ pub(crate) struct Realm {
     pub to_string_key: PropertyKey,
     pub value_of_key: PropertyKey,
     pub stack_trace_limit_key: PropertyKey,
+    /// The iterator protocol's names.
+    pub next_key: PropertyKey,
+    pub done_key: PropertyKey,
+    pub value_key: PropertyKey,
+    pub return_key: PropertyKey,
 }
 
 impl Realm {
@@ -167,6 +172,10 @@ impl Agent {
             to_string_key: self.key_named("toString"),
             value_of_key: self.key_named("valueOf"),
             stack_trace_limit_key: self.key_named("stackTraceLimit"),
+            next_key: self.key_named("next"),
+            done_key: self.key_named("done"),
+            value_key: self.key_named("value"),
+            return_key: self.key_named("return"),
         }
     }
 

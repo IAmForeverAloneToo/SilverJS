@@ -70,6 +70,11 @@ pub(crate) const PROTO: &[Entry] = &[
     method("toLowerCase", 0, to_lower_case),
     method("toUpperCase", 0, to_upper_case),
     method("valueOf", 0, value_of),
+    entry(
+        Name::Sym(Wk::Iterator),
+        What::Method(0, super::iterator::string_iterator),
+        HIDDEN,
+    ),
 ];
 
 /// `String(value)` (section 22.1.1.1).

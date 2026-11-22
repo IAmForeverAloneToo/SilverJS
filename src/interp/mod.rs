@@ -21,6 +21,9 @@
 //! units' strings.
 
 mod eval;
+mod iter;
+
+use iter::SpreadCall;
 pub(crate) mod messages;
 pub(crate) mod ops;
 pub(crate) mod realm;
@@ -692,6 +695,71 @@ impl Agent {
                 r.map(Some)
             }
             Some(Callable::Bound) | None => {
+                let text = self.display(callee);
+                Err(self.throw_error(ErrorType::TypeError, messages::not_a_function(&text)))
+            }
+        }
+    }
+
+    /// [`Agent::begin_call`] with arguments the call takes: those from
+    /// `args` to the top of the register file, which a script callee
+    /// keeps as its own (its return drops them) and a native's call drops
+    /// after (a spread call's, made for it).
+    pub(crate) fn begin_call_owned(
+        &mut self,
+        callee: Value,
+        this: Value,
+        args: usize,
+        new_target: Option<Value>,
+    ) -> Res<Option<Value>> {
+        let (mut callee, mut this, mut new_target) = (callee, this, new_target);
+        // A bound function: its target, its arguments put before the
+        // call's, in place.
+        while let Some(Callable::Bound) = self.callable(callee) {
+            let internal = callee
+                .as_object()
+                .and_then(|o| self.heap.objects.get(o))
+                .map(|c| c.internal().to_vec())
+                .unwrap_or_default();
+            let target = internal.first().copied().unwrap_or(Value::UNDEFINED);
+            let tail: Vec<Value> = self.vm.stack.split_off(args.min(self.vm.stack.len()));
+            self.vm.stack.extend(internal.iter().skip(2).copied());
+            self.vm.stack.extend(tail);
+            if let Some(nt) = new_target {
+                new_target = Some(if nt == callee { target } else { nt });
+            } else {
+                this = internal.get(1).copied().unwrap_or(Value::UNDEFINED);
+            }
+            callee = target;
+        }
+        let argc = self.vm.stack.len().saturating_sub(args);
+        match self.callable(callee) {
+            Some(Callable::Code { unit, func, env }) => {
+                let (this, nt, construct) = match new_target {
+                    Some(nt) => match self.construct_this(nt) {
+                        Ok(t) => (t, nt, true),
+                        Err(e) => {
+                            self.vm.stack.truncate(args);
+                            return Err(e);
+                        }
+                    },
+                    None => (this, Value::UNDEFINED, false),
+                };
+                if let Err(e) = self.push_frame(
+                    callee, unit, func, env, this, args, argc, nt, construct, false,
+                ) {
+                    self.vm.stack.truncate(args);
+                    return Err(e);
+                }
+                Ok(None)
+            }
+            Some(Callable::Native { .. }) => {
+                let r = self.begin_call(callee, this, args, argc, new_target, false);
+                self.vm.stack.truncate(args);
+                r
+            }
+            Some(Callable::Bound) | None => {
+                self.vm.stack.truncate(args);
                 let text = self.display(callee);
                 Err(self.throw_error(ErrorType::TypeError, messages::not_a_function(&text)))
             }
@@ -1690,6 +1758,68 @@ impl Agent {
                     Op::ForInEnumerate => {
                         let v = self.vm.acc;
                         self.vm.acc = tri!(self.for_in_start(v), start);
+                    }
+                    Op::GetIterator => {
+                        let (it, nx, plain) = (r.u(), r.u(), r.u());
+                        tri!(
+                            self.op_get_iterator(base, it, nx, plain == 1, u, fi, start as u32),
+                            start
+                        );
+                    }
+                    Op::IteratorNext => {
+                        let (it, nx, d) = (r.u(), r.u(), r.u());
+                        let off = r.j();
+                        if !tri!(self.op_iterator_next(base, it, nx, d), start) {
+                            r.pc = target(start, off);
+                        }
+                    }
+                    Op::IteratorClose | Op::IteratorCloseQuiet => {
+                        let (it, d) = (r.u(), r.u());
+                        let quiet = op == Op::IteratorCloseQuiet;
+                        tri!(self.op_iterator_close(base, it, d, quiet), start);
+                    }
+                    Op::ArrayPush => {
+                        let o = r.u();
+                        let (a, v) = (self.reg(base, o), self.vm.acc);
+                        tri!(self.array_push(a, v), start);
+                    }
+                    Op::ArrayPushHole => {
+                        let o = r.u();
+                        let a = self.reg(base, o);
+                        tri!(self.array_push_hole(a), start);
+                    }
+                    Op::SpreadInto => {
+                        let (o, call) = (r.u(), r.u());
+                        tri!(
+                            self.op_spread_into(base, o, call == 1, u, fi, start as u32),
+                            start
+                        );
+                    }
+                    Op::RequireObjectCoercible => {
+                        let (n, plain) = (r.u(), r.u());
+                        if self.vm.acc.is_nullish() {
+                            let e = self.destructure_error(n, plain == 1, u, fi, start as u32);
+                            tri!(Err::<(), Abrupt>(e), start);
+                        }
+                    }
+                    Op::CopyRest => {
+                        let k = r.u();
+                        let (source, keys) = (self.vm.acc, self.reg(base, k));
+                        self.vm.acc = tri!(self.copy_rest(source, keys), start);
+                    }
+                    Op::CallSpread | Op::NewSpread => {
+                        let callee = r.u();
+                        let recv = (op == Op::CallSpread).then(|| r.u());
+                        let array = r.u();
+                        let flags = if op == Op::CallSpread { r.u() } else { 0 };
+                        let at = (u, fi, start as u32, r.pc as u32);
+                        match tri!(
+                            self.op_call_spread(op, base, callee, recv, array, flags, at),
+                            start
+                        ) {
+                            SpreadCall::Value(v) => self.vm.acc = v,
+                            SpreadCall::Frame => continue 'frames,
+                        }
                     }
                     Op::ForInNext => {
                         let x = r.u();

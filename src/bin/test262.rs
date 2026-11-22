@@ -708,13 +708,16 @@ fn main() {
             }
             Outcome::Fail => {
                 fail += 1;
+                // The reason: what it fails of now, when the file is
+                // rewritten (a test once refused for `for-of` may now
+                // fail for a class in it); else the file's.
+                let fresh = || reason_of(detail.as_deref().unwrap_or(""));
                 let reason = if CHROME_CHOICES.contains(&test.as_str()) {
                     "chrome-surface".to_owned()
+                } else if update {
+                    fresh()
                 } else {
-                    expected
-                        .get(test)
-                        .cloned()
-                        .unwrap_or_else(|| reason_of(detail.as_deref().unwrap_or("")))
+                    expected.get(test).cloned().unwrap_or_else(fresh)
                 };
                 failing.insert(test.clone(), reason);
                 if !expected.contains_key(test) {

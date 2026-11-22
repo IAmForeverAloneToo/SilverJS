@@ -1,7 +1,7 @@
 //! `Array` (ECMA-262 section 23.1), its methods generic over array-likes
-//! as the spec writes them. `keys`, `values`, `entries`,
-//! `[Symbol.iterator]` and `Array.fromAsync` come with J3's iterators;
-//! `Array.from` already follows an iterable's own `@@iterator`.
+//! as the spec writes them; `keys`, `values`, `entries` and
+//! `[Symbol.iterator]` are the iterators' ([`super::iterator`]).
+//! `Array.fromAsync` waits for J3.4's promises.
 
 use super::{CONFIGURABLE, CONSTRUCTOR, Call, Entry, Name, What, Wk, entry, method};
 use crate::agent::Agent;
@@ -43,6 +43,9 @@ pub(crate) const PROTO: &[Entry] = &[
     method("includes", 1, includes),
     method("indexOf", 1, index_of),
     method("join", 1, join),
+    method("keys", 0, super::iterator::keys),
+    method("entries", 0, super::iterator::entries),
+    method("values", 0, super::iterator::values),
     method("forEach", 1, for_each),
     method("filter", 1, filter),
     method("flat", 0, flat),
@@ -58,6 +61,11 @@ pub(crate) const PROTO: &[Entry] = &[
     method("with", 2, with),
     method("toLocaleString", 0, to_locale_string),
     method("toString", 0, to_string),
+    entry(
+        Name::Sym(Wk::Iterator),
+        What::Alias("values"),
+        super::HIDDEN,
+    ),
     entry(Name::Sym(Wk::Unscopables), What::Given(0), CONFIGURABLE),
 ];
 

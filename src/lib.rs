@@ -44,6 +44,8 @@ mod heap_tests;
 #[cfg(test)]
 mod interp_tests;
 #[cfg(test)]
+mod iteration_tests;
+#[cfg(test)]
 mod lexer_tests;
 #[cfg(test)]
 mod object_tests;

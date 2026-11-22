@@ -861,17 +861,34 @@ impl Agent {
 
     /// CopyDataProperties (section 7.3.25), for `{...source}`.
     pub(crate) fn copy_data_properties(&mut self, target: Value, source: Value) -> Res<()> {
+        self.copy_data_properties_except(target, source, &[])
+    }
+
+    /// CopyDataProperties with `excluded` keys left out.
+    fn copy_data_properties_except(
+        &mut self,
+        target: Value,
+        source: Value,
+        excluded: &[PropertyKey],
+    ) -> Res<()> {
         let Some(s) = source.as_object() else {
             // Primitives but strings have no own enumerable properties.
             if let Some(units) = self.string_units(source) {
                 for (i, unit) in units.iter().enumerate() {
+                    let key = PropertyKey::Index(i as u32);
+                    if excluded.contains(&key) {
+                        continue;
+                    }
                     let c = self.new_string_units(&[*unit])?;
-                    self.define_value(target, PropertyKey::Index(i as u32), c)?;
+                    self.define_value(target, key, c)?;
                 }
             }
             return Ok(());
         };
         for key in self.heap.own_keys(s) {
+            if excluded.contains(&key) {
+                continue;
+            }
             if let Some(p) = self.heap.get_own_property(s, key)
                 && enumerable(&p)
             {
@@ -880,6 +897,32 @@ impl Agent {
             }
         }
         Ok(())
+    }
+
+    /// An object pattern's rest (section 14.3.3.1): a new object with
+    /// `source`'s own enumerable properties but the keys in the array
+    /// `excluded`, which the pattern's properties named.
+    #[inline(never)]
+    pub(crate) fn copy_rest(&mut self, source: Value, excluded: Value) -> Res<Value> {
+        let mut keys = Vec::new();
+        if let Some(o) = excluded.as_object() {
+            let len = self
+                .heap
+                .objects
+                .get(o)
+                .and_then(|c| c.array_length())
+                .map_or(0, |(len, _)| len);
+            for i in 0..len {
+                let v = self.get_value(excluded, PropertyKey::Index(i))?;
+                keys.push(self.property_key(v)?);
+            }
+        }
+        let proto = self.realm().object_prototype;
+        let target = self.alloc_object(ObjectCell::new(proto, ObjectKind::Ordinary))?;
+        self.vm.temps.push(target);
+        let copied = self.copy_data_properties_except(target, source, &keys);
+        self.vm.temps.pop();
+        copied.map(|()| target)
     }
 
     /// SetFunctionName (section 10.2.9) by a computed key.
@@ -1265,6 +1308,11 @@ impl Agent {
             }
         };
         self.heap.define_own_property(o, callee_key, callee);
+        // `@@iterator`: `Array.prototype.values` (sections 10.4.4.6 and
+        // 10.4.4.7).
+        let key = self.well_known_key(crate::builtins::Wk::Iterator);
+        let values = self.realm().intrinsics.array_values;
+        self.heap.define_own_property(o, key, hidden(values));
         Ok(a)
     }
 

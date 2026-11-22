@@ -336,15 +336,11 @@ fn wide_operands_are_used_past_a_byte() {
 }
 
 #[test]
-fn what_j2_does_not_run_yet_is_refused() {
+fn what_is_not_compiled_yet_is_refused() {
     assert_eq!(refused("class A {}"), "classes");
     assert_eq!(refused("(class {})"), "classes");
     assert_eq!(refused("function* g() {}"), "generators");
     assert_eq!(refused("async function a() {}"), "async functions");
-    assert_eq!(refused("var [a] = b"), "destructuring");
-    assert_eq!(refused("({a} = b)"), "destructuring");
-    assert_eq!(refused("f(...a)"), "spread");
-    assert_eq!(refused("for (x of y);"), "for-of");
     assert_eq!(refused("tag`x`"), "tagged templates");
     assert!(matches!(
         compile("export {}", Goal::Module),

@@ -100,6 +100,11 @@ pub(crate) struct Intrinsics {
     pub eval: Value,
     pub parse_int: Value,
     pub parse_float: Value,
+    pub iterator_prototype: Value,
+    pub array_iterator_prototype: Value,
+    pub string_iterator_prototype: Value,
+    /// `Array.prototype.values`, an arguments object's `@@iterator`.
+    pub array_values: Value,
 }
 
 impl Intrinsics {
@@ -121,6 +126,10 @@ impl Intrinsics {
         eval: Value::UNDEFINED,
         parse_int: Value::UNDEFINED,
         parse_float: Value::UNDEFINED,
+        iterator_prototype: Value::UNDEFINED,
+        array_iterator_prototype: Value::UNDEFINED,
+        string_iterator_prototype: Value::UNDEFINED,
+        array_values: Value::UNDEFINED,
     };
 
     pub(crate) fn trace(&self, out: &mut Vec<Value>) {
@@ -141,6 +150,10 @@ impl Intrinsics {
             self.eval,
             self.parse_int,
             self.parse_float,
+            self.iterator_prototype,
+            self.array_iterator_prototype,
+            self.string_iterator_prototype,
+            self.array_values,
         ]);
         out.extend_from_slice(&self.errors);
     }
@@ -373,6 +386,14 @@ impl Agent {
                 }
             });
         }
+        // The iterator prototypes: %IteratorPrototype% and those that
+        // inherit from it.
+        let ip = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.iterator_prototype = ip);
+        let aip = self.alloc_object(ObjectCell::new(ip, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.array_iterator_prototype = aip);
+        let sip = self.alloc_object(ObjectCell::new(ip, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.string_iterator_prototype = sip);
         let math = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.math = math);
         let reflect = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
@@ -396,6 +417,33 @@ impl Agent {
         let done = self.install_table(ap, table::ARRAY_PROTO, i.array, &[unscopables]);
         self.vm.temps.pop();
         done?;
+        let key = self.name_key(super::Name::Str("values"));
+        let values = match ap
+            .as_object()
+            .and_then(|o| self.heap.get_own_property(o, key))
+        {
+            Some(crate::object::OwnProperty::Data { value, .. }) => value,
+            _ => Value::UNDEFINED,
+        };
+        self.set_intrinsics(|n| n.array_values = values);
+        self.install_table(
+            i.iterator_prototype,
+            table::ITERATOR_PROTO,
+            Value::UNDEFINED,
+            &[],
+        )?;
+        self.install_table(
+            i.array_iterator_prototype,
+            table::ARRAY_ITERATOR_PROTO,
+            Value::UNDEFINED,
+            &[],
+        )?;
+        self.install_table(
+            i.string_iterator_prototype,
+            table::STRING_ITERATOR_PROTO,
+            Value::UNDEFINED,
+            &[],
+        )?;
         self.install_table(i.string, table::STRING, Value::UNDEFINED, &[])?;
         self.install_table(sp, table::STRING_PROTO, i.string, &[])?;
         self.install_table(i.number, table::NUMBER, Value::UNDEFINED, &[])?;

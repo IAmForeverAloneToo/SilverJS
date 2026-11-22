@@ -9,6 +9,7 @@
 //! above).
 
 mod expr;
+mod pattern;
 mod stmt;
 
 use std::collections::HashMap;
@@ -171,6 +172,9 @@ pub(super) enum Control {
         kind: BreakKind,
         break_to: Label,
         continue_to: Option<Label>,
+        /// A `for-of`'s iterator and its done register: closed by a
+        /// `break` of the loop and by a jump past it, not by `continue`.
+        iterator: Option<(u32, u32)>,
     },
     /// An environment pushed, the one before it saved in `save`.
     Context { save: u32 },
@@ -208,6 +212,9 @@ pub(super) struct Gen<'s, 'a> {
     pub(super) completion: Option<u32>,
     /// Labels waiting for the loop they name.
     pub(super) pending_labels: Vec<crate::ast::Name>,
+    /// The source of the value the next pattern binds, which its errors
+    /// quote (a declaration's initializer, an assignment's right side).
+    pub(super) pattern_source: Option<Span>,
 }
 
 impl<'s, 'a> Gen<'s, 'a> {
@@ -234,6 +241,7 @@ impl<'s, 'a> Gen<'s, 'a> {
             control: Vec::new(),
             completion: None,
             pending_labels: Vec::new(),
+            pattern_source: None,
             sh,
         }
     }
@@ -283,6 +291,20 @@ impl<'s, 'a> Gen<'s, 'a> {
         let pc = self.pc();
         if let Some(slot) = self.labels.get_mut(l.0 as usize) {
             *slot = Some(pc);
+        }
+    }
+
+    /// A jump with operands before its offset (`IteratorNext`).
+    pub(super) fn jump_with(&mut self, op: Op, operands: &[i64], l: Label) {
+        let start = self.pc();
+        let target = self.labels.get(l.0 as usize).copied().flatten();
+        let offset = target.map_or(0, |t| i64::from(t) - i64::from(start));
+        let mut all = operands.to_vec();
+        all.push(offset);
+        if let Some(at) = encode(&mut self.code, op, &all)
+            && target.is_none()
+        {
+            self.patches.push((at, start, l));
         }
     }
 
@@ -659,18 +681,21 @@ impl<'s, 'a> Gen<'s, 'a> {
                 _ => {}
             }
         }
-        if let Some(rest) = f.rest {
-            let node = self.ast.pat(rest);
-            let Pat::Ident(name) = &node.kind else {
-                return Err(unsupported("destructuring", node.span));
-            };
-            self.emit(Op::CreateRestParameter, &[i64::from(param_count)]);
-            self.store_name(&name.name, node.span, true)?;
-        }
-        for p in &f.params {
+        // The parameters in order (a pattern's getters run in it), then
+        // the rest.
+        for (i, p) in f.params.iter().enumerate() {
             let node = self.ast.pat(p.target);
             let Pat::Ident(name) = &node.kind else {
-                return Err(unsupported("destructuring", node.span));
+                // A pattern: bound from its argument's register.
+                self.reg_op(Op::Ldar, u32::try_from(i).unwrap_or(u32::MAX));
+                if let Some(d) = p.default {
+                    let skip = self.new_label();
+                    self.jump(Op::JumpIfNotUndefined, skip);
+                    self.expr(d)?;
+                    self.bind(skip);
+                }
+                self.bind_pattern(p.target, pattern::Bind::Init)?;
+                continue;
             };
             if let Some(d) = p.default {
                 let skip = self.new_label();
@@ -681,6 +706,10 @@ impl<'s, 'a> Gen<'s, 'a> {
                 self.store_name(&name.name, node.span, true)?;
                 self.bind(skip);
             }
+        }
+        if let Some(rest) = f.rest {
+            self.emit(Op::CreateRestParameter, &[i64::from(param_count)]);
+            self.bind_pattern(rest, pattern::Bind::Init)?;
         }
         for b in &scope.bindings {
             if let Some(g) = b.func {

@@ -74,7 +74,7 @@ impl Gen<'_, '_> {
         self.expr_named(id, None)
     }
 
-    fn unparen(&self, mut id: ExprId) -> ExprId {
+    pub(super) fn unparen(&self, mut id: ExprId) -> ExprId {
         while let Expr::Paren(inner) = self.ast.expr(id).kind {
             id = inner;
         }
@@ -161,13 +161,18 @@ impl Gen<'_, '_> {
                 self.expr(*callee)?;
                 let c = self.alloc();
                 self.reg_op(Op::Star, c);
-                let (first, n) = self.args(args)?;
+                let list = self.args(args)?;
                 let ic = self.ic();
                 // The callee, which a "not a constructor" error quotes; a
                 // stack frame's column is at `new`.
                 self.pos_at(self.ast.expr(*callee).span, span.start);
-                self.emit(Op::New, &[i64::from(c), i64::from(first), i64::from(n), ic]);
-                self.free_n(first, n);
+                match list {
+                    Args::Regs(first, n) => {
+                        self.emit(Op::New, &[i64::from(c), i64::from(first), i64::from(n), ic]);
+                    }
+                    Args::Array(a) => self.emit(Op::NewSpread, &[i64::from(c), i64::from(a)]),
+                }
+                self.free_args(list);
                 self.free(c);
             }
             Expr::ImportMeta | Expr::Import { .. } => return Err(unsupported("modules", span)),
@@ -367,8 +372,43 @@ impl Gen<'_, '_> {
         Ok(())
     }
 
-    /// Arguments into consecutive registers: the first and the count.
-    fn args(&mut self, args: &[Spreadable]) -> R<(u32, u32)> {
+    /// Arguments: into consecutive registers, or with a spread into an
+    /// array the call spreads.
+    fn args(&mut self, args: &[Spreadable]) -> R<Args> {
+        if args.iter().any(|a| matches!(a, Spreadable::Spread(_))) {
+            self.op(Op::CreateArray);
+            let a = self.alloc();
+            self.reg_op(Op::Star, a);
+            for arg in args {
+                match arg {
+                    Spreadable::Expr(e) => {
+                        self.expr(*e)?;
+                        self.reg_op(Op::ArrayPush, a);
+                    }
+                    Spreadable::Spread(e) => {
+                        self.expr(*e)?;
+                        self.pos(self.ast.expr(*e).span);
+                        self.emit(Op::SpreadInto, &[i64::from(a), 1]);
+                    }
+                }
+            }
+            return Ok(Args::Array(a));
+        }
+        let (first, n) = self.arg_registers(args)?;
+        Ok(Args::Regs(first, n))
+    }
+
+    /// Gives back the registers of `args`.
+    fn free_args(&mut self, args: Args) {
+        match args {
+            Args::Regs(first, n) => self.free_n(first, n),
+            Args::Array(a) => self.free(a),
+        }
+    }
+
+    /// Arguments without spreads into consecutive registers: the first
+    /// and the count.
+    fn arg_registers(&mut self, args: &[Spreadable]) -> R<(u32, u32)> {
         let n = u32::try_from(args.len()).unwrap_or(u32::MAX);
         let first = self.alloc_n(n);
         for (i, a) in args.iter().enumerate() {
@@ -482,21 +522,27 @@ impl Gen<'_, '_> {
                         }
                         let f = self.alloc();
                         self.reg_op(Op::Star, f);
-                        let (first, n) = self.args(args)?;
+                        let list = self.args(args)?;
                         let ic = self.ic();
                         let at = self.stack_at(*callee);
                         self.pos_at(self.ast.expr(*callee).span, at);
-                        self.emit(
-                            Op::Call,
-                            &[
-                                i64::from(f),
-                                i64::from(recv),
-                                i64::from(first),
-                                i64::from(n),
-                                ic,
-                            ],
-                        );
-                        self.free_n(first, n);
+                        match list {
+                            Args::Regs(first, n) => self.emit(
+                                Op::Call,
+                                &[
+                                    i64::from(f),
+                                    i64::from(recv),
+                                    i64::from(first),
+                                    i64::from(n),
+                                    ic,
+                                ],
+                            ),
+                            Args::Array(a) => self.emit(
+                                Op::CallSpread,
+                                &[i64::from(f), i64::from(recv), i64::from(a), 0],
+                            ),
+                        }
+                        self.free_args(list);
                         self.free(f);
                         self.free(recv);
                         i -= 1;
@@ -523,13 +569,33 @@ impl Gen<'_, '_> {
                     }
                     let f = self.alloc();
                     self.reg_op(Op::Star, f);
-                    let (first, n) = self.args(args)?;
+                    let list = self.args(args)?;
                     let callee_node = self.ast.expr(*callee);
                     let at = self.stack_at(*callee);
-                    self.pos_at(callee_node.span, at);
                     // `eval?.(x)` is never a direct eval.
                     let direct_eval = !*optional
                         && matches!(&callee_node.kind, Expr::Ident(i) if &*i.name == "eval");
+                    let Args::Regs(first, n) = list else {
+                        let Args::Array(a) = list else { break };
+                        let u = self.alloc();
+                        self.op(Op::LdaUndefined);
+                        self.reg_op(Op::Star, u);
+                        self.pos_at(callee_node.span, at);
+                        self.emit(
+                            Op::CallSpread,
+                            &[
+                                i64::from(f),
+                                i64::from(u),
+                                i64::from(a),
+                                i64::from(direct_eval),
+                            ],
+                        );
+                        self.free(u);
+                        self.free(a);
+                        self.free(f);
+                        continue;
+                    };
+                    self.pos_at(callee_node.span, at);
                     if direct_eval {
                         self.emit(
                             Op::CallEval,
@@ -555,8 +621,19 @@ impl Gen<'_, '_> {
     }
 
     fn assign(&mut self, op: AssignOp, target: AssignTarget, value: ExprId, span: Span) -> R {
-        let AssignTarget::Simple(t) = target else {
-            return Err(unsupported("destructuring", span));
+        let t = match target {
+            AssignTarget::Simple(t) => t,
+            // A destructuring assignment: its value is the right side's.
+            AssignTarget::Pattern(p) => {
+                self.expr(value)?;
+                let v = self.alloc();
+                self.reg_op(Op::Star, v);
+                self.pattern_source = Some(self.ast.expr(value).span);
+                self.bind_pattern(p, super::pattern::Bind::Assign)?;
+                self.reg_op(Op::Ldar, v);
+                self.free(v);
+                return Ok(());
+            }
         };
         let t = self.unparen(t);
         let tnode = self.ast.expr(t);
@@ -789,19 +866,34 @@ impl Gen<'_, '_> {
         self.op(Op::CreateArray);
         let a = self.alloc();
         self.reg_op(Op::Star, a);
+        // Past the first spread the indices are known only as it runs:
+        // elements are pushed at the length.
+        let mut dynamic = false;
         for (i, el) in elems.iter().enumerate() {
             match el {
+                None if dynamic => self.reg_op(Op::ArrayPushHole, a),
                 None => {}
                 Some(Spreadable::Expr(e)) => {
                     self.expr(*e)?;
-                    self.emit(Op::DefineIndex, &[i64::from(a), i as i64]);
+                    if dynamic {
+                        self.reg_op(Op::ArrayPush, a);
+                    } else {
+                        self.emit(Op::DefineIndex, &[i64::from(a), i as i64]);
+                    }
                 }
                 Some(Spreadable::Spread(e)) => {
-                    return Err(unsupported("spread", self.ast.expr(*e).span));
+                    if !dynamic && i > 0 {
+                        // The holes before it, if any, counted.
+                        self.emit(Op::SetArrayLength, &[i64::from(a), i as i64]);
+                    }
+                    dynamic = true;
+                    self.expr(*e)?;
+                    self.pos(self.ast.expr(*e).span);
+                    self.emit(Op::SpreadInto, &[i64::from(a), 0]);
                 }
             }
         }
-        if matches!(elems.last(), Some(None)) {
+        if !dynamic && matches!(elems.last(), Some(None)) {
             self.emit(Op::SetArrayLength, &[i64::from(a), elems.len() as i64]);
         }
         self.reg_op(Op::Ldar, a);
@@ -881,6 +973,15 @@ impl Gen<'_, '_> {
         };
         self.emit(op, &[i64::from(o), i64::from(k)]);
     }
+}
+
+/// A call's arguments as compiled.
+#[derive(Debug, Clone, Copy)]
+enum Args {
+    /// In consecutive registers: the first and the count.
+    Regs(u32, u32),
+    /// In an array (a spread among them).
+    Array(u32),
 }
 
 fn logical_jump(op: LogicalOp) -> Op {

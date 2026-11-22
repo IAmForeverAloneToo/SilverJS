@@ -1,5 +1,6 @@
 //! Statements.
 
+use super::pattern::Bind;
 use super::{BreakKind, Completion, Control, Gen, Label, R, units, unsupported};
 use crate::ast::{
     Case, Catch, ExprId, ForHead, ForInit, Ident, Pat, Span, Stmt, StmtId, VarDecl, VarKind,
@@ -36,6 +37,25 @@ impl Gen<'_, '_> {
             self.pos(span);
         }
         let labels = std::mem::take(&mut self.pending_labels);
+        // A script's completion value: these statements' own is
+        // undefined if their body gives none (UpdateEmpty(_, undefined)).
+        if let Some(c) = self.completion
+            && matches!(
+                node.kind,
+                Stmt::If { .. }
+                    | Stmt::For { .. }
+                    | Stmt::ForIn { .. }
+                    | Stmt::ForOf { .. }
+                    | Stmt::While { .. }
+                    | Stmt::DoWhile { .. }
+                    | Stmt::Switch { .. }
+                    | Stmt::Try { .. }
+                    | Stmt::With { .. }
+            )
+        {
+            self.op(Op::LdaUndefined);
+            self.reg_op(Op::Star, c);
+        }
         match &node.kind {
             Stmt::Expr(e) => {
                 self.expr(*e)?;
@@ -63,7 +83,10 @@ impl Gen<'_, '_> {
             Stmt::ForIn { left, right, body } => {
                 self.for_in(id, left, *right, *body, labels, span)?
             }
-            Stmt::ForOf { .. } => return Err(unsupported("for-of", span)),
+            Stmt::ForOf { is_await: true, .. } => return Err(unsupported("async functions", span)),
+            Stmt::ForOf {
+                left, right, body, ..
+            } => self.for_of(id, left, *right, *body, labels)?,
             Stmt::While { test, body } => self.while_stmt(*test, *body, labels)?,
             Stmt::DoWhile { body, test } => self.do_while(*body, *test, labels)?,
             Stmt::Return(e) => {
@@ -219,6 +242,7 @@ impl Gen<'_, '_> {
                 kind: BreakKind::Block,
                 break_to: end,
                 continue_to: None,
+                iterator: None,
             });
             self.stmt(body)?;
             self.control.pop();
@@ -250,6 +274,7 @@ impl Gen<'_, '_> {
             kind: BreakKind::Loop,
             break_to: end,
             continue_to: Some(cont),
+            iterator: None,
         });
     }
 
@@ -280,6 +305,17 @@ impl Gen<'_, '_> {
         while level > 0 {
             level -= 1;
             if goal == Some(level) {
+                if let (
+                    Some(Control::Breakable {
+                        iterator: Some((it, done)),
+                        ..
+                    }),
+                    Completion::Break(_),
+                ) = (self.control.get(level), target)
+                {
+                    let (it, done) = (*it, *done);
+                    self.emit(Op::IteratorClose, &[i64::from(it), i64::from(done)]);
+                }
                 if let Some(r) = pop {
                     self.reg_op(Op::PopContext, r);
                 }
@@ -327,6 +363,14 @@ impl Gen<'_, '_> {
                     self.jump(Op::Jump, entry);
                     return;
                 }
+                Some(Control::Breakable {
+                    iterator: Some((it, done)),
+                    ..
+                }) => {
+                    let (it, done) = (*it, *done);
+                    // A return's value stays in the accumulator.
+                    self.emit(Op::IteratorClose, &[i64::from(it), i64::from(done)]);
+                }
                 Some(Control::Breakable { .. }) | None => {}
             }
         }
@@ -336,7 +380,7 @@ impl Gen<'_, '_> {
 
     /// The register a handler restores the environment from: the one
     /// current now, if a block pushed one; `None` for the function's.
-    fn handler_context(&mut self) -> Option<u32> {
+    pub(super) fn handler_context(&mut self) -> Option<u32> {
         if self
             .control
             .iter()
@@ -440,12 +484,8 @@ impl Gen<'_, '_> {
         self.reg_op(Op::Star, exception);
         let save = self.enter_scope(ScopeKey::Catch(id))?;
         if let Some(p) = catch.param {
-            let node = self.ast.pat(p);
-            let Pat::Ident(name) = &node.kind else {
-                return Err(unsupported("destructuring", node.span));
-            };
             self.reg_op(Op::Ldar, exception);
-            self.store_name(&name.name, node.span, true)?;
+            self.bind_pattern(p, Bind::Init)?;
         }
         self.stmts(&catch.body)?;
         self.leave_scope(save);
@@ -487,6 +527,7 @@ impl Gen<'_, '_> {
             kind: BreakKind::Switch,
             break_to: end,
             continue_to: None,
+            iterator: None,
         });
         for (c, l) in cases.iter().zip(&bodies) {
             self.bind(*l);
@@ -542,26 +583,7 @@ impl Gen<'_, '_> {
         } else {
             None
         };
-        match left {
-            ForHead::Var(decl) => {
-                let Some(d) = decl.decls.first() else {
-                    return Ok(());
-                };
-                let node = self.ast.pat(d.target);
-                let Pat::Ident(name) = &node.kind else {
-                    return Err(unsupported("destructuring", node.span));
-                };
-                self.store_name(&name.name, node.span, decl.kind != VarKind::Var)?;
-            }
-            ForHead::Pattern(p) => {
-                let node = self.ast.pat(*p);
-                match &node.kind {
-                    Pat::Ident(name) => self.store_name(&name.name, node.span, false)?,
-                    Pat::Expr(e) => self.store_to_expr(*e)?,
-                    _ => return Err(unsupported("destructuring", node.span)),
-                }
-            }
-        }
+        self.bind_head(left)?;
         self.stmt(body)?;
         if let Some((v, save)) = save {
             self.leave_scope(save);
@@ -576,7 +598,101 @@ impl Gen<'_, '_> {
     }
 
     /// Stores the accumulator into a member expression (a for-in head).
-    fn store_to_expr(&mut self, e: crate::ast::ExprId) -> R {
+    /// `for (left of right) body` (section 14.7.5): the iterator closed
+    /// when the loop is left early, by a jump or a throw.
+    fn for_of(
+        &mut self,
+        id: StmtId,
+        left: &ForHead,
+        right: crate::ast::ExprId,
+        body: StmtId,
+        labels: Vec<crate::ast::Name>,
+    ) -> R {
+        let lexical = matches!(left, ForHead::Var(d) if d.kind != VarKind::Var);
+        // The iterable is evaluated with the head's names in their TDZ.
+        if lexical {
+            let save = self.enter_scope(ScopeKey::Stmt(id))?;
+            self.expr(right)?;
+            self.leave_scope(save);
+        } else {
+            self.expr(right)?;
+        }
+        let (it, next, done) = (self.alloc(), self.alloc(), self.alloc());
+        self.pos(self.ast.expr(right).span);
+        self.emit(Op::GetIterator, &[i64::from(it), i64::from(next), 0]);
+        self.op(Op::LdaFalse);
+        self.reg_op(Op::Star, done);
+        let (head, end, cont) = (self.new_label(), self.new_label(), self.new_label());
+        let context = self.handler_context();
+        self.control.push(Control::Breakable {
+            labels,
+            kind: BreakKind::Loop,
+            break_to: end,
+            continue_to: Some(cont),
+            iterator: Some((it, done)),
+        });
+        let start = self.pc();
+        self.bind(head);
+        self.iterator_next(it, next, done, end);
+        // Each iteration a new environment for a `let` or `const` head.
+        let save = if lexical {
+            let v = self.alloc();
+            self.reg_op(Op::Star, v);
+            let save = self.enter_scope(ScopeKey::Stmt(id))?;
+            self.reg_op(Op::Ldar, v);
+            Some((v, save))
+        } else {
+            None
+        };
+        self.bind_head(left)?;
+        self.stmt(body)?;
+        if let Some((v, save)) = save {
+            self.leave_scope(save);
+            self.free(v);
+        }
+        self.bind(cont);
+        self.jump(Op::JumpLoop, head);
+        let stop = self.pc();
+        self.control.pop();
+        // A throw out of the loop (not out of `next`) closes it.
+        let target = self.pc();
+        self.handler(Handler {
+            start,
+            end: stop,
+            target,
+            context,
+        });
+        self.emit(Op::IteratorCloseQuiet, &[i64::from(it), i64::from(done)]);
+        self.op(Op::Throw);
+        self.bind(end);
+        if let Some(c) = context {
+            self.free(c);
+        }
+        self.free(done);
+        self.free(next);
+        self.free(it);
+        Ok(())
+    }
+
+    /// Binds the accumulator to a `for-in` or `for-of` head.
+    fn bind_head(&mut self, left: &ForHead) -> R {
+        match left {
+            ForHead::Var(decl) => {
+                let Some(d) = decl.decls.first() else {
+                    return Ok(());
+                };
+                let mode = if decl.kind == VarKind::Var {
+                    Bind::Var
+                } else {
+                    Bind::Init
+                };
+                self.bind_pattern(d.target, mode)
+            }
+            ForHead::Pattern(p) => self.bind_pattern(*p, Bind::Assign),
+        }
+    }
+
+    pub(super) fn store_to_expr(&mut self, e: crate::ast::ExprId) -> R {
         let node = self.ast.expr(e);
         // A name (`for (x in o)`), parenthesized or not.
         match &node.kind {
@@ -634,7 +750,14 @@ impl Gen<'_, '_> {
         for d in &decl.decls {
             let node = self.ast.pat(d.target);
             let Pat::Ident(name) = &node.kind else {
-                return Err(unsupported("destructuring", node.span));
+                // A pattern, which always has an initializer.
+                if let Some(init) = d.init {
+                    self.expr(init)?;
+                    self.pattern_source = Some(self.ast.expr(init).span);
+                }
+                let mode = if lexical { Bind::Init } else { Bind::Var };
+                self.bind_pattern(d.target, mode)?;
+                continue;
             };
             match d.init {
                 Some(init) => {

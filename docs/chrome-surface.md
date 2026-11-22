@@ -50,6 +50,11 @@ test.
 | `Assignment to constant variable.` | J2.4 | `interp_tests::errors_are_worded_as_chrome_words_them` |
 | `Cannot convert a Symbol value to a string` | J2.4 | `interp_tests::errors_are_worded_as_chrome_words_them` |
 | `Cannot mix BigInt and other types, use explicit conversions` | J4 (BigInt) | |
+| `1 is not iterable`, `undefined is not iterable`, `{} is not iterable`: the iterable's expression text as written (`for-of`, array spread); an array pattern's value names itself where it has no source (Chrome 157, the iterator probe) | J3.1 | `iteration_tests::iteration_errors_read_as_the_reference_browsers` |
+| A call's spread of a non-iterable: `Spread syntax requires ...iterable[Symbol.iterator] to be a function` (Chrome 157) | J3.1 | `iteration_tests::iteration_errors_read_as_the_reference_browsers` |
+| `Cannot destructure property 'a' of 'null' as it is null.` (Chrome 157); of a member's value, its text (`'o.x'`), and of a parameter's, the value (`'undefined'`) | J3.1 | `iteration_tests::iteration_errors_read_as_the_reference_browsers` |
+| `Iterator result 1 is not an object` (from `next` and from `return`), `Result of the Symbol.iterator method is not an object` (Chrome 157) | J3.1 | `iteration_tests::iteration_errors_read_as_the_reference_browsers` |
+| `Method Array Iterator.prototype.next called on incompatible receiver #<Object>`, and String Iterator's (Chrome 157) | J3.1 | `iteration_tests::iteration_errors_read_as_the_reference_browsers` |
 
 ## Function.prototype.toString
 
@@ -79,6 +84,7 @@ this reason.
 | `Function.prototype` has no `fileName`, `lineNumber` or `columnNumber` | J2.5 | `builtins_tests::own_keys_are_in_the_reference_browsers_order` |
 | The global object's ECMAScript names, `Object,Function,Array,Number,parseFloat,parseInt,Infinity,NaN,undefined,Boolean,String,Symbol,Date,...` (its web APIs after) (Chrome 157) | J2.5 | `builtins_tests::the_global_objects_built_ins_are_in_the_reference_browsers_order` |
 | `Object`, `Object.prototype`, `Function`, `Function.prototype`, `Error` and the native errors, `Array`, `Array.prototype` and its `@@unscopables`, `String`, `String.prototype`, `Number`, `Number.prototype`, `Boolean`, `Boolean.prototype`, `Symbol`, `Symbol.prototype`, `Math`, `Reflect` (Chrome 157) | J2.5 | `builtins_tests::own_keys_are_in_the_reference_browsers_order` |
+| `%ArrayIteratorPrototype%` and `%StringIteratorPrototype%`: `next,@@toStringTag`; `Array.prototype[@@iterator]` and an arguments object's are `Array.prototype.values`; `%IteratorPrototype%` is `constructor,reduce,toArray,forEach,some,every,find,map,filter,take,drop,flatMap,join,includes,@@iterator,@@toStringTag,@@dispose` (the iterator probe, Chrome 157), of which J3.1 brings `@@iterator` and J4's iterator helpers the rest | J3.1 | `builtins_tests::own_keys_are_in_the_reference_browsers_order` |
 | A function's own keys `length,name,prototype`, an arrow's and a bound function's `length,name`, an arguments object's `0,length,callee,@@iterator`, an error's `stack,message` (Chrome 157) | J2.5 | `builtins_tests::own_keys_are_in_the_reference_browsers_order` (the error's with the stack) |
 
 The probes' lists are in that test, each with the names a later step

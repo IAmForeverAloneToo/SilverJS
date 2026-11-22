@@ -32,17 +32,23 @@ H = 'src/heap.rs'
 M = 'src/interp/mod.rs'
 P = 'src/interp/ops.rs'
 E = 'src/embed.rs'
+IT = 'src/builtins/iterator.rs'
+AG = 'src/agent.rs'
 cases = [
     # Tables and their order.
     (OBJ, 'method("seal", 1, seal),\n    method("create", 2, create),',
         'method("create", 2, create),\n    method("seal", 1, seal),'),
+    (IT, '    method("next", 0, string_iterator_next),\n    entry(\n        Name::Sym(Wk::ToStringTag),\n        What::Str("String Iterator"),\n        CONFIGURABLE,\n    ),\n',
+        '    method("next", 0, string_iterator_next),\n'),
+    (AG, '        self.vm.random = crate::builtins::random_state(seed);\n', '        let _ = seed;\n'),
     (GLO, 'intrinsic("Boolean"),\n    intrinsic("String"),',
         'intrinsic("String"),\n    intrinsic("Boolean"),'),
     (MOD, 'enumerable: Some(e.attrs & ENUMERABLE != 0),', 'enumerable: Some(true),'),
     (REF, 'method("defineProperty", 3, define_property),\n    method("deleteProperty", 2, delete_property),',
         'method("deleteProperty", 2, delete_property),\n    method("defineProperty", 3, define_property),'),
     # Calls, bound functions and the Function constructor.
-    (M, 'new_target = Some(if nt == callee { target } else { nt });', 'new_target = Some(nt);'),
+    (M, 'args = copy;\n            if let Some(nt) = new_target {\n                new_target = Some(if nt == callee { target } else { nt });',
+        'args = copy;\n            if let Some(nt) = new_target {\n                new_target = Some(nt);'),
     (FUN, '(n - bound_args).max(0.0)', 'n.max(0.0)'),
     (FUN, 'if !one_function(&format!("(function anonymous({params}\\n) {{\\n}})"))\n        ||',
         'if'),

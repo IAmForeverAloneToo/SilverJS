@@ -62,6 +62,32 @@ pub(crate) fn not_a_constructor(callee: &str) -> String {
 
 pub(crate) const CONST_ASSIGNMENT: &str = "Assignment to constant variable.";
 
+/// `Cannot destructure property 'a' of 'o.x' as it is undefined.`, or
+/// without a property where the pattern names none first.
+pub(crate) fn cannot_destructure(name: &str, what: &str, value: &str) -> String {
+    if name.is_empty() {
+        format!("Cannot destructure '{what}' as it is {value}.")
+    } else {
+        format!("Cannot destructure property '{name}' of '{what}' as it is {value}.")
+    }
+}
+
+/// `x is not iterable`: the iterable's source text as written.
+pub(crate) fn not_iterable(what: &str) -> String {
+    format!("{what} is not iterable")
+}
+
+pub(crate) const ITERATOR_NOT_OBJECT: &str =
+    "Result of the Symbol.iterator method is not an object";
+
+pub(crate) const SPREAD_NOT_ITERABLE: &str =
+    "Spread syntax requires ...iterable[Symbol.iterator] to be a function";
+
+/// `Iterator result 1 is not an object`.
+pub(crate) fn iterator_result_not_object(what: &str) -> String {
+    format!("Iterator result {what} is not an object")
+}
+
 /// `Cannot access 'x' before initialization`.
 pub(crate) fn before_initialization(name: &str) -> String {
     format!("Cannot access '{name}' before initialization")

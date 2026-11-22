@@ -174,6 +174,18 @@ ops! {
     Debugger() "A debugger statement: nothing, without a debugger.",
     ForInEnumerate() "acc = an iterator over acc's enumerable string keys (for-in).",
     ForInNext(R) "acc = the iterator r's next key, or undefined when done.",
+
+    GetIterator(R, R, U) "GetIterator(acc, sync): the iterator into r1, its next method into r2 (u: 1 names the value itself in an error, not its source).",
+    IteratorNext(R, R, R, J) "IteratorStepValue (iterator, next, done): a jump if done already; else done = true, the step, at its end the jump, else acc = its value and done = false.",
+    IteratorClose(R, R) "IteratorClose on a normal completion unless r2 (done) is true: return called, its result an object; acc kept.",
+    IteratorCloseQuiet(R, R) "IteratorClose on a throw completion unless r2 (done) is true: return called, what it does ignored; acc kept.",
+    ArrayPush(R) "Appends acc to the array r, at its length.",
+    ArrayPushHole(R) "Lengthens the array r by a hole.",
+    SpreadInto(R, U) "Appends every value acc's iterator gives to the array r (u: 1 for a call's arguments, whose error differs).",
+    CallSpread(R, R, R, U) "acc = callee(...array) with a receiver (callee, receiver, arguments array, flags: 1 a direct eval if %eval%).",
+    NewSpread(R, R) "acc = new callee(...array) (callee, arguments array).",
+    CopyRest(R) "acc = a new object with acc's own enumerable properties but the property keys in the array r.",
+    RequireObjectCoercible(U, U) "Throws a TypeError if acc is null or undefined (an object pattern's value; u1 its first property's name, or empty; u2: 1 names the value itself, not its source).",
 }
 
 impl Op {

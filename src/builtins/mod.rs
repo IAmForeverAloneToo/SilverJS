@@ -16,6 +16,7 @@ mod array;
 mod error;
 mod function;
 mod global;
+mod iterator;
 mod math;
 mod number;
 mod object;
@@ -162,6 +163,9 @@ const TABLES: &[&[Entry]] = &[
     stack::ACCESSORS,
     stack::CALL_SITE,
     stack::CALL_SITE_CTOR,
+    iterator::ITERATOR_PROTO,
+    iterator::ARRAY_ITERATOR_PROTO,
+    iterator::STRING_ITERATOR_PROTO,
 ];
 
 /// The tables' indices.
@@ -188,6 +192,9 @@ pub(crate) mod table {
     pub const STACK: u32 = 19;
     pub const CALL_SITE: u32 = 20;
     pub const CALL_SITE_CTOR: u32 = 21;
+    pub const ITERATOR_PROTO: u32 = 22;
+    pub const ARRAY_ITERATOR_PROTO: u32 = 23;
+    pub const STRING_ITERATOR_PROTO: u32 = 24;
 }
 
 const SETTER: u32 = 0x8000;
