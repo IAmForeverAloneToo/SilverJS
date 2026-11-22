@@ -37,8 +37,8 @@ cases = [
     (H, "self.dead = self.live - self.kept;\n        self.dead_extra = self.extra - self.kept_extra;",
         "self.dead = 0;\n        self.dead_extra = 0;"),
     # Handles and the agent.
-    (A, "let roots: Vec<Value> = self.handles.iter().copied().chain(strong).collect();",
-        "let _ = strong;\n        let roots: Vec<Value> = self.handles.iter().copied().collect();"),
+    (A, "            .copied()\n            .chain(strong)\n            .chain(self.vm.roots())",
+        "            .copied()\n            .chain(strong.take(0))\n            .chain(self.vm.roots())"),
     (A, ".filter(|r| r.strong)", ""),
     (A, "global.slot as usize) {\n            *entry = None;",
         "global.slot as usize) {\n            let _ = entry;"),
@@ -77,7 +77,8 @@ cases = [
     (O, "None => self.define_own_property(r, key, Descriptor::data(value)),",
         "None => self.define_own_property(r, key, Descriptor { value: Some(value), ..Descriptor::default() }),"),
     (O, "(Some(x), Some(y)) => x.same_units(y),", "(Some(_), Some(_)) => false,"),
-    (T, "bytes.extend_from_slice(y);", ""),
+    (T, "let bytes: Box<[u8]> = a.iter().chain(b.iter()).map(|u| u as u8).collect();",
+        "let bytes: Box<[u8]> = a.iter().map(|u| u as u8).collect();"),
     # Strings and keys (J2.2).
     (T, "units.iter().all(|&u| u < 256)", "false"),
     (T, "if first == u16::from(b'0') && !rest.is_empty() {", "if false {"),
@@ -85,6 +86,22 @@ cases = [
 ]
 env = dict(os.environ, CARGO_BUILD_JOBS='4')
 quiet = os.environ.get('QUIET_SH')
+
+
+# Every case's pattern must stand exactly once in its file: a case that
+# no longer matches its code would look like a check and prove nothing.
+# Checked before any build; any such case fails the pass.
+stale = []
+for path, a, _ in cases:
+    with open(root + path, 'rb') as f:
+        text = f.read().decode('utf-8').replace('\r\n', '\n')
+    if text.count(a) != 1:
+        stale.append(f'{path}: found {text.count(a)} times: {a.strip()[:70]!r}')
+if stale:
+    print('STALE CASES: each pattern must match its code exactly once', flush=True)
+    for line in stale:
+        print('  ' + line, flush=True)
+    sys.exit(2)
 
 
 def wait_quiet():
@@ -112,19 +129,23 @@ for path, a, b in cases:
     if '\r\n' in src:
         a, b = a.replace('\n', '\r\n'), b.replace('\n', '\r\n')
     if src.count(a) != 1:
-        print(f'NOT FOUND ({src.count(a)}) {path}: {a.strip()[:70]}', flush=True)
-        continue
+        sys.exit(f'STALE CASE ({src.count(a)}) {path}: {a.strip()[:70]}')
     shutil.copy(full, full + '.bak')
     with open(full, 'wb') as f:
         f.write(src.replace(a, b).encode('utf-8'))
     try:
         wait_quiet()
-        r = subprocess.run(['cargo', 'test', '-q', '--lib'], cwd=root, capture_output=True,
+        r = subprocess.run(['cargo', 'test', '-q', '--lib', '--', 'heap_tests', 'value::',
+                            'object_tests', 'string::'], cwd=root, capture_output=True,
                            text=True, encoding='utf-8', errors='replace', timeout=900, env=env)
         out = r.stdout + r.stderr
     finally:
         shutil.move(full + '.bak', full)
         os.utime(full)
+    if 'test result' not in out and 'could not compile' not in out and r.returncode != 0:
+        # The test process died (a stack overflow, an abort): caught.
+        print(f'CAUGHT (the tests crashed) {a.strip()[:55]!r}', flush=True)
+        continue
     if 'test result' not in out:
         print('DID NOT RUN ' + a.strip()[:60] + ' :: ' + out[-400:].replace('\n', ' '), flush=True)
         continue

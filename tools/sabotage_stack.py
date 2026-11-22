@@ -79,6 +79,22 @@ env = dict(os.environ)
 quiet = env.get('QUIET_SH')
 
 
+# Every case's pattern must stand exactly once in its file: a case that
+# no longer matches its code would look like a check and prove nothing.
+# Checked before any build; any such case fails the pass.
+stale = []
+for path, a, _ in cases:
+    with open(root + path, 'rb') as f:
+        text = f.read().decode('utf-8').replace('\r\n', '\n')
+    if text.count(a) != 1:
+        stale.append(f'{path}: found {text.count(a)} times: {a.strip()[:70]!r}')
+if stale:
+    print('STALE CASES: each pattern must match its code exactly once', flush=True)
+    for line in stale:
+        print('  ' + line, flush=True)
+    sys.exit(2)
+
+
 def wait_quiet():
     if quiet:
         bash = shutil.which('bash') or 'bash'
@@ -102,8 +118,7 @@ for path, a, b in cases:
     if '\r\n' in src:
         a, b = a.replace('\n', '\r\n'), b.replace('\n', '\r\n')
     if src.count(a) != 1:
-        print(f'NOT FOUND ({src.count(a)}) {path}: {a.strip()[:70]}', flush=True)
-        continue
+        sys.exit(f'STALE CASE ({src.count(a)}) {path}: {a.strip()[:70]}')
     shutil.copy(full, full + '.bak')
     with open(full, 'wb') as f:
         f.write(src.replace(a, b).encode('utf-8'))
@@ -118,6 +133,10 @@ for path, a, b in cases:
     finally:
         shutil.move(full + '.bak', full)
         os.utime(full)
+    if 'test result' not in out and 'could not compile' not in out and r.returncode != 0:
+        # The test process died (a stack overflow, an abort): caught.
+        print(f'CAUGHT (the tests crashed) {a.strip()[:55]!r}', flush=True)
+        continue
     if 'test result' not in out:
         print('DID NOT RUN ' + a.strip()[:60] + ' :: ' + out[-400:].replace('\n', ' '), flush=True)
         continue

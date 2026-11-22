@@ -34,8 +34,8 @@ cases = [
     (S, "depth += 1;", "depth += 0;"),
     (S, "ScopeKind::FuncName { .. } => depth.saturating_sub(1),", "ScopeKind::FuncName { .. } => depth,"),
     (S, '"arguments" => Some(BindingKind::Arguments),', '"arguments" => None,'),
-    (S, "(ScopeKind::Script | ScopeKind::Function { .. }, _) | (_, None) => return s,",
-        "(ScopeKind::Script, _) | (_, None) => return s,"),
+    (S, "(ScopeKind::Script | ScopeKind::Eval | ScopeKind::Function { .. }, _)\n                | (_, None) => return s,",
+        "(ScopeKind::Script | ScopeKind::Eval, _)\n                | (_, None) => return s,"),
     (S, '&& &*i.name == "eval"', '&& &*i.name == "evil"'),
     (S, "self.a.functions[fi].mapped_arguments = true;", ""),
     (S, "BindingKind::Let | BindingKind::Const | BindingKind::Class\n", "BindingKind::Let | BindingKind::Class\n"),
@@ -48,7 +48,8 @@ cases = [
     (M, "(BindingKind::Const, _) => GlobalDecl::Const(name),", "(BindingKind::Const, _) => GlobalDecl::Let(name),"),
     (M, "                self.op(Op::LdaUninitialized);\n                self.reg_op(Op::Star, r);\n            }\n        }",
         "                self.reg_op(Op::Star, r);\n            }\n        }"),
-    (M, "self.emit(Op::CreateFunctionContext, &[info]);", "let _ = info;"),
+    (M, "let info = self.scope_info(fs);\n            self.emit(Op::CreateFunctionContext, &[info]);",
+        "let info = self.scope_info(fs);\n            let _ = info;"),
     (M, "                        self.reg_op(Op::Ldar, p);\n", ""),
     (M, "(None, Some(n)) => n.into(),", "(None, Some(_)) => Box::default(),"),
     (M, "let offset = i64::from(*target) - i64::from(*start);", "let offset = i64::from(*target);"),
@@ -86,6 +87,22 @@ env = dict(os.environ, CARGO_BUILD_JOBS='4')
 quiet = os.environ.get('QUIET_SH')
 
 
+# Every case's pattern must stand exactly once in its file: a case that
+# no longer matches its code would look like a check and prove nothing.
+# Checked before any build; any such case fails the pass.
+stale = []
+for path, a, _ in cases:
+    with open(root + path, 'rb') as f:
+        text = f.read().decode('utf-8').replace('\r\n', '\n')
+    if text.count(a) != 1:
+        stale.append(f'{path}: found {text.count(a)} times: {a.strip()[:70]!r}')
+if stale:
+    print('STALE CASES: each pattern must match its code exactly once', flush=True)
+    for line in stale:
+        print('  ' + line, flush=True)
+    sys.exit(2)
+
+
 def wait_quiet():
     if quiet:
         # Resolved on PATH: on Windows a bare 'bash' would be looked up in
@@ -100,8 +117,11 @@ wait_quiet()
 r = subprocess.run(['cargo', 'test', '-q', '--lib', '--', '--list'], cwd=root,
                    capture_output=True, text=True, env=env)
 for line in r.stdout.splitlines():
-    # The compiler's own tests: no other can fail by these breaks.
-    if line.endswith(': test') and line.split('::')[0] in ('compiler_tests', 'number'):
+    # The compiler's tests, and the number formatting it folds constants
+    # with (number.rs's other tests are the built-ins' pass's).
+    name = line[:-len(': test')]
+    if line.endswith(': test') and (name.startswith('compiler_tests::')
+                                    or name == 'number::tests::numbers_print_as_the_spec_says'):
         all_tests.add(line[:-len(': test')])
 print(f'{len(all_tests)} tests', flush=True)
 for path, a, b in cases:
@@ -111,8 +131,7 @@ for path, a, b in cases:
     if '\r\n' in src:
         a, b = a.replace('\n', '\r\n'), b.replace('\n', '\r\n')
     if src.count(a) != 1:
-        print(f'NOT FOUND ({src.count(a)}) {path}: {a.strip()[:70]}', flush=True)
-        continue
+        sys.exit(f'STALE CASE ({src.count(a)}) {path}: {a.strip()[:70]}')
     shutil.copy(full, full + '.bak')
     with open(full, 'wb') as f:
         f.write(src.replace(a, b).encode('utf-8'))
@@ -125,6 +144,10 @@ for path, a, b in cases:
     finally:
         shutil.move(full + '.bak', full)
         os.utime(full)
+    if 'test result' not in out and 'could not compile' not in out and r.returncode != 0:
+        # The test process died (a stack overflow, an abort): caught.
+        print(f'CAUGHT (the tests crashed) {a.strip()[:55]!r}', flush=True)
+        continue
     if 'test result' not in out:
         print('DID NOT RUN ' + a.strip()[:60] + ' :: ' + out[-400:].replace('\n', ' '), flush=True)
         continue
