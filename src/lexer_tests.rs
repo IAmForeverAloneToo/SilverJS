@@ -1,7 +1,9 @@
 //! The lexer's tests: each case is what ECMA-262 section 12 (and Annex
 //! B.1.1) says the source is, token by token.
 
-use crate::lexer::{Keyword, Lexer, LineIndex, Punct, Token, TokenKind, TokenValue};
+use crate::lexer::{
+    Keyword, Lexer, LineIndex, Punct, RegExpParts, TemplatePart, Token, TokenKind, TokenValue,
+};
 use crate::unicode::ZWNJ;
 
 /// Every token of `source` read the dividing way, to the end.
@@ -160,10 +162,10 @@ fn a_slash_is_division_until_the_parser_rescans_it() {
     assert_eq!(regexp.kind, TokenKind::RegExp);
     assert_eq!(
         regexp.value,
-        TokenValue::RegExp {
+        TokenValue::RegExp(Box::new(RegExpParts {
             body: "[/]\\/a".into(),
-            flags: "gu".into()
-        }
+            flags: "gu".into(),
+        }))
     );
     assert!(lexer.next_token().unwrap().is(Punct::Semicolon));
     // `/=` rescanned keeps its `=` in the body.
@@ -172,10 +174,10 @@ fn a_slash_is_division_until_the_parser_rescans_it() {
     let regexp = lexer.rescan_regexp(&slash).unwrap();
     assert_eq!(
         regexp.value,
-        TokenValue::RegExp {
+        TokenValue::RegExp(Box::new(RegExpParts {
             body: "=a".into(),
-            flags: "".into()
-        }
+            flags: "".into(),
+        }))
     );
 }
 
@@ -425,10 +427,10 @@ fn templates_cooked_and_raw() {
     );
     assert_eq!(
         t.value,
-        TokenValue::Template {
+        TokenValue::Template(Box::new(TemplatePart {
             cooked: Some(utf16("a\n").into()),
-            raw: "a\\n".into()
-        }
+            raw: "a\\n".into(),
+        }))
     );
     // CR and CRLF are LF in both values.
     let t = one("`a\r\nb\rc`");
@@ -441,10 +443,10 @@ fn templates_cooked_and_raw() {
     );
     assert_eq!(
         t.value,
-        TokenValue::Template {
+        TokenValue::Template(Box::new(TemplatePart {
             cooked: Some(utf16("a\nb\nc").into()),
-            raw: "a\nb\nc".into()
-        }
+            raw: "a\nb\nc".into(),
+        }))
     );
     assert_eq!(error("`abc"), "Unterminated template literal");
 }
@@ -470,11 +472,11 @@ fn a_templates_invalid_escape_leaves_it_uncooked() {
             },
             "{source:?}"
         );
-        let TokenValue::Template { cooked, raw } = &t.value else {
+        let TokenValue::Template(part) = &t.value else {
             panic!("{source:?}");
         };
-        assert!(cooked.is_none(), "{source:?}");
-        assert_eq!(**raw, source[1..source.len() - 1], "{source:?}");
+        assert!(part.cooked.is_none(), "{source:?}");
+        assert_eq!(*part.raw, source[1..source.len() - 1], "{source:?}");
         assert_eq!(
             t.invalid_escape.as_ref().unwrap().message,
             message,
@@ -510,10 +512,10 @@ fn a_substitutions_brace_is_rescanned_as_the_templates_rest() {
     );
     assert_eq!(
         middle.value,
-        TokenValue::Template {
+        TokenValue::Template(Box::new(TemplatePart {
             cooked: Some(utf16("b").into()),
-            raw: "b".into()
-        }
+            raw: "b".into(),
+        }))
     );
     lexer.next_token().unwrap();
     let brace = lexer.next_token().unwrap();
@@ -607,4 +609,34 @@ fn errors_name_their_bytes() {
     lexer.next_token().unwrap();
     let e = lexer.next_token().unwrap_err();
     assert_eq!((e.start, e.end), (2, 5));
+}
+
+#[test]
+fn short_integers_and_what_may_follow_them() {
+    assert_eq!(number("7"), 7.0);
+    assert_eq!(number("123456789012345"), 123_456_789_012_345.0);
+    assert_eq!(number("1234567890123456"), 1_234_567_890_123_456.0);
+    assert_eq!(
+        number("12345678901234567890123"),
+        1.234_567_890_123_456_8e22
+    );
+    // What follows the digits may make them more than an integer.
+    assert_eq!(number("1_2"), 12.0);
+    assert_eq!(number("12."), 12.0);
+    assert!(matches!(one("12n").value, TokenValue::BigInt { .. }));
+    let t = one("07");
+    assert_eq!(t.value, TokenValue::Number(7.0));
+    assert!(t.strict_error.is_some());
+    // Or may not follow at all.
+    // Nor may a letter beyond ASCII (an identifier start).
+    let _ = error("1\u{e9}");
+    let _ = error("2\u{2135}");
+    for source in ["1$", "1a", r"12\u0061", "3in", "1_"] {
+        let _ = error(source);
+    }
+    // Punctuation and spaces may.
+    let all = tokens("1)+2 ");
+    assert_eq!(all.len(), 4);
+    assert_eq!(all[0].value, TokenValue::Number(1.0));
+    assert_eq!(all[3].value, TokenValue::Number(2.0));
 }

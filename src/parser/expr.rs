@@ -135,7 +135,7 @@ impl Parser<'_> {
                 || "Invalid left-hand side in assignment",
             )?
         };
-        self.advance()?;
+        self.bump()?;
         let value = self.assignment()?;
         let span = Span::new(start, self.prev_end);
         Ok(self.ast.add_expr(Expr::Assign { op, target, value }, span))
@@ -153,10 +153,10 @@ impl Parser<'_> {
         if self.yield_at.is_none() {
             self.yield_at = Some(span);
         }
-        self.advance()?;
+        self.bump()?;
         let delegate = !self.tok.newline_before && self.at(Punct::Star);
         if delegate {
-            self.advance()?;
+            self.bump()?;
         }
         let arg = if delegate || (!self.tok.newline_before && self.starts_expression()) {
             Some(self.assignment()?)
@@ -218,7 +218,7 @@ impl Parser<'_> {
             return Ok(test);
         }
         self.check_cover(cover)?;
-        self.advance()?;
+        self.bump()?;
         let consequent = self.with_context(|cx| cx.in_ = true, |p| p.assignment())?;
         self.expect(Punct::Colon)?;
         let alternate = self.assignment()?;
@@ -306,7 +306,7 @@ impl Parser<'_> {
                     self.tok_span(),
                 ));
             }
-            self.advance()?;
+            self.bump()?;
             ops.push((op, prec));
             let mut inner = Cover::default();
             let operand = self.binary_operand(&mut inner)?;
@@ -337,14 +337,14 @@ impl Parser<'_> {
     /// operand.
     fn binary_operand(&mut self, cover: &mut Cover) -> Result<Operand, SyntaxError> {
         if self.tok.kind == TokenKind::PrivateName {
-            let next = self.peek()?;
+            let next = self.lookahead()?;
             if next.kind == TokenKind::Keyword(Keyword::In) && self.cx.in_ {
                 let name = Ident {
-                    name: self.tok_name().into(),
+                    name: super::intern(&mut self.names, self.tok.name(self.source)),
                     span: self.tok_span(),
                 };
                 self.use_private(&name)?;
-                self.advance()?;
+                self.bump()?;
                 return Ok(Operand::Private(name));
             }
             return Err(self.unexpected());
@@ -431,7 +431,7 @@ impl Parser<'_> {
                 _ => break,
             };
             prefixes.push((prefix, self.tok.start));
-            self.advance()?;
+            self.bump()?;
             if prefixes.len() > super::MAX_DEPTH as usize {
                 return Err(self.error("Maximum call stack size exceeded", self.tok_span()));
             }
@@ -577,7 +577,7 @@ impl Parser<'_> {
             expr,
             "Invalid left-hand side expression in postfix operation",
         )?;
-        self.advance()?;
+        self.bump()?;
         Ok(self.ast.add_expr(
             Expr::Update {
                 op,
@@ -616,7 +616,7 @@ impl Parser<'_> {
         loop {
             match self.tok.kind {
                 TokenKind::Punct(Punct::Dot) => {
-                    self.advance()?;
+                    self.bump()?;
                     let prop = self.member_name()?;
                     expr = self.ast.add_expr(
                         Expr::Member {
@@ -628,7 +628,7 @@ impl Parser<'_> {
                     );
                 }
                 TokenKind::Punct(Punct::LBracket) => {
-                    self.advance()?;
+                    self.bump()?;
                     let index = self.with_context(|cx| cx.in_ = true, |p| p.expression())?;
                     self.expect(Punct::RBracket)?;
                     expr = self.ast.add_expr(
@@ -652,7 +652,7 @@ impl Parser<'_> {
                     );
                 }
                 TokenKind::Punct(Punct::QuestionDot) if calls => {
-                    self.advance()?;
+                    self.bump()?;
                     chain = true;
                     expr = match self.tok.kind {
                         TokenKind::Punct(Punct::LParen) => {
@@ -667,7 +667,7 @@ impl Parser<'_> {
                             )
                         }
                         TokenKind::Punct(Punct::LBracket) => {
-                            self.advance()?;
+                            self.bump()?;
                             let index =
                                 self.with_context(|cx| cx.in_ = true, |p| p.expression())?;
                             self.expect(Punct::RBracket)?;
@@ -729,11 +729,11 @@ impl Parser<'_> {
     fn member_name(&mut self) -> Result<MemberProp, SyntaxError> {
         if self.tok.kind == TokenKind::PrivateName {
             let name = Ident {
-                name: self.tok_name().into(),
+                name: super::intern(&mut self.names, self.tok.name(self.source)),
                 span: self.tok_span(),
             };
             self.use_private(&name)?;
-            self.advance()?;
+            self.bump()?;
             return Ok(MemberProp::Private(name));
         }
         if !self.at_identifier_name() {
@@ -785,7 +785,7 @@ impl Parser<'_> {
                         Span::new(start, self.tok.end),
                     ));
                 }
-                self.advance()?;
+                self.bump()?;
                 return Ok(self
                     .ast
                     .add_expr(Expr::NewTarget, Span::new(start, self.prev_end)));
@@ -799,7 +799,7 @@ impl Parser<'_> {
         } else if self.at_keyword(Keyword::Super) {
             self.super_expression()?
         } else if self.at_keyword(Keyword::Import) {
-            let next = self.peek()?;
+            let next = self.lookahead()?;
             if next.is(Punct::LParen) {
                 return Err(self.error("Cannot use new with import", self.tok_span()));
             }
@@ -835,7 +835,7 @@ impl Parser<'_> {
     fn super_expression(&mut self) -> Result<ExprId, SyntaxError> {
         let start = self.tok.start;
         let span = self.tok_span();
-        self.advance()?;
+        self.bump()?;
         match self.tok.kind {
             TokenKind::Punct(Punct::LParen) => {
                 if !self.cx.super_call {
@@ -859,7 +859,7 @@ impl Parser<'_> {
                     }
                     MemberProp::Ident(self.identifier_name()?)
                 } else {
-                    self.advance()?;
+                    self.bump()?;
                     let index = self.with_context(|cx| cx.in_ = true, |p| p.expression())?;
                     self.expect(Punct::RBracket)?;
                     MemberProp::Computed(index)
@@ -876,7 +876,7 @@ impl Parser<'_> {
     fn import_expression(&mut self) -> Result<ExprId, SyntaxError> {
         let start = self.tok.start;
         let span = self.tok_span();
-        self.advance()?;
+        self.bump()?;
         if self.eat(Punct::Dot)? {
             if self.at_contextual("meta") {
                 if !self.module {
@@ -885,7 +885,7 @@ impl Parser<'_> {
                         Span::new(start, self.tok.end),
                     ));
                 }
-                self.advance()?;
+                self.bump()?;
                 return Ok(self
                     .ast
                     .add_expr(Expr::ImportMeta, Span::new(start, self.prev_end)));
@@ -895,7 +895,7 @@ impl Parser<'_> {
         if !self.at(Punct::LParen) {
             return Err(self.error("Cannot use import statement outside a module", span));
         }
-        self.advance()?;
+        self.bump()?;
         let (source, options) = self.with_context(
             |cx| cx.in_ = true,
             |p| {
@@ -922,23 +922,44 @@ impl Parser<'_> {
         match self.tok.kind {
             TokenKind::Identifier => self.primary_identifier(cover),
             TokenKind::Keyword(Keyword::This) => {
-                self.advance()?;
+                self.bump()?;
                 Ok(self.ast.add_expr(Expr::This, span))
             }
             TokenKind::Keyword(Keyword::Null) => {
-                self.advance()?;
+                self.bump()?;
                 Ok(self.ast.add_expr(Expr::Null, span))
             }
             TokenKind::Keyword(Keyword::True) => {
-                self.advance()?;
+                self.bump()?;
                 Ok(self.ast.add_expr(Expr::Bool(true), span))
             }
             TokenKind::Keyword(Keyword::False) => {
-                self.advance()?;
+                self.bump()?;
                 Ok(self.ast.add_expr(Expr::Bool(false), span))
             }
             TokenKind::Keyword(Keyword::Function) => self.function_expression(false, start),
             TokenKind::Keyword(Keyword::Class) => self.class_expression(),
+            TokenKind::Number
+            | TokenKind::BigInt
+            | TokenKind::String
+            | TokenKind::Template { .. }
+            | TokenKind::Punct(Punct::Slash | Punct::SlashEq) => self.literal(),
+            TokenKind::Punct(Punct::LParen) => self.paren_or_arrow(cover),
+            TokenKind::Punct(Punct::LBracket) => self.array_literal(cover),
+            TokenKind::Punct(Punct::LBrace) => self.object_literal(cover),
+            TokenKind::PrivateName => Err(self.unexpected()),
+            _ => Err(self.unexpected()),
+        }
+    }
+
+    /// A literal: a number, BigInt, string, template or regular
+    /// expression. Apart from `primary` so that the tokens it holds take
+    /// no room in the frame every nested expression goes through.
+    #[inline(never)]
+    fn literal(&mut self) -> Result<ExprId, SyntaxError> {
+        let start = self.tok.start;
+        let span = self.tok_span();
+        match self.tok.kind {
             TokenKind::Number => {
                 let tok = self.advance()?;
                 self.check_strict_token(&tok)?;
@@ -973,10 +994,10 @@ impl Parser<'_> {
             TokenKind::Punct(Punct::Slash | Punct::SlashEq) => {
                 let slash = self.tok.clone();
                 let tok = self.lexer.rescan_regexp(&slash)?;
-                self.tok = tok;
+                self.rescanned(tok);
                 let tok = self.advance()?;
                 let (body, flags) = match tok.value {
-                    TokenValue::RegExp { body, flags } => (body, flags),
+                    TokenValue::RegExp(r) => (r.body, r.flags),
                     _ => (Box::default(), Box::default()),
                 };
                 crate::regexp::check_literal(&body, &flags, self.stack)
@@ -985,10 +1006,6 @@ impl Parser<'_> {
                     .ast
                     .add_expr(Expr::RegExp { body, flags }, Span::new(tok.start, tok.end)))
             }
-            TokenKind::Punct(Punct::LParen) => self.paren_or_arrow(cover),
-            TokenKind::Punct(Punct::LBracket) => self.array_literal(cover),
-            TokenKind::Punct(Punct::LBrace) => self.object_literal(cover),
-            TokenKind::PrivateName => Err(self.unexpected()),
             _ => Err(self.unexpected()),
         }
     }
@@ -998,17 +1015,17 @@ impl Parser<'_> {
     fn primary_identifier(&mut self, cover: &mut Cover) -> Result<ExprId, SyntaxError> {
         let start = self.tok.start;
         if self.at_contextual("async") {
-            let next = self.peek()?;
+            let next = self.lookahead()?;
             if !next.newline_before {
                 if next.kind == TokenKind::Keyword(Keyword::Function) {
-                    self.advance()?;
+                    self.bump()?;
                     return self.function_expression(true, start);
                 }
                 if next.kind == TokenKind::Identifier {
                     // `async x => ...`
                     let (_, after) = self.peek2()?;
                     if after.is(Punct::Arrow) && !after.newline_before {
-                        self.advance()?;
+                        self.bump()?;
                         return self.identifier_arrow(start, true);
                     }
                 }
@@ -1017,9 +1034,12 @@ impl Parser<'_> {
                 }
             }
         }
+        // Every identifier looks at the token after it: kept, not lexed
+        // again by the move past the identifier.
         let next = self.peek()?;
         if next.is(Punct::Arrow) {
             if next.newline_before {
+                let next = next.clone();
                 return Err(self.unexpected_token(&next));
             }
             return self.identifier_arrow(start, false);
@@ -1037,10 +1057,10 @@ impl Parser<'_> {
         let mut tok = self.tok.clone();
         loop {
             if !tagged && let Some(error) = &tok.invalid_escape {
-                return Err(error.clone());
+                return Err(SyntaxError::clone(error));
             }
             let (cooked, raw) = match &tok.value {
-                TokenValue::Template { cooked, raw } => (cooked.clone(), raw.clone()),
+                TokenValue::Template(t) => (t.cooked.clone(), t.raw.clone()),
                 _ => (None, Box::default()),
             };
             quasis.push(Quasi {
@@ -1049,7 +1069,7 @@ impl Parser<'_> {
                 span: Span::new(tok.start, tok.end),
             });
             let tail = matches!(tok.kind, TokenKind::Template { tail: true, .. });
-            self.advance()?;
+            self.bump()?;
             if tail {
                 break;
             }
@@ -1060,7 +1080,7 @@ impl Parser<'_> {
             }
             let brace = self.tok.clone();
             tok = self.lexer.rescan_template(&brace)?;
-            self.tok = tok.clone();
+            self.rescanned(tok.clone());
         }
         Ok((quasis, exprs))
     }
@@ -1075,7 +1095,7 @@ impl Parser<'_> {
 
     fn array_inner(&mut self, cover: &mut Cover) -> Result<ExprId, SyntaxError> {
         let start = self.tok.start;
-        self.advance()?;
+        self.bump()?;
         let mut elems = Vec::new();
         self.with_context(
             |cx| cx.in_ = true,
@@ -1121,7 +1141,7 @@ impl Parser<'_> {
 
     fn object_inner(&mut self, cover: &mut Cover) -> Result<ExprId, SyntaxError> {
         let start = self.tok.start;
-        self.advance()?;
+        self.bump()?;
         let mut props = Vec::new();
         let mut proto: Option<Span> = None;
         self.with_context(
@@ -1191,7 +1211,7 @@ impl Parser<'_> {
         }
         match self.tok.kind {
             TokenKind::Punct(Punct::Colon) => {
-                self.advance()?;
+                self.bump()?;
                 let value = self.assignment_cover(cover)?;
                 Ok(Prop {
                     key,
@@ -1227,7 +1247,7 @@ impl Parser<'_> {
                     if cover.init.is_none() {
                         cover.init = Some(self.tok_span());
                     }
-                    self.advance()?;
+                    self.bump()?;
                     let default = self.assignment()?;
                     self.ast.add_expr(
                         Expr::Assign {
@@ -1259,7 +1279,7 @@ impl Parser<'_> {
         if self.tok.kind == TokenKind::Identifier && !self.tok.escaped {
             let name = self.tok_text();
             if matches!(name, "async" | "get" | "set") {
-                let next = self.peek()?;
+                let next = self.lookahead()?;
                 let is_modifier = !matches!(
                     next.kind,
                     TokenKind::Punct(
@@ -1280,7 +1300,7 @@ impl Parser<'_> {
                         "get" => accessor = Some(true),
                         _ => accessor = Some(false),
                     }
-                    self.advance()?;
+                    self.bump()?;
                 }
             }
         }
@@ -1318,14 +1338,14 @@ impl Parser<'_> {
                 Ok(PropKey::BigInt { radix, digits })
             }
             TokenKind::Punct(Punct::LBracket) => {
-                self.advance()?;
+                self.bump()?;
                 let e = self.with_context(|cx| cx.in_ = true, |p| p.assignment())?;
                 self.expect(Punct::RBracket)?;
                 Ok(PropKey::Computed(e))
             }
             TokenKind::PrivateName if class_body => {
-                let name = self.tok_name().into();
-                self.advance()?;
+                let name = super::intern(&mut self.names, self.tok.name(self.source));
+                self.bump()?;
                 Ok(PropKey::Private(Ident { name, span }))
             }
             _ => Err(self.unexpected()),
@@ -1342,7 +1362,7 @@ impl Parser<'_> {
 
     fn paren_inner(&mut self, outer: &mut Cover) -> Result<ExprId, SyntaxError> {
         let start = self.tok.start;
-        self.advance()?;
+        self.bump()?;
         let saved = (self.yield_at, self.await_at, self.await_ident_at);
         self.yield_at = None;
         self.await_at = None;
@@ -1357,7 +1377,7 @@ impl Parser<'_> {
                 while !p.at(Punct::RParen) {
                     if p.at(Punct::Ellipsis) {
                         let span = p.tok_span();
-                        p.advance()?;
+                        p.bump()?;
                         let target = p.binding_target()?;
                         rest = Some((target, span));
                         if !p.at(Punct::RParen) {
@@ -1370,7 +1390,7 @@ impl Parser<'_> {
                     items.push(p.assignment_cover(&mut cover)?);
                     if p.at(Punct::Comma) {
                         let comma = p.tok_span();
-                        p.advance()?;
+                        p.bump()?;
                         if p.at(Punct::RParen) {
                             trailing_comma = Some(comma);
                         }
@@ -1382,7 +1402,10 @@ impl Parser<'_> {
             },
         );
         parsed?;
-        let close = self.expect(Punct::RParen)?;
+        if !self.at(Punct::RParen) {
+            return Err(self.unexpected());
+        }
+        let close = self.advance()?;
         if self.at(Punct::Arrow) && !self.tok.newline_before {
             let inner = (self.yield_at, self.await_at, self.await_ident_at);
             self.yield_at = saved.0.or(inner.0);
@@ -1437,7 +1460,7 @@ impl Parser<'_> {
         self.yield_at = None;
         self.await_at = None;
         self.await_ident_at = None;
-        self.advance()?; // (
+        self.bump()?; // (
         let mut items = Vec::new();
         let mut spreads = Vec::new();
         let mut rest = None;
@@ -1449,7 +1472,7 @@ impl Parser<'_> {
                 while !p.at(Punct::RParen) {
                     if p.at(Punct::Ellipsis) {
                         let span = p.tok_span();
-                        p.advance()?;
+                        p.bump()?;
                         let e = p.assignment_cover(&mut inner_cover)?;
                         spreads.push(items.len());
                         rest = Some(span);

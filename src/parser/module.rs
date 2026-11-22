@@ -71,7 +71,7 @@ impl Parser<'_> {
         if !self.at_contextual("from") {
             return Err(self.unexpected());
         }
-        self.advance()?;
+        self.bump()?;
         self.module_specifier()
     }
 
@@ -140,7 +140,7 @@ impl Parser<'_> {
 
     fn import_declaration(&mut self) -> Result<StmtId, SyntaxError> {
         let start = self.tok.start;
-        self.advance()?;
+        self.bump()?;
         if self.tok.kind == TokenKind::String {
             let source = self.module_specifier()?;
             let attributes = self.import_attributes()?;
@@ -166,14 +166,14 @@ impl Parser<'_> {
                 if !self.at_contextual("as") {
                     return Err(self.unexpected());
                 }
-                self.advance()?;
+                self.bump()?;
                 specs.push(ImportSpec::Namespace(self.imported_binding()?));
             } else if self.eat(Punct::LBrace)? {
                 while !self.at(Punct::RBrace) {
                     let name_tok = self.tok.clone();
                     let (name, _, is_string) = self.module_export_name()?;
                     let local = if self.at_contextual("as") {
-                        self.advance()?;
+                        self.bump()?;
                         self.imported_binding()?
                     } else {
                         if is_string || name_tok.kind != TokenKind::Identifier {
@@ -213,12 +213,12 @@ impl Parser<'_> {
 
     fn export_declaration(&mut self, exports: &mut Exports) -> Result<StmtId, SyntaxError> {
         let start = self.tok.start;
-        self.advance()?;
+        self.bump()?;
         let decl = match self.tok.kind {
             TokenKind::Punct(Punct::Star) => {
-                self.advance()?;
+                self.bump()?;
                 let exported = if self.at_contextual("as") {
-                    self.advance()?;
+                    self.bump()?;
                     let (name, span, _) = self.module_export_name()?;
                     exports.names.push((name.clone(), span));
                     Some(name)
@@ -237,7 +237,7 @@ impl Parser<'_> {
             TokenKind::Punct(Punct::LBrace) => self.export_named(exports)?,
             TokenKind::Keyword(Keyword::Default) => {
                 exports.names.push((utf16("default"), self.tok_span()));
-                self.advance()?;
+                self.bump()?;
                 self.export_default()?
             }
             _ => {
@@ -265,7 +265,7 @@ impl Parser<'_> {
     }
 
     /// The names a declaration statement binds.
-    fn declared_names(&self, stmt: StmtId) -> Vec<(Box<str>, Span)> {
+    fn declared_names(&self, stmt: StmtId) -> Vec<(crate::ast::Name, Span)> {
         match &self.ast.stmt(stmt).kind {
             Stmt::Var(decl) => decl
                 .decls
@@ -293,7 +293,7 @@ impl Parser<'_> {
 
     /// `export { a, b as c } [from "m"];`
     fn export_named(&mut self, exports: &mut Exports) -> Result<ExportDecl, SyntaxError> {
-        self.advance()?;
+        self.bump()?;
         // (local, its token's kind was an identifier, exported)
         let mut specs = Vec::new();
         let mut locals = Vec::new();
@@ -302,7 +302,7 @@ impl Parser<'_> {
             let local_tok = self.tok.clone();
             let (local, local_span, local_is_string) = self.module_export_name()?;
             let (exported, exported_span) = if self.at_contextual("as") {
-                self.advance()?;
+                self.bump()?;
                 let (name, span, _) = self.module_export_name()?;
                 (name, span)
             } else {
@@ -337,7 +337,7 @@ impl Parser<'_> {
                 if is_string || tok.kind != TokenKind::Identifier {
                     return Err(self.unexpected_token(&tok));
                 }
-                let name: Box<str> = tok.name(self.source).into();
+                let name = super::intern(&mut self.names, tok.name(self.source));
                 self.check_identifier(&name, span, false)?;
                 exports.locals.push(Ident { name, span });
             }

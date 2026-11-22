@@ -31,7 +31,7 @@ mod stmt;
 use std::collections::{HashMap, HashSet};
 
 use crate::SyntaxError;
-use crate::ast::{Ast, ExprId, Ident, Program, Span, keyword_text};
+use crate::ast::{Ast, ExprId, Ident, Name, Program, Span, keyword_text};
 use crate::lexer::{Keyword, Lexer, Punct, Token, TokenKind, TokenValue};
 pub use crate::stack::DEFAULT_STACK_BUDGET;
 use crate::stack::StackGuard;
@@ -150,7 +150,7 @@ pub(crate) struct Context {
 /// A label in scope, and whether it labels a loop (for `continue`).
 #[derive(Debug, Clone)]
 struct Label {
-    name: Box<str>,
+    name: Name,
     is_loop: bool,
 }
 
@@ -160,7 +160,7 @@ struct Label {
 struct ClassScope {
     /// Declared names and what declared them, to refuse duplicates (a
     /// map: a class may declare thousands).
-    declared: HashMap<Box<str>, PrivateKind>,
+    declared: HashMap<Name, PrivateKind>,
     /// Names used and not yet declared in this class, with where.
     used: Vec<Ident>,
 }
@@ -200,6 +200,12 @@ pub(crate) struct Parser<'s> {
     /// Spread elements followed by more of their literal (`[...a, b]`,
     /// `{...a,}`): fine in an expression, refused as a pattern's rest.
     rest_not_last: HashSet<ExprId>,
+    /// The names met lately, so that a name met again is shared, not
+    /// made again.
+    names: NameCache,
+    /// The token after the current one, if a peek read it, and the
+    /// lexer past it: the next move takes it rather than lexing it again.
+    peeked: Option<(Lexer<'s>, Token)>,
     /// The stack used since the parse began, checked at each level.
     stack: StackGuard,
     stats: ParseStats,
@@ -223,7 +229,7 @@ impl<'s> Parser<'s> {
             lexer,
             tok,
             prev_end: 0,
-            ast: Ast::default(),
+            ast: Ast::for_source(source.len()),
             module,
             cx,
             depth: 0,
@@ -236,6 +242,8 @@ impl<'s> Parser<'s> {
             await_at: None,
             await_ident_at: None,
             rest_not_last: HashSet::new(),
+            names: NameCache::new(),
+            peeked: None,
             stack: StackGuard::new(DEFAULT_STACK_BUDGET),
             stats: ParseStats::default(),
         })
@@ -262,15 +270,60 @@ impl<'s> Parser<'s> {
 
     // The tokens.
 
+    /// Moves to the next token; gives back the one it was at.
     fn advance(&mut self) -> Result<Token, SyntaxError> {
-        let next = self.lexer.next_token()?;
+        let next = self.next_token()?;
         self.prev_end = self.tok.end;
         Ok(std::mem::replace(&mut self.tok, next))
     }
 
-    /// The token after the current one, read without moving.
-    fn peek(&self) -> Result<Token, SyntaxError> {
+    /// Moves to the next token, dropping the one it was at: no token is
+    /// handed back through the caller's frame.
+    #[inline(never)]
+    fn bump(&mut self) -> Result<(), SyntaxError> {
+        let next = self.next_token()?;
+        self.prev_end = self.tok.end;
+        self.tok = next;
+        Ok(())
+    }
+
+    /// The token after the current one, read without moving or keeping
+    /// it (for the rarer lookaheads, which may borrow the parser).
+    fn lookahead(&self) -> Result<Token, SyntaxError> {
         self.lexer.clone().next_token()
+    }
+
+    /// The token after the current one: the peeked one, or lexed.
+    fn next_token(&mut self) -> Result<Token, SyntaxError> {
+        match self.peeked.take() {
+            Some((lexer, tok)) => {
+                self.lexer = lexer;
+                Ok(tok)
+            }
+            None => self.lexer.next_token(),
+        }
+    }
+
+    /// The token after the current one, read without moving (and kept for
+    /// the move).
+    fn peek(&mut self) -> Result<&Token, SyntaxError> {
+        if self.peeked.is_none() {
+            let mut lexer = self.lexer.clone();
+            let tok = lexer.next_token()?;
+            self.peeked = Some((lexer, tok));
+        }
+        match &self.peeked {
+            Some((_, tok)) => Ok(tok),
+            None => Err(self.unexpected()),
+        }
+    }
+
+    /// The current token read again another way (a `/` as a regular
+    /// expression, a `}` as a template's continuation): what was peeked
+    /// after it is no longer next.
+    fn rescanned(&mut self, tok: Token) {
+        self.peeked = None;
+        self.tok = tok;
     }
 
     /// The token after the current one and the one after that.
@@ -315,7 +368,7 @@ impl<'s> Parser<'s> {
 
     fn eat(&mut self, p: Punct) -> Result<bool, SyntaxError> {
         if self.at(p) {
-            self.advance()?;
+            self.bump()?;
             Ok(true)
         } else {
             Ok(false)
@@ -324,24 +377,24 @@ impl<'s> Parser<'s> {
 
     fn eat_keyword(&mut self, k: Keyword) -> Result<bool, SyntaxError> {
         if self.at_keyword(k) {
-            self.advance()?;
+            self.bump()?;
             Ok(true)
         } else {
             Ok(false)
         }
     }
 
-    fn expect(&mut self, p: Punct) -> Result<Token, SyntaxError> {
+    fn expect(&mut self, p: Punct) -> Result<(), SyntaxError> {
         if self.at(p) {
-            self.advance()
+            self.bump()
         } else {
             Err(self.unexpected())
         }
     }
 
-    fn expect_keyword(&mut self, k: Keyword) -> Result<Token, SyntaxError> {
+    fn expect_keyword(&mut self, k: Keyword) -> Result<(), SyntaxError> {
         if self.at_keyword(k) {
-            self.advance()
+            self.bump()
         } else {
             Err(self.unexpected())
         }
@@ -480,12 +533,12 @@ impl<'s> Parser<'s> {
             return Err(self.unexpected());
         }
         let span = self.tok_span();
-        let name: Box<str> = self.tok_name().into();
+        let name = intern(&mut self.names, self.tok.name(self.source));
         self.check_identifier(&name, span, binding)?;
         if &*name == "await" && self.await_ident_at.is_none() {
             self.await_ident_at = Some(span);
         }
-        self.advance()?;
+        self.bump()?;
         Ok(Ident { name, span })
     }
 
@@ -497,12 +550,12 @@ impl<'s> Parser<'s> {
     /// An IdentifierName (any word, reserved or not): a property's name.
     fn identifier_name(&mut self) -> Result<Ident, SyntaxError> {
         let span = self.tok_span();
-        let name: Box<str> = match self.tok.kind {
-            TokenKind::Identifier => self.tok_name().into(),
-            TokenKind::Keyword(k) => keyword_text(k).into(),
+        let name = match self.tok.kind {
+            TokenKind::Identifier => intern(&mut self.names, self.tok.name(self.source)),
+            TokenKind::Keyword(k) => intern(&mut self.names, keyword_text(k)),
             _ => return Err(self.unexpected()),
         };
-        self.advance()?;
+        self.bump()?;
         Ok(Ident { name, span })
     }
 
@@ -515,7 +568,7 @@ impl<'s> Parser<'s> {
         if self.cx.strict
             && let Some(error) = &tok.strict_error
         {
-            return Err(error.clone());
+            return Err(SyntaxError::clone(error));
         }
         Ok(())
     }
@@ -543,6 +596,46 @@ impl<'s> Parser<'s> {
 
 /// The words reserved in strict mode code only (section 12.7.2), beside
 /// `yield`, which has rules of its own.
+/// The slots of [`NameCache`], a power of two.
+const NAME_SLOTS: usize = 4096;
+
+/// Names met lately, each in the slot its text hashes to: a name found
+/// there is shared rather than made again (minified code repeats a few
+/// names many times). A slot holds one name, so a lookup is one hash and
+/// one comparison whatever the source, and a name pushed out is only
+/// made again.
+pub(crate) struct NameCache {
+    slots: Vec<Option<Name>>,
+}
+
+impl NameCache {
+    fn new() -> NameCache {
+        NameCache {
+            slots: vec![None; NAME_SLOTS],
+        }
+    }
+}
+
+/// `text` as a name, shared with the last name of that text if its slot
+/// still holds it.
+pub(crate) fn intern(names: &mut NameCache, text: &str) -> Name {
+    // FNV-1a: short, and only a slot's choice rides on it.
+    let mut h: u32 = 0x811c_9dc5;
+    for &b in text.as_bytes() {
+        h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
+    }
+    let slot = (h ^ (h >> 16)) as usize & (NAME_SLOTS - 1);
+    match names.slots.get_mut(slot) {
+        Some(Some(name)) if **name == *text => Name::clone(name),
+        Some(entry) => {
+            let name: Name = text.into();
+            *entry = Some(Name::clone(&name));
+            name
+        }
+        None => text.into(),
+    }
+}
+
 pub(crate) fn is_strict_reserved(name: &str) -> bool {
     matches!(
         name,

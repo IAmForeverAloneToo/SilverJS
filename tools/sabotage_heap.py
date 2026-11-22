@@ -47,7 +47,8 @@ cases = [
         "if self.agent.generation_of(value).is_none() {"),
     (A, "if self.heap.bytes() + bytes > self.limit {\n            return Err(OutOfMemory);",
         "if false {\n            return Err(OutOfMemory);"),
-    (A, "if self.stress || wanted > self.next_collection", "if wanted > self.next_collection"),
+    (A, "if stressed || wanted > self.next_collection", "if wanted > self.next_collection"),
+    (A, "            self.stress_count >= self.stress\n", "            self.stress_count >= 1\n"),
     (A, "let result = f(&mut inner);\n        self.agent.handles.truncate(base);\n        result",
         "let result = f(&mut inner);\n        let _ = base;\n        result"),
     # Objects (J2.2).

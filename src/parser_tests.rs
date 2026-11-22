@@ -430,3 +430,65 @@ fn nesting_is_bounded_by_the_stack_budget() {
         .unwrap();
     assert_eq!(run.join().unwrap(), (true, true));
 }
+
+#[test]
+fn every_identifier_keeps_its_own_name() {
+    // More names than the parser's cache of names has slots: some share
+    // a slot, and each must still come out as written.
+    let names: Vec<String> = (0..6000).map(|i| format!("n{i}")).collect();
+    let source = format!("var {}; {};", names.join(", "), names.join(" + "));
+    let program = parse(&source, Goal::Script).expect("parses");
+    let declared: Vec<&str> = program
+        .ast
+        .pats
+        .iter()
+        .filter_map(|p| match &p.kind {
+            crate::ast::Pat::Ident(i) => Some(&*i.name),
+            _ => None,
+        })
+        .collect();
+    let used: Vec<&str> = program
+        .ast
+        .exprs
+        .iter()
+        .filter_map(|e| match &e.kind {
+            Expr::Ident(i) => Some(&*i.name),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(declared, names);
+    assert_eq!(used, names);
+}
+
+#[test]
+fn a_template_after_a_name_is_read_again_past_its_brace() {
+    // The name before `}` looks at the `}`; the template's next part is
+    // read from that brace again, not from the token looked at.
+    ok("`a${x}b${y}c${z}`");
+    ok("f`a${x}b`; `${a}${b}${c}`");
+    err("`a${x}b${y");
+}
+
+#[test]
+fn nodes_span_their_source_to_their_last_token() {
+    let source = "var a = 1;\nfoo(b, c)\nif (a) { b }\n(a + b);";
+    let program = parse(source, Goal::Script).expect("parses");
+    let spans: Vec<(u32, u32)> = program
+        .body
+        .iter()
+        .map(|&s| {
+            let span = program.ast.stmt(s).span;
+            (span.start, span.end)
+        })
+        .collect();
+    assert_eq!(spans, [(0, 10), (11, 20), (21, 33), (34, 42)]);
+    let parens: Vec<(u32, u32)> = program
+        .ast
+        .exprs
+        .iter()
+        .filter(|e| matches!(e.kind, Expr::Paren(_)))
+        .map(|e| (e.span.start, e.span.end))
+        .collect();
+    assert_eq!(parens, [(34, 41)]);
+    assert_eq!(program.span.end, 42);
+}

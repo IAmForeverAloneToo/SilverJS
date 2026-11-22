@@ -51,7 +51,7 @@ impl Parser<'_> {
 
     fn array_binding(&mut self) -> Result<PatId, SyntaxError> {
         let start = self.tok.start;
-        self.advance()?;
+        self.bump()?;
         let mut elems = Vec::new();
         let mut rest = None;
         loop {
@@ -64,7 +64,7 @@ impl Parser<'_> {
             }
             if self.at(Punct::Ellipsis) {
                 let span = self.tok_span();
-                self.advance()?;
+                self.bump()?;
                 rest = Some(self.binding_target()?);
                 if !self.at(Punct::RBracket) {
                     return Err(self.error(REST_LAST, span));
@@ -84,14 +84,14 @@ impl Parser<'_> {
 
     fn object_binding(&mut self) -> Result<PatId, SyntaxError> {
         let start = self.tok.start;
-        self.advance()?;
+        self.bump()?;
         let mut props = Vec::new();
         let mut rest = None;
         while !self.at(Punct::RBrace) {
             let prop_start = self.tok.start;
             if self.at(Punct::Ellipsis) {
                 let span = self.tok_span();
-                self.advance()?;
+                self.bump()?;
                 let ident = self.identifier(true)?;
                 let ident_span = ident.span;
                 rest = Some(self.ast.add_pat(Pat::Ident(ident), ident_span));

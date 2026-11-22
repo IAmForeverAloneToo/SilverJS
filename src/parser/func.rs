@@ -40,7 +40,7 @@ impl Parser<'_> {
     ) -> Result<StmtId, SyntaxError> {
         let start = self.tok.start;
         if is_async {
-            self.advance()?;
+            self.bump()?;
         }
         self.expect_keyword(Keyword::Function)?;
         let is_generator = self.eat(Punct::Star)?;
@@ -286,7 +286,7 @@ impl Parser<'_> {
         while !self.at(Punct::RParen) {
             if self.at(Punct::Ellipsis) {
                 let span = self.tok_span();
-                self.advance()?;
+                self.bump()?;
                 rest = Some(self.binding_target()?);
                 if !self.at(Punct::RParen) {
                     return Err(self.error("Rest parameter must be last formal parameter", span));
@@ -418,7 +418,7 @@ impl Parser<'_> {
         let was_strict = self.cx.strict;
         let mut use_strict = false;
         let body = if self.at(Punct::LBrace) {
-            self.advance()?;
+            self.bump()?;
             let in_ = self.cx.in_;
             self.cx.in_ = true;
             let (body, strict, has_use_strict) =
@@ -460,7 +460,7 @@ impl Parser<'_> {
     /// default`).
     pub(super) fn class_declaration(&mut self, name_optional: bool) -> Result<StmtId, SyntaxError> {
         let start = self.tok.start;
-        self.advance()?;
+        self.bump()?;
         let name = if self.at_identifier() {
             let name = self.with_context(|cx| cx.strict = true, |p| p.identifier(true))?;
             self.scopes.declare_lexical(&name.name, name.span)?;
@@ -480,7 +480,7 @@ impl Parser<'_> {
         let start = self.tok.start;
         self.enter()?;
         let result = (|| {
-            self.advance()?;
+            self.bump()?;
             let name = if self.at_identifier() {
                 Some(self.with_context(|cx| cx.strict = true, |p| p.identifier(true))?)
             } else {
@@ -571,9 +571,9 @@ impl Parser<'_> {
             let start = self.tok.start;
             let mut is_static = false;
             if self.at_contextual("static") {
-                let next = self.peek()?;
+                let next = self.lookahead()?;
                 if next.is(Punct::LBrace) {
-                    self.advance()?;
+                    self.bump()?;
                     let block = self.static_block(start)?;
                     members.push(ClassMember {
                         kind: MemberKind::StaticBlock,
@@ -593,7 +593,7 @@ impl Parser<'_> {
                         | TokenKind::Eof
                 ) {
                     is_static = true;
-                    self.advance()?;
+                    self.bump()?;
                 }
             }
             let (is_async, is_generator, accessor) = self.method_modifiers()?;

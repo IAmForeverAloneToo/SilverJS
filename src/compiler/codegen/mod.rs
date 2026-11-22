@@ -167,7 +167,7 @@ pub(super) enum Completion {
 #[derive(Debug, Clone)]
 pub(super) enum Control {
     Breakable {
-        labels: Vec<Box<str>>,
+        labels: Vec<crate::ast::Name>,
         kind: BreakKind,
         break_to: Label,
         continue_to: Option<Label>,
@@ -207,7 +207,7 @@ pub(super) struct Gen<'s, 'a> {
     /// The script's completion value, in a register (scripts only).
     pub(super) completion: Option<u32>,
     /// Labels waiting for the loop they name.
-    pub(super) pending_labels: Vec<Box<str>>,
+    pub(super) pending_labels: Vec<crate::ast::Name>,
 }
 
 impl<'s, 'a> Gen<'s, 'a> {

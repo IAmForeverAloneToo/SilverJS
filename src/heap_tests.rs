@@ -231,6 +231,37 @@ fn under_stress_every_allocation_collects_and_nothing_rooted_is_lost() {
 }
 
 #[test]
+fn a_stress_stride_collects_at_every_nth_allocation() {
+    // Six hundred allocations (an object and a string each time round),
+    // well under the heap's own growth trigger: only the stride collects.
+    let collections = |stride: u32| {
+        let mut agent = agent();
+        agent.set_stress_every(stride);
+        agent.scope(|scope| {
+            let root = scope.object(None).unwrap();
+            let before = scope.heap_stats().collections;
+            for i in 0..300 {
+                let s = scope.string(&format!("s{i}")).unwrap();
+                let o = scope.object(Some(root)).unwrap();
+                put(scope, o, 0, s);
+                put(scope, root, i, o);
+            }
+            for i in 0..300 {
+                let o = at(scope, root, i);
+                let s = at(scope, o, 0);
+                assert_eq!(scope.string_text(s), Some(format!("s{i}")));
+            }
+            scope.heap_stats().collections - before
+        })
+    };
+    let every = collections(1);
+    let eighth = collections(8);
+    assert!(every >= 600, "{every}");
+    assert!((70..=80).contains(&eighth), "{eighth}");
+    assert_eq!(collections(0), 0);
+}
+
+#[test]
 fn escape_moves_one_local_out() {
     let mut agent = agent();
     agent.scope(|scope| {

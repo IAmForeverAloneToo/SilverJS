@@ -1,4 +1,4 @@
-function thrower() { null.x; }
+3function thrower() { null.x; }
 try { thrower(); } catch (e) { e.stack; e.message; e instanceof TypeError; }
 Error.stackTraceLimit = 3; Error.prepareStackTrace = function (e, s) { return s.map(String).join('|'); };
 var r = new RangeError('r', { cause: 1 }).stack; Error.prepareStackTrace = undefined;

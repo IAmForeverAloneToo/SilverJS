@@ -1,6 +1,8 @@
 //! Any bytes, run as a script twice: once as usual and once collecting
-//! at every allocation. A collection is never observable to script, so
-//! the two runs must come to the same text; a value the collector freed
+//! every few allocations, the first byte choosing how few (every one,
+//! every 2nd, 8th or 64th: most runs fast, a quarter exhaustive), the
+//! rest the script. A collection is never observable to script, so the
+//! two runs must come to the same text; a value the collector freed
 //! while it was still in use shows as a difference, or as a stale
 //! handle's panic. The script may make realms (`createRealm()`) and
 //! collect (`gc()`).
@@ -41,13 +43,17 @@ fn install<'s>(scope: &mut Scope<'s>) -> JsResult<'s, ()> {
     Ok(())
 }
 
+/// The strides the first byte chooses from.
+const STRIDES: [u32; 4] = [1, 2, 8, 64];
+
 /// What the script came to, as text: its value or thrown value made a
-/// string (which may run script), or how it ended otherwise.
-fn run(source: &str, stress: bool) -> String {
+/// string (which may run script), or how it ended otherwise; collecting
+/// every `stride`-th allocation (0: only as the heap grows).
+fn run(source: &str, stride: u32) -> String {
     let mut agent = Agent::new(AgentOptions {
         heap_limit: 16 << 20,
     });
-    agent.set_stress(stress);
+    agent.set_stress_every(stride);
     agent.set_random_seed(0x5eed);
     let calls = Rc::new(Cell::new(0u32));
     let hook = Rc::clone(&calls);
@@ -74,8 +80,12 @@ fn run(source: &str, stress: bool) -> String {
 }
 
 fuzz_target!(|data: &[u8]| {
-    let source = String::from_utf8_lossy(data);
-    let plain = run(&source, false);
-    let stressed = run(&source, true);
+    let Some((&first, rest)) = data.split_first() else {
+        return;
+    };
+    let stride = STRIDES[usize::from(first) % STRIDES.len()];
+    let source = String::from_utf8_lossy(rest);
+    let plain = run(&source, 0);
+    let stressed = run(&source, stride);
     assert_eq!(plain, stressed, "a collection changed the outcome");
 });

@@ -592,7 +592,9 @@ which natives use far less than `Local`s; J6's benches report it.
   - `silverjs_regexp`: pattern, flags and input; no panic, budget-bound,
     and compared with QuickJS-ng's result;
   - `silverjs_gc`: any bytes run twice, in two agents, once as usual
-    and once collecting at every allocation, the heap verifier after
+    and once collecting at every allocation, or every 2nd, 8th or 64th
+    as the first byte chooses (`Agent::set_stress_every`: most runs
+    fast, a quarter exhaustive), the heap verifier after
     every collection (fuzz builds keep debug assertions): a collection
     is never observable, so the two must end the same (`Math.random`
     seeded alike). Generated programs join the bytes when

@@ -77,8 +77,11 @@ pub struct Agent {
     free_roots: Vec<u32>,
     limit: usize,
     next_collection: usize,
-    /// Collect at every allocation (the `gc-stress` feature, or a test).
-    stress: bool,
+    /// Collect at every `stress`-th allocation (0: by the heap's growth
+    /// alone; 1, every allocation: the `gc-stress` feature, or a test).
+    stress: u32,
+    /// The allocations since the last stress collection.
+    stress_count: u32,
     /// The interpreter's state: its frames, registers and realm.
     pub(crate) vm: crate::interp::Vm,
 }
@@ -93,7 +96,8 @@ impl Agent {
             free_roots: Vec::new(),
             limit: options.heap_limit,
             next_collection: FIRST_COLLECTION,
-            stress: cfg!(feature = "gc-stress"),
+            stress: u32::from(cfg!(feature = "gc-stress")),
+            stress_count: 0,
             vm: crate::interp::Vm::default(),
         }
     }
@@ -114,7 +118,15 @@ impl Agent {
     /// Collects at every allocation from now on (as `gc-stress` builds
     /// always do), so that a rooting bug fails the first test reaching it.
     pub fn set_stress(&mut self, stress: bool) {
-        self.stress = stress;
+        self.set_stress_every(u32::from(stress));
+    }
+
+    /// Collects at every `n`-th allocation from now on (0: only as the
+    /// heap grows): a stride over 1 keeps most of the stress's reach at a
+    /// fraction of its cost (the `silverjs_gc` fuzz target).
+    pub fn set_stress_every(&mut self, n: u32) {
+        self.stress = n;
+        self.stress_count = 0;
     }
 
     /// Seeds `Math.random` (otherwise seeded from the clock at its first
@@ -161,10 +173,16 @@ impl Agent {
     }
 
     /// Makes room for `bytes` more: a collection when the heap has grown
-    /// enough since the last (or always, under stress), and the limit.
+    /// enough since the last (or at every n-th allocation, under stress),
+    /// and the limit.
     pub(crate) fn reserve(&mut self, bytes: usize) -> Result<(), OutOfMemory> {
         let wanted = self.heap.bytes() + bytes;
-        if self.stress || wanted > self.next_collection || wanted > self.limit {
+        let stressed = self.stress > 0 && {
+            self.stress_count += 1;
+            self.stress_count >= self.stress
+        };
+        if stressed || wanted > self.next_collection || wanted > self.limit {
+            self.stress_count = 0;
             self.collect();
         }
         if self.heap.bytes() + bytes > self.limit {

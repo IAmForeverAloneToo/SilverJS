@@ -1,7 +1,9 @@
 //! Statements.
 
 use super::{BreakKind, Completion, Control, Gen, Label, R, units, unsupported};
-use crate::ast::{Case, Catch, ForHead, ForInit, Pat, Span, Stmt, StmtId, VarDecl, VarKind};
+use crate::ast::{
+    Case, Catch, ExprId, ForHead, ForInit, Ident, Pat, Span, Stmt, StmtId, VarDecl, VarKind,
+};
 use crate::compiler::Handler;
 use crate::compiler::bytecode::Op;
 use crate::compiler::scope::ScopeKey;
@@ -51,87 +53,19 @@ impl Gen<'_, '_> {
                 test,
                 consequent,
                 alternate,
-            } => {
-                let other = self.new_label();
-                self.expr(*test)?;
-                self.jump(Op::JumpIfFalse, other);
-                self.stmt(*consequent)?;
-                match alternate {
-                    Some(a) => {
-                        let end = self.new_label();
-                        self.jump(Op::Jump, end);
-                        self.bind(other);
-                        self.stmt(*a)?;
-                        self.bind(end);
-                    }
-                    None => self.bind(other),
-                }
-            }
+            } => self.if_stmt(*test, *consequent, *alternate)?,
             Stmt::For {
                 init,
                 test,
                 update,
                 body,
-            } => {
-                let save = self.enter_scope(ScopeKey::Stmt(id))?;
-                match init {
-                    Some(ForInit::Var(decl)) => self.var_decl(decl, span)?,
-                    Some(ForInit::Expr(e)) => self.expr(*e)?,
-                    None => {}
-                }
-                // A `let` captured by a closure is a new binding each
-                // iteration: the environment is copied.
-                let per_iteration = save.save.is_some();
-                if per_iteration {
-                    self.op(Op::CopyContext);
-                }
-                let (head, end, cont) = (self.new_label(), self.new_label(), self.new_label());
-                self.loop_control(labels, end, cont);
-                self.bind(head);
-                if let Some(t) = test {
-                    self.expr(*t)?;
-                    self.jump(Op::JumpIfFalse, end);
-                }
-                self.stmt(*body)?;
-                self.bind(cont);
-                if per_iteration {
-                    self.op(Op::CopyContext);
-                }
-                if let Some(u) = update {
-                    self.expr(*u)?;
-                }
-                self.jump(Op::JumpLoop, head);
-                self.control.pop();
-                self.bind(end);
-                self.leave_scope(save);
-            }
+            } => self.for_stmt(id, init.as_ref(), *test, *update, *body, labels, span)?,
             Stmt::ForIn { left, right, body } => {
                 self.for_in(id, left, *right, *body, labels, span)?
             }
             Stmt::ForOf { .. } => return Err(unsupported("for-of", span)),
-            Stmt::While { test, body } => {
-                let (head, end) = (self.new_label(), self.new_label());
-                self.loop_control(labels, end, head);
-                self.bind(head);
-                self.expr(*test)?;
-                self.jump(Op::JumpIfFalse, end);
-                self.stmt(*body)?;
-                self.jump(Op::JumpLoop, head);
-                self.control.pop();
-                self.bind(end);
-            }
-            Stmt::DoWhile { body, test } => {
-                let (head, end, cont) = (self.new_label(), self.new_label(), self.new_label());
-                self.loop_control(labels, end, cont);
-                self.bind(head);
-                self.stmt(*body)?;
-                self.bind(cont);
-                self.expr(*test)?;
-                self.jump(Op::JumpIfFalse, end);
-                self.jump(Op::JumpLoop, head);
-                self.control.pop();
-                self.bind(end);
-            }
+            Stmt::While { test, body } => self.while_stmt(*test, *body, labels)?,
+            Stmt::DoWhile { body, test } => self.do_while(*body, *test, labels)?,
             Stmt::Return(e) => {
                 match e {
                     Some(e) => self.expr(*e)?,
@@ -165,56 +99,152 @@ impl Gen<'_, '_> {
                 discriminant,
                 cases,
             } => self.switch(id, *discriminant, cases, labels)?,
-            Stmt::Labeled { label, body } => {
-                let mut labels = labels;
-                labels.push(label.name.clone());
-                let inner = self.ast.stmt(*body);
-                let is_loop = matches!(
-                    inner.kind,
-                    Stmt::For { .. }
-                        | Stmt::ForIn { .. }
-                        | Stmt::ForOf { .. }
-                        | Stmt::While { .. }
-                        | Stmt::DoWhile { .. }
-                        | Stmt::Labeled { .. }
-                );
-                if is_loop {
-                    self.pending_labels = labels;
-                    self.stmt(*body)?;
-                } else {
-                    let end = self.new_label();
-                    self.control.push(Control::Breakable {
-                        labels,
-                        kind: BreakKind::Block,
-                        break_to: end,
-                        continue_to: None,
-                    });
-                    self.stmt(*body)?;
-                    self.control.pop();
-                    self.bind(end);
-                }
-            }
-            Stmt::With { object, body } => {
-                self.expr(*object)?;
-                let save = self.alloc();
-                self.reg_op(Op::PushWithContext, save);
-                self.control.push(Control::Context { save });
-                let outer = self.scope;
-                if let Some(s) = self.a.key(ScopeKey::Stmt(id)) {
-                    self.scope = s;
-                }
-                self.stmt(*body)?;
-                self.scope = outer;
-                self.reg_op(Op::PopContext, save);
-                self.control.pop();
-                self.free(save);
-            }
+            Stmt::Labeled { label, body } => self.labeled(label, *body, labels)?,
+            Stmt::With { object, body } => self.with_stmt(id, *object, *body)?,
             Stmt::Import(_) | Stmt::Export(_) => return Err(unsupported("modules", span)),
         }
         Ok(())
     }
 
-    fn loop_control(&mut self, labels: Vec<Box<str>>, end: Label, cont: Label) {
+    fn if_stmt(&mut self, test: ExprId, consequent: StmtId, alternate: Option<StmtId>) -> R {
+        let other = self.new_label();
+        self.expr(test)?;
+        self.jump(Op::JumpIfFalse, other);
+        self.stmt(consequent)?;
+        match alternate {
+            Some(a) => {
+                let end = self.new_label();
+                self.jump(Op::Jump, end);
+                self.bind(other);
+                self.stmt(a)?;
+                self.bind(end);
+            }
+            None => self.bind(other),
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn for_stmt(
+        &mut self,
+        id: StmtId,
+        init: Option<&ForInit>,
+        test: Option<ExprId>,
+        update: Option<ExprId>,
+        body: StmtId,
+        labels: Vec<crate::ast::Name>,
+        span: Span,
+    ) -> R {
+        let save = self.enter_scope(ScopeKey::Stmt(id))?;
+        match init {
+            Some(ForInit::Var(decl)) => self.var_decl(decl, span)?,
+            Some(ForInit::Expr(e)) => self.expr(*e)?,
+            None => {}
+        }
+        // A `let` captured by a closure is a new binding each
+        // iteration: the environment is copied.
+        let per_iteration = save.save.is_some();
+        if per_iteration {
+            self.op(Op::CopyContext);
+        }
+        let (head, end, cont) = (self.new_label(), self.new_label(), self.new_label());
+        self.loop_control(labels, end, cont);
+        self.bind(head);
+        if let Some(t) = test {
+            self.expr(t)?;
+            self.jump(Op::JumpIfFalse, end);
+        }
+        self.stmt(body)?;
+        self.bind(cont);
+        if per_iteration {
+            self.op(Op::CopyContext);
+        }
+        if let Some(u) = update {
+            self.expr(u)?;
+        }
+        self.jump(Op::JumpLoop, head);
+        self.control.pop();
+        self.bind(end);
+        self.leave_scope(save);
+        Ok(())
+    }
+
+    fn while_stmt(&mut self, test: ExprId, body: StmtId, labels: Vec<crate::ast::Name>) -> R {
+        let (head, end) = (self.new_label(), self.new_label());
+        self.loop_control(labels, end, head);
+        self.bind(head);
+        self.expr(test)?;
+        self.jump(Op::JumpIfFalse, end);
+        self.stmt(body)?;
+        self.jump(Op::JumpLoop, head);
+        self.control.pop();
+        self.bind(end);
+        Ok(())
+    }
+
+    fn do_while(&mut self, body: StmtId, test: ExprId, labels: Vec<crate::ast::Name>) -> R {
+        let (head, end, cont) = (self.new_label(), self.new_label(), self.new_label());
+        self.loop_control(labels, end, cont);
+        self.bind(head);
+        self.stmt(body)?;
+        self.bind(cont);
+        self.expr(test)?;
+        self.jump(Op::JumpIfFalse, end);
+        self.jump(Op::JumpLoop, head);
+        self.control.pop();
+        self.bind(end);
+        Ok(())
+    }
+
+    fn labeled(&mut self, label: &Ident, body: StmtId, labels: Vec<crate::ast::Name>) -> R {
+        let mut labels = labels;
+        labels.push(label.name.clone());
+        let inner = self.ast.stmt(body);
+        let is_loop = matches!(
+            inner.kind,
+            Stmt::For { .. }
+                | Stmt::ForIn { .. }
+                | Stmt::ForOf { .. }
+                | Stmt::While { .. }
+                | Stmt::DoWhile { .. }
+                | Stmt::Labeled { .. }
+        );
+        if is_loop {
+            self.pending_labels = labels;
+            self.stmt(body)?;
+        } else {
+            let end = self.new_label();
+            self.control.push(Control::Breakable {
+                labels,
+                kind: BreakKind::Block,
+                break_to: end,
+                continue_to: None,
+            });
+            self.stmt(body)?;
+            self.control.pop();
+            self.bind(end);
+        }
+        Ok(())
+    }
+
+    fn with_stmt(&mut self, id: StmtId, object: ExprId, body: StmtId) -> R {
+        self.expr(object)?;
+        let save = self.alloc();
+        self.reg_op(Op::PushWithContext, save);
+        self.control.push(Control::Context { save });
+        let outer = self.scope;
+        if let Some(s) = self.a.key(ScopeKey::Stmt(id)) {
+            self.scope = s;
+        }
+        self.stmt(body)?;
+        self.scope = outer;
+        self.reg_op(Op::PopContext, save);
+        self.control.pop();
+        self.free(save);
+        Ok(())
+    }
+
+    fn loop_control(&mut self, labels: Vec<crate::ast::Name>, end: Label, cont: Label) {
         self.control.push(Control::Breakable {
             labels,
             kind: BreakKind::Loop,
@@ -432,7 +462,7 @@ impl Gen<'_, '_> {
         id: StmtId,
         discriminant: crate::ast::ExprId,
         cases: &[Case],
-        labels: Vec<Box<str>>,
+        labels: Vec<crate::ast::Name>,
     ) -> R {
         self.expr(discriminant)?;
         let d = self.alloc();
@@ -475,7 +505,7 @@ impl Gen<'_, '_> {
         left: &ForHead,
         right: crate::ast::ExprId,
         body: StmtId,
-        labels: Vec<Box<str>>,
+        labels: Vec<crate::ast::Name>,
         span: Span,
     ) -> R {
         let lexical = matches!(left, ForHead::Var(d) if d.kind != VarKind::Var);

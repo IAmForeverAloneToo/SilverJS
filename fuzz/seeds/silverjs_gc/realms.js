@@ -1,4 +1,4 @@
-var other = createRealm();
+3var other = createRealm();
 other.eval('var shared = []; function f() { return this; }');
 var a = other.Array.of(1, 2); a.constructor === other.Array;
 var r = [a.concat() instanceof Array, other.f() === other, Reflect.construct(Array, [], other.Function) instanceof other.Array];

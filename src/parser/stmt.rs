@@ -39,7 +39,7 @@ impl Parser<'_> {
         let mut use_strict = false;
         // The prologue's strings that strict code refuses, raised if a
         // later directive makes the code strict.
-        let mut pending: Option<SyntaxError> = None;
+        let mut pending: Option<Box<SyntaxError>> = None;
         while self.tok.kind == TokenKind::String && !end(self) {
             let tok = self.tok.clone();
             let stmt = self.statement_list_item(top)?;
@@ -63,7 +63,7 @@ impl Parser<'_> {
                 use_strict = true;
                 self.cx.strict = true;
                 if let Some(error) = pending.take() {
-                    return Err(error);
+                    return Err(*error);
                 }
             }
             if pending.is_none() {
@@ -118,7 +118,7 @@ impl Parser<'_> {
     /// followed by a binding identifier, `[` or `{`. Elsewhere it is an
     /// identifier (sloppy code only).
     pub(super) fn let_declares(&self) -> Result<bool, SyntaxError> {
-        let next = self.peek()?;
+        let next = self.lookahead()?;
         Ok(match next.kind {
             TokenKind::Punct(Punct::LBracket | Punct::LBrace) => true,
             TokenKind::Identifier => true,
@@ -131,14 +131,14 @@ impl Parser<'_> {
 
     /// `async function` with no line terminator between.
     pub(super) fn async_function_next(&self) -> Result<bool, SyntaxError> {
-        let next = self.peek()?;
+        let next = self.lookahead()?;
         Ok(next.kind == TokenKind::Keyword(Keyword::Function) && !next.newline_before)
     }
 
     /// `using x` (Explicit Resource Management): a declaration when an
     /// identifier follows on the same line.
     fn using_declares(&self) -> Result<bool, SyntaxError> {
-        let next = self.peek()?;
+        let next = self.lookahead()?;
         Ok(next.kind == TokenKind::Identifier && !next.newline_before)
     }
 
@@ -158,7 +158,7 @@ impl Parser<'_> {
     /// Whether `import` begins a declaration rather than `import(...)` or
     /// `import.meta`.
     pub(super) fn import_is_declaration(&self) -> Result<bool, SyntaxError> {
-        let next = self.peek()?;
+        let next = self.lookahead()?;
         Ok(!matches!(
             next.kind,
             TokenKind::Punct(Punct::LParen | Punct::Dot)
@@ -179,13 +179,13 @@ impl Parser<'_> {
         match self.tok.kind {
             TokenKind::Punct(Punct::LBrace) => self.block_statement(),
             TokenKind::Punct(Punct::Semicolon) => {
-                self.advance()?;
+                self.bump()?;
                 Ok(self
                     .ast
                     .add_stmt(Stmt::Empty, Span::new(start, self.prev_end)))
             }
             TokenKind::Keyword(Keyword::Var) => {
-                self.advance()?;
+                self.bump()?;
                 let decl = self.var_declarations(VarKind::Var, false)?;
                 self.semicolon()?;
                 Ok(self
@@ -195,7 +195,7 @@ impl Parser<'_> {
             TokenKind::Keyword(Keyword::If) => self.if_statement(),
             TokenKind::Keyword(Keyword::For) => self.for_statement(),
             TokenKind::Keyword(Keyword::While) => {
-                self.advance()?;
+                self.bump()?;
                 let test = self.paren_expression()?;
                 let body = self.loop_body()?;
                 Ok(self
@@ -203,7 +203,7 @@ impl Parser<'_> {
                     .add_stmt(Stmt::While { test, body }, Span::new(start, self.prev_end)))
             }
             TokenKind::Keyword(Keyword::Do) => {
-                self.advance()?;
+                self.bump()?;
                 let body = self.loop_body()?;
                 self.expect_keyword(Keyword::While)?;
                 let test = self.paren_expression()?;
@@ -221,7 +221,7 @@ impl Parser<'_> {
                 if !self.cx.return_ {
                     return Err(self.error("Illegal return statement", self.tok_span()));
                 }
-                self.advance()?;
+                self.bump()?;
                 let arg = if self.at(Punct::Semicolon)
                     || self.at(Punct::RBrace)
                     || self.at_eof()
@@ -243,7 +243,7 @@ impl Parser<'_> {
                         self.tok_span(),
                     ));
                 }
-                self.advance()?;
+                self.bump()?;
                 let object = self.paren_expression()?;
                 let body = self.statement(Place::Body)?;
                 Ok(self
@@ -252,7 +252,7 @@ impl Parser<'_> {
             }
             TokenKind::Keyword(Keyword::Switch) => self.switch_statement(),
             TokenKind::Keyword(Keyword::Throw) => {
-                self.advance()?;
+                self.bump()?;
                 if self.tok.newline_before {
                     return Err(self.error("Illegal newline after throw", self.tok_span()));
                 }
@@ -264,7 +264,7 @@ impl Parser<'_> {
             }
             TokenKind::Keyword(Keyword::Try) => self.try_statement(),
             TokenKind::Keyword(Keyword::Debugger) => {
-                self.advance()?;
+                self.bump()?;
                 self.semicolon()?;
                 Ok(self
                     .ast
@@ -315,7 +315,7 @@ impl Parser<'_> {
     /// A statement that begins with an identifier: a label, `let`
     /// misplaced, `async function`, or an expression.
     fn identifier_statement(&mut self, place: Place) -> Result<StmtId, SyntaxError> {
-        let next = self.peek()?;
+        let next = self.lookahead()?;
         if next.is(Punct::Colon) {
             return self.labelled_statement(place);
         }
@@ -395,13 +395,13 @@ impl Parser<'_> {
             }
             body.push(self.statement_list_item(false)?);
         }
-        self.advance()?;
+        self.bump()?;
         Ok(body)
     }
 
     fn if_statement(&mut self) -> Result<StmtId, SyntaxError> {
         let start = self.tok.start;
-        self.advance()?;
+        self.bump()?;
         let test = self.paren_expression()?;
         let consequent = self.statement(Place::IfBody)?;
         let alternate = if self.eat_keyword(Keyword::Else)? {
@@ -433,7 +433,7 @@ impl Parser<'_> {
     fn continue_statement(&mut self) -> Result<StmtId, SyntaxError> {
         let start = self.tok.start;
         let keyword = self.tok_span();
-        self.advance()?;
+        self.bump()?;
         let label = self.jump_label()?;
         match &label {
             Some(label) => match self.labels.iter().rev().find(|l| l.name == label.name) {
@@ -468,7 +468,7 @@ impl Parser<'_> {
     fn break_statement(&mut self) -> Result<StmtId, SyntaxError> {
         let start = self.tok.start;
         let keyword = self.tok_span();
-        self.advance()?;
+        self.bump()?;
         let label = self.jump_label()?;
         match &label {
             Some(label) => {
@@ -552,7 +552,7 @@ impl Parser<'_> {
 
     fn switch_statement(&mut self) -> Result<StmtId, SyntaxError> {
         let start = self.tok.start;
-        self.advance()?;
+        self.bump()?;
         let discriminant = self.paren_expression()?;
         self.expect(Punct::LBrace)?;
         self.scopes.push(ScopeKind::Block);
@@ -586,7 +586,7 @@ impl Parser<'_> {
                     ));
                 }
                 has_default = true;
-                self.advance()?;
+                self.bump()?;
                 None
             } else {
                 return Err(self.unexpected());
@@ -621,11 +621,11 @@ impl Parser<'_> {
 
     fn try_statement(&mut self) -> Result<StmtId, SyntaxError> {
         let start = self.tok.start;
-        self.advance()?;
+        self.bump()?;
         let block = self.block(ScopeKind::Block)?;
         let handler = if self.at_keyword(Keyword::Catch) {
             let catch_start = self.tok.start;
-            self.advance()?;
+            self.bump()?;
             Some(self.catch_clause(catch_start)?)
         } else {
             None
@@ -691,7 +691,7 @@ impl Parser<'_> {
     fn lexical_declaration(&mut self, kind: VarKind) -> Result<StmtId, SyntaxError> {
         let start = self.tok.start;
         if kind == VarKind::AwaitUsing {
-            self.advance()?;
+            self.bump()?;
         }
         if matches!(kind, VarKind::Using | VarKind::AwaitUsing) && self.scopes_at_script_top() {
             return Err(self.error(
@@ -699,7 +699,7 @@ impl Parser<'_> {
                 self.tok_span(),
             ));
         }
-        self.advance()?;
+        self.bump()?;
         let decl = self.var_declarations(kind, false)?;
         self.semicolon()?;
         Ok(self
@@ -784,9 +784,9 @@ impl Parser<'_> {
 
     fn for_statement(&mut self) -> Result<StmtId, SyntaxError> {
         let start = self.tok.start;
-        self.advance()?;
+        self.bump()?;
         let is_await = if self.at_contextual("await") && self.cx.await_ {
-            self.advance()?;
+            self.bump()?;
             true
         } else {
             false
@@ -822,9 +822,9 @@ impl Parser<'_> {
         };
         if let Some(kind) = kind {
             if kind == VarKind::AwaitUsing {
-                self.advance()?;
+                self.bump()?;
             }
-            self.advance()?;
+            self.bump()?;
             let decl =
                 self.with_context(|cx| cx.in_ = false, |p| p.var_declarations(kind, true))?;
             let is_of = self.at_contextual("of");
@@ -964,7 +964,7 @@ impl Parser<'_> {
         if is_await && !is_of {
             return Err(self.unexpected());
         }
-        self.advance()?;
+        self.bump()?;
         let right = self.with_context(
             |cx| cx.in_ = true,
             |p| {

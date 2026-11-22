@@ -310,7 +310,7 @@ struct Walker<'a> {
     a: Analysis,
     work: Vec<Item>,
     current: Vec<ScopeId>,
-    refs: Vec<(ScopeId, Box<str>)>,
+    refs: Vec<(ScopeId, crate::ast::Name)>,
     evals: Vec<ScopeId>,
 }
 

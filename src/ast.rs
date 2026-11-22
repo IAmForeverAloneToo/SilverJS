@@ -51,10 +51,14 @@ id!(
 id!(FuncId, "A function (of any kind) of the tree's arena.");
 id!(ClassId, "A class of the tree's arena.");
 
-/// An identifier as written: its name, escapes resolved, and its span.
+/// An identifier's name, escapes resolved: shared by every identifier
+/// of a parse that spells it (minified code repeats a few names often).
+pub type Name = std::rc::Rc<str>;
+
+/// An identifier as written: its name and its span.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ident {
-    pub name: Box<str>,
+    pub name: Name,
     pub span: Span,
 }
 
@@ -116,6 +120,23 @@ fn next_id(len: usize) -> u32 {
 }
 
 impl Ast {
+    /// Arenas with room for what a source of `len` bytes usually makes
+    /// (real bundles: an expression per 4 to 10 bytes, a statement per 30
+    /// to 160, a pattern per 45 to 115, a function per 140 to 250), so
+    /// that most parses never grow the expressions' arena, the largest,
+    /// whose every growth copies it whole. A source mostly data (an
+    /// expression per 30 bytes) leaves room it does not use, reserved
+    /// and never touched.
+    pub fn for_source(len: usize) -> Ast {
+        Ast {
+            exprs: Vec::with_capacity(len / 5),
+            stmts: Vec::with_capacity(len / 64),
+            pats: Vec::with_capacity(len / 96),
+            funcs: Vec::with_capacity(len / 256),
+            classes: Vec::new(),
+        }
+    }
+
     pub fn add_expr(&mut self, kind: Expr, span: Span) -> ExprId {
         let id = ExprId(next_id(self.exprs.len()));
         self.exprs.push(Node { kind, span });

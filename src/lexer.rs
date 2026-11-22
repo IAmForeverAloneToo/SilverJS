@@ -224,19 +224,27 @@ pub enum TokenValue {
     },
     /// A string's value in UTF-16 code units, lone surrogates and all.
     String(Box<[u16]>),
-    /// A template part's cooked value (`None` when an escape is invalid,
-    /// [`Token::invalid_escape`]) and its raw text, line terminators made
-    /// LF (section 13.2.8.6).
-    Template {
-        cooked: Option<Box<[u16]>>,
-        raw: Box<str>,
-    },
-    /// A regular expression's body and flags as written, checked by the
-    /// RegExp parser, not here.
-    RegExp {
-        body: Box<str>,
-        flags: Box<str>,
-    },
+    /// A template part's cooked and raw values.
+    Template(Box<TemplatePart>),
+    /// A regular expression's body and flags.
+    RegExp(Box<RegExpParts>),
+}
+
+/// A template part's cooked value (`None` when an escape is invalid,
+/// [`Token::invalid_escape`]) and its raw text, line terminators made LF
+/// (section 13.2.8.6). Boxed in its token, as rare and large.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TemplatePart {
+    pub cooked: Option<Box<[u16]>>,
+    pub raw: Box<str>,
+}
+
+/// A regular expression's body and flags as written, checked by the
+/// RegExp parser, not here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegExpParts {
+    pub body: Box<str>,
+    pub flags: Box<str>,
 }
 
 /// A token.
@@ -260,11 +268,11 @@ pub struct Token {
     /// legacy octal escape (`"\01"`) or `\8` and `\9`. The parser raises
     /// it once it knows the code is strict, which a directive after the
     /// token may decide.
-    pub strict_error: Option<SyntaxError>,
+    pub strict_error: Option<Box<SyntaxError>>,
     /// A template part's first invalid escape: an error unless the
     /// template is tagged (section 13.2.8.1), where its cooked value is
     /// undefined instead.
-    pub invalid_escape: Option<SyntaxError>,
+    pub invalid_escape: Option<Box<SyntaxError>>,
 }
 
 impl Token {
@@ -808,6 +816,33 @@ impl<'s> Lexer<'s> {
     /// Reads a NumericLiteral from `start` (section 12.9.3, and Annex
     /// B.1.1's legacy octal and leading-zero decimals).
     fn number(&mut self, start: usize, newline: bool) -> Result<Token, SyntaxError> {
+        // Most literals are short decimal integers: read without text made.
+        // Anything else (a fraction, exponent, separator, suffix, prefix,
+        // a leading zero, or a character that may not follow) is left to
+        // the full path below, which also raises what is wrong with it.
+        let rest = self.bytes.get(self.pos..).unwrap_or(&[]);
+        let run = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+        let next = rest.get(run).copied();
+        let plain = (1..=15).contains(&run)
+            && (run == 1 || rest.first() != Some(&b'0'))
+            && next.is_none_or(|b| {
+                b.is_ascii()
+                    && !b.is_ascii_alphanumeric()
+                    && !matches!(b, b'_' | b'.' | b'$' | b'\\')
+            });
+        if plain {
+            let value = rest
+                .iter()
+                .take(run)
+                .fold(0u64, |v, &d| v * 10 + u64::from(d - b'0'));
+            self.pos += run;
+            return Ok(self.token(
+                TokenKind::Number,
+                TokenValue::Number(value as f64),
+                start,
+                newline,
+            ));
+        }
         let mut digits = String::new();
         if self.peek() == Some(b'0') {
             let radix = match self.peek_at(1) {
@@ -915,7 +950,7 @@ impl<'s> Lexer<'s> {
                 start,
                 newline,
             );
-            token.strict_error = strict_error;
+            token.strict_error = strict_error.map(Box::new);
             return Ok(token);
         }
         self.check_after_number(start)?;
@@ -923,7 +958,7 @@ impl<'s> Lexer<'s> {
             .parse::<f64>()
             .map_err(|_| self.error(UNEXPECTED, start))?;
         let mut token = self.token(TokenKind::Number, TokenValue::Number(value), start, newline);
-        token.strict_error = strict_error;
+        token.strict_error = strict_error.map(Box::new);
         Ok(token)
     }
 
@@ -958,7 +993,7 @@ impl<'s> Lexer<'s> {
         self.check_after_number(start)?;
         let value = pow2_radix_value(&digits, bits);
         let mut token = self.token(TokenKind::Number, TokenValue::Number(value), start, newline);
-        token.strict_error = strict_error;
+        token.strict_error = strict_error.map(Box::new);
         Ok(token)
     }
 
@@ -1122,7 +1157,7 @@ impl<'s> Lexer<'s> {
             start,
             newline,
         );
-        token.strict_error = strict_error;
+        token.strict_error = strict_error.map(Box::new);
         Ok(token)
     }
 
@@ -1182,14 +1217,14 @@ impl<'s> Lexer<'s> {
         };
         let mut token = self.token(
             TokenKind::Template { head, tail },
-            TokenValue::Template {
+            TokenValue::Template(Box::new(TemplatePart {
                 cooked,
                 raw: raw.into(),
-            },
+            })),
             start,
             newline,
         );
-        token.invalid_escape = invalid;
+        token.invalid_escape = invalid.map(Box::new);
         Ok(token)
     }
 
@@ -1263,10 +1298,10 @@ impl<'s> Lexer<'s> {
         }
         Ok(self.token(
             TokenKind::RegExp,
-            TokenValue::RegExp {
+            TokenValue::RegExp(Box::new(RegExpParts {
                 body: self.slice(start + 1, body_end).into(),
                 flags: self.slice(flags_start, self.pos).into(),
-            },
+            })),
             start,
             slash.newline_before,
         ))
