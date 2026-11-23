@@ -207,7 +207,17 @@ impl Gen<'_, '_> {
             }
             Expr::ImportMeta | Expr::Import { .. } => return Err(unsupported("modules", span)),
             Expr::Yield { arg, delegate } => self.yield_expr(*arg, *delegate, span)?,
-            Expr::Await(_) => return Err(unsupported("async functions", span)),
+            Expr::Await(e) => {
+                // Suspended on its operand; resumed, a rejection throws.
+                self.expr(*e)?;
+                let m = self.alloc();
+                self.pos(span);
+                self.reg_op(Op::Await, m);
+                let next = self.new_label();
+                self.jump_with(Op::ResumeYield, &[i64::from(m)], next);
+                self.bind(next);
+                self.free(m);
+            }
         }
         Ok(())
     }

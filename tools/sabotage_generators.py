@@ -46,8 +46,8 @@ cases = [
     # The loop.
     (M, '                        if how == Value::int(generator::Resume::Throw as i32) {', '                        if false {'),
     (M, '                        } else if how == Value::int(generator::Resume::Return as i32) {', '                        } else if false {'),
-    (M, '                            let (g, v) = (top.generator, self.vm.acc);\n                            self.vm.acc = tri!(self.generator_return(g, v), start);',
-        '                            let _ = top;'),
+    (M, '                            } else {\n                                tri!(self.generator_return(g, v), start)\n                            };',
+        '                            } else {\n                                v\n                            };'),
     (M, '            if frame.generator != Value::UNDEFINED {\n                self.set_generator_state(frame.generator, generator::COMPLETED);',
         '            if false {\n                self.set_generator_state(frame.generator, generator::COMPLETED);'),
     (M, '                if let Some(how) = crate::builtins::generator_resume(id) {', '                if let Some(how) = crate::builtins::generator_resume(id).filter(|_| false) {'),
@@ -55,13 +55,13 @@ cases = [
         '                            if let Some(top) = self.vm.frames.last_mut().filter(|_| false) {\n                                top.caller_realm = outer;'),
     # Compiling.
     (C, '        if f.is_generator {\n            self.op(Op::GeneratorStart);\n        }\n', ''),
-    (C, '        let kind = if f.is_generator {\n            FunctionKind::Generator\n        } else {\n            kind\n        };',
-        '        let kind = if false {\n            FunctionKind::Generator\n        } else {\n            kind\n        };'),
+    (C, '        let kind = if f.is_generator {\n            FunctionKind::Generator\n        } else if f.is_async {',
+        '        let kind = if false {\n            FunctionKind::Generator\n        } else if f.is_async {'),
     (C, '                        if f.is_generator {\n                            FunctionKind::Generator', '                        if false {\n                            FunctionKind::Generator'),
     (E, '            self.bind(ret);\n            self.jump_out(super::Completion::Return);\n            self.bind(past);', '            self.bind(ret);\n            self.bind(past);'),
     (E, '        self.emit(Op::DelegateCheck, &[i64::from(mode), i64::from(outcome)]);\n', ''),
     # Making them.
-    (O, '        let generator = kind == FunctionKind::Generator;\n        let proto = if generator {', '        let generator = kind == FunctionKind::Generator;\n        let proto = if false {'),
+    (O, '            FunctionKind::Generator => self.realm().intrinsics.generator_function_prototype,', '            FunctionKind::Generator => self.realm().function_prototype,'),
     (O, '        if generator && result.is_ok() {', '        if false && result.is_ok() {'),
     (S, '        if let Some(f) = self.generator_function(receiver) {', '        if let Some(f) = self.generator_function(receiver).filter(|_| false) {'),
     (GL, '        if let Some(o) = gf.as_object() {\n            self.heap.set_prototype_of(o, function);\n        }', '        let _ = (gf, function);'),

@@ -133,6 +133,9 @@ pub enum FunctionKind {
     ClassConstructor,
     /// A derived class's constructor: its `this` made by `super()`.
     DerivedConstructor,
+    /// An async function, arrow or method: its call gives a promise,
+    /// its frame suspended at `await`.
+    Async,
     /// A class field's initializer or a static block: called by the
     /// class, never by a script; its frame shows its name alone
     /// (`<instance_members_initializer>`, `<static_initializer>`).

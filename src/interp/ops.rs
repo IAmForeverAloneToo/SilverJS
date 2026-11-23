@@ -1212,10 +1212,10 @@ impl Agent {
             None => return Err(Abrupt::Throw),
         };
         let generator = kind == FunctionKind::Generator;
-        let proto = if generator {
-            self.realm().intrinsics.generator_function_prototype
-        } else {
-            self.realm().function_prototype
+        let proto = match kind {
+            FunctionKind::Generator => self.realm().intrinsics.generator_function_prototype,
+            FunctionKind::Async => self.realm().intrinsics.async_function_prototype,
+            _ => self.realm().function_prototype,
         };
         let f = self.alloc_object(ObjectCell::function(
             proto,

@@ -117,6 +117,12 @@ pub(crate) fn construct_generator(agent: &mut Agent, c: Call) -> Res<Value> {
     })
 }
 
+pub(crate) fn construct_async(agent: &mut Agent, c: Call) -> Res<Value> {
+    dynamic_function(agent, c, "async function", |r| {
+        r.intrinsics.async_function_prototype
+    })
+}
+
 fn dynamic_function(
     agent: &mut Agent,
     c: Call,

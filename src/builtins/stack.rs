@@ -80,6 +80,7 @@ impl Agent {
                     native: true,
                     construct: n.construct,
                     accessor: false,
+                    is_async: false,
                 }
             } else if let Some(f) = fi.checked_sub(1).and_then(|i| frames.get(i)) {
                 // The running frame's place is the instruction under way;
@@ -95,6 +96,7 @@ impl Agent {
                     native: false,
                     construct: f.construct,
                     accessor: f.accessor,
+                    is_async: false,
                 }
             } else {
                 break;
@@ -114,6 +116,19 @@ impl Agent {
                 continue;
             }
             out.push(entry);
+        }
+        // Below the frames, the async functions waiting on the one at the
+        // bottom, each at its `await`.
+        let mut driver = frames.first().map_or(Value::UNDEFINED, |f| f.generator);
+        while out.len() < limit && !skipping {
+            let Some(next) = self.async_awaiter(driver) else {
+                break;
+            };
+            let Some(frame) = self.suspended_frame(next) else {
+                break;
+            };
+            out.push(frame);
+            driver = next;
         }
         out
     }
@@ -396,6 +411,15 @@ impl Agent {
 
     /// One frame's text, after `at `.
     fn frame_text(&self, f: &StackFrame) -> String {
+        let text = self.frame_text_of(f);
+        if f.is_async {
+            format!("async {text}")
+        } else {
+            text
+        }
+    }
+
+    fn frame_text_of(&self, f: &StackFrame) -> String {
         let name = self.frame_name(f);
         let shown = if f.construct {
             Some(format!("new {}", name.as_deref().unwrap_or("<anonymous>")))
@@ -599,6 +623,7 @@ impl Agent {
             native: flags & 1 != 0,
             construct: flags & 2 != 0,
             accessor: flags & 4 != 0,
+            is_async: false,
         })
     }
 

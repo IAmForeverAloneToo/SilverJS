@@ -473,6 +473,29 @@ impl<'s> Parser<'s> {
 
     fn unexpected_token(&self, tok: &Token) -> SyntaxError {
         let span = Span::new(tok.start, tok.end);
+        // `await x` outside an async function: the identifier `await`
+        // followed by what an expression would be, as Chrome 157 words
+        // it.
+        let before = self.source.get(..self.prev_end as usize).unwrap_or("");
+        let after_await = before.ends_with("await")
+            && !before
+                .get(..before.len().saturating_sub(5))
+                .unwrap_or("")
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '$')
+            && self.prev_end <= tok.start
+            && !self
+                .source
+                .get(self.prev_end as usize..tok.start as usize)
+                .unwrap_or("")
+                .contains('\n');
+        if after_await && !self.cx.await_ && tok.kind != TokenKind::Eof {
+            return self.error(
+                "await is only valid in async functions and the top level bodies of modules",
+                span,
+            );
+        }
         let text = self
             .source
             .get(tok.start as usize..tok.end as usize)

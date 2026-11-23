@@ -35,6 +35,46 @@ pub(crate) const NATIVE_PROTO: &[Entry] = &[
     entry(Name::Str("message"), What::Given(1), HIDDEN),
 ];
 
+/// `AggregateError(errors, message, options)` (section 20.5.7.1): the
+/// common body from the second argument, then `errors`, a list of the
+/// first's values.
+pub(crate) fn construct_aggregate_error(agent: &mut Agent, c: Call) -> Res<Value> {
+    let rest = Call {
+        args: c.args + 1,
+        argc: c.argc.saturating_sub(1),
+        ..c
+    };
+    let o = construct(agent, rest, ErrorType::AggregateError)?;
+    agent.vm.temps.push(o);
+    let r = (|| {
+        let errors = agent.arg(c, 0);
+        let (iterator, next) = agent.get_iterator_typed(errors)?;
+        agent.vm.temps.extend([iterator, next]);
+        let mut list = Vec::new();
+        let r = loop {
+            match agent.iterator_step(iterator, next) {
+                Ok(Some(v)) => {
+                    agent.vm.temps.push(v);
+                    list.push(v);
+                }
+                Ok(None) => break Ok(()),
+                Err(e) => break Err(e),
+            }
+        };
+        let array = r.and_then(|()| agent.array_of(&list));
+        let n = agent.vm.temps.len();
+        agent.vm.temps.truncate(n.saturating_sub(2 + list.len()));
+        let array = array?;
+        let key = agent.name_key(Name::Str("errors"));
+        if let Some(i) = o.as_object() {
+            agent.heap.define_own_property(i, key, hidden(array));
+        }
+        Ok(o)
+    })();
+    agent.vm.temps.pop();
+    r
+}
+
 /// The error constructors' common body (section 20.5.1.1): an object of
 /// the prototype `new.target` gives, its `message` and `cause`.
 fn construct(agent: &mut Agent, c: Call, t: ErrorType) -> Res<Value> {

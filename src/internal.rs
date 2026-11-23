@@ -47,6 +47,9 @@ pub(crate) struct StackFrame {
     pub native: bool,
     pub construct: bool,
     pub accessor: bool,
+    /// An async function waiting at an `await` for the frames above it
+    /// (`at async outer`).
+    pub is_async: bool,
 }
 
 /// A stack captured for an error (or `Error.captureStackTrace`'s

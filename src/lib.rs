@@ -36,6 +36,8 @@ mod unicode_tables;
 pub mod value;
 
 #[cfg(test)]
+mod async_tests;
+#[cfg(test)]
 mod builtins_tests;
 #[cfg(test)]
 mod class_tests;

@@ -532,6 +532,8 @@ impl<'s, 'a> Gen<'s, 'a> {
                         f.name.as_ref().map(|n| units(&n.name)).unwrap_or_default(),
                         if f.is_generator {
                             FunctionKind::Generator
+                        } else if f.is_async {
+                            FunctionKind::Async
                         } else {
                             FunctionKind::Normal
                         },
@@ -639,8 +641,13 @@ impl<'s, 'a> Gen<'s, 'a> {
 
     fn body(&mut self, fid: FuncId) -> R {
         let f = self.ast.func(fid);
+        if f.is_async && f.is_generator {
+            return Err(unsupported("async generators", f.span));
+        }
+        // An async function's promise, made before its parameters are
+        // bound: what they throw rejects it.
         if f.is_async {
-            return Err(unsupported("async functions", f.span));
+            self.op(Op::AsyncStart);
         }
         let derived = self.is_derived();
         // A base class's constructor initializes its instance elements
@@ -778,8 +785,8 @@ impl<'s, 'a> Gen<'s, 'a> {
     pub(super) fn closure(&mut self, fid: FuncId, inferred: Option<&[u16]>) -> R {
         let f = self.ast.func(fid);
         let index = self.a.func_index.get(&fid).copied().unwrap_or(0);
-        if f.is_async {
-            return Err(unsupported("async functions", f.span));
+        if f.is_async && f.is_generator {
+            return Err(unsupported("async generators", f.span));
         }
         let kind = match f.kind {
             FuncKind::Normal => FunctionKind::Normal,
@@ -791,6 +798,8 @@ impl<'s, 'a> Gen<'s, 'a> {
         };
         let kind = if f.is_generator {
             FunctionKind::Generator
+        } else if f.is_async {
+            FunctionKind::Async
         } else {
             kind
         };

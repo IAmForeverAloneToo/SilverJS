@@ -20,6 +20,7 @@
 //! accumulator, the exception being thrown, the realm, and the installed
 //! units' strings.
 
+mod asyncfn;
 mod class;
 mod eval;
 pub(crate) mod generator;
@@ -178,6 +179,9 @@ pub(crate) struct Vm {
     pub joining: Vec<Value>,
     /// The embedder's natives.
     pub(crate) hosts: Vec<crate::embed::Host>,
+    /// The agent's jobs, run when the embedder asks and after each
+    /// script.
+    pub(crate) jobs: crate::builtins::promise::Jobs,
 }
 
 impl Default for Vm {
@@ -203,6 +207,7 @@ impl Default for Vm {
             stack_symbol: Value::UNDEFINED,
             joining: Vec::new(),
             hosts: Vec::new(),
+            jobs: crate::builtins::promise::Jobs::new(),
         }
     }
 }
@@ -212,6 +217,9 @@ impl Vm {
     pub(crate) fn roots(&self) -> Vec<Value> {
         let mut out = Vec::with_capacity(self.stack.len() + self.frames.len() * 5 + 64);
         out.extend_from_slice(&self.stack);
+        for job in &self.jobs {
+            out.extend(job.values());
+        }
         for f in &self.frames {
             out.extend([
                 f.closure,
@@ -915,8 +923,10 @@ impl Agent {
     }
 
     /// Unwinds from the top frame, which threw at its `pc`: to the first
-    /// handler found, or, past the run's entry frame, back to Rust.
-    fn unwind(&mut self, abrupt: Abrupt) -> Res<()> {
+    /// handler found, or, past the run's entry frame, back to Rust. A
+    /// throw out of an async function rejects its promise instead, which
+    /// its caller gets (`Some`: the run's value, its entry frame gone).
+    fn unwind(&mut self, abrupt: Abrupt) -> Res<Option<Value>> {
         loop {
             let Some(frame) = self.vm.frames.last().copied() else {
                 return Err(abrupt);
@@ -939,11 +949,17 @@ impl Agent {
                     top.pc = h.target;
                 }
                 self.vm.acc = self.vm.exception;
-                return Ok(());
+                return Ok(None);
             }
             self.vm.frames.pop();
             self.vm.current = frame.caller_realm;
             self.vm.stack.truncate(frame.args as usize);
+            if abrupt == Abrupt::Throw && self.is_async_driver(frame.generator) {
+                let reason = std::mem::replace(&mut self.vm.exception, Value::UNDEFINED);
+                let promise = self.async_throw(frame.generator, reason)?;
+                self.vm.acc = promise;
+                return Ok(frame.entry.then_some(promise));
+            }
             if frame.generator != Value::UNDEFINED {
                 self.set_generator_state(frame.generator, generator::COMPLETED);
                 self.pop_resume_frame();
@@ -983,6 +999,24 @@ impl Agent {
         at.and_then(|p| code.source.get(p.start as usize..p.end as usize))
             .unwrap_or("")
             .to_owned()
+    }
+
+    /// A callee's text, as a call or construction error quotes it: a
+    /// function or class written in place is `(intermediate value)`, as
+    /// Chrome 157 words it.
+    fn callee_text(&self, unit: u32, func: u32, pc: u32) -> String {
+        let text = self.text_at(unit, func, pc);
+        let inner = text.trim().trim_start_matches('(').trim_start();
+        let literal = inner.starts_with("function")
+            || inner.starts_with("class")
+            || inner.starts_with("async ")
+            || inner.starts_with("async(")
+            || (inner.contains("=>") && text.trim().starts_with('('));
+        if literal {
+            "(intermediate value)".to_owned()
+        } else {
+            text
+        }
     }
 
     /// The constant `k` of a function, as a value.
@@ -1089,7 +1123,8 @@ impl Agent {
                 ($e:expr) => {{
                     let e = $e;
                     match self.unwind(e) {
-                        Ok(()) => continue 'frames,
+                        Ok(None) => continue 'frames,
+                        Ok(Some(v)) => return Ok(v),
                         Err(e) => return Err(e),
                     }
                 }};
@@ -1722,7 +1757,7 @@ impl Agent {
                             self.callable(callee).is_some()
                         };
                         if !callable_ok {
-                            let text = self.text_at(u, fi, start as u32);
+                            let text = self.callee_text(u, fi, start as u32);
                             let message = if construct {
                                 messages::not_a_constructor(&text)
                             } else {
@@ -1737,7 +1772,7 @@ impl Agent {
                             Callable::Code { unit, func, env } => {
                                 let (this, new_target) = if construct {
                                     if !self.is_constructor(callable) {
-                                        let text = self.text_at(u, fi, start as u32);
+                                        let text = self.callee_text(u, fi, start as u32);
                                         fail!(self.throw_error(
                                             ErrorType::TypeError,
                                             messages::not_a_constructor(&text)
@@ -1783,12 +1818,18 @@ impl Agent {
                         }
                     }
                     Op::Return => {
-                        // A generator's return completes it.
+                        // A generator's return completes it; an async
+                        // function's resolves its promise, which its
+                        // caller gets.
                         if let Some(top) = self.vm.frames.last()
                             && top.generator != Value::UNDEFINED
                         {
                             let (g, v) = (top.generator, self.vm.acc);
-                            self.vm.acc = tri!(self.generator_return(g, v), start);
+                            self.vm.acc = if self.is_async_driver(g) {
+                                tri!(self.async_return(g, v), start)
+                            } else {
+                                tri!(self.generator_return(g, v), start)
+                            };
                         }
                         let mut value = self.vm.acc;
                         let Some(frame) = self.vm.frames.pop() else {
@@ -1858,6 +1899,18 @@ impl Agent {
                             class::SuperCall::Value(v) => self.vm.acc = v,
                             class::SuperCall::Frame => continue 'frames,
                         }
+                    }
+                    Op::AsyncStart => {
+                        tri!(self.async_start(), start);
+                    }
+                    Op::Await => {
+                        let m = r.u();
+                        let (v, frame) = tri!(self.async_await(r.pc as u32, m), start);
+                        self.vm.acc = v;
+                        if frame.entry {
+                            return Ok(v);
+                        }
+                        continue 'frames;
                     }
                     Op::GeneratorStart => {
                         let (g, frame) = tri!(self.generator_start(r.pc as u32), start);

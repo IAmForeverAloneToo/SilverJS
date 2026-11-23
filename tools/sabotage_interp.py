@@ -25,7 +25,7 @@ cases = [
     # Unwinding and frames.
     (M, "top.context = context;", "let _ = context;"),
     (M, "self.vm.acc = self.vm.exception;", ""),
-    (M, "if abrupt == Abrupt::Throw", "if true"),
+    (M, "if abrupt == Abrupt::Throw\n                && let Some(code)", "if true\n                && let Some(code)"),
     (M, "_ if !f.strict && this.is_nullish() => self.realm().global,", ""),
     (M, "if frame.construct && value.as_object().is_none() {", "if false {"),
     (M, "let recv = if op == Op::Call {\n                            self.reg(base, r.u())",

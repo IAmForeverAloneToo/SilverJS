@@ -89,7 +89,7 @@ pub(crate) struct Intrinsics {
     pub boolean: Value,
     pub symbol: Value,
     /// The error constructors, by [`ErrorType`].
-    pub errors: [Value; 7],
+    pub errors: [Value; 8],
     pub throw_type_error: Value,
     /// Every error's `stack` accessor pair.
     pub stack_get: Value,
@@ -108,6 +108,10 @@ pub(crate) struct Intrinsics {
     pub generator_prototype: Value,
     pub generator_function_prototype: Value,
     pub generator_function: Value,
+    pub promise: Value,
+    pub promise_prototype: Value,
+    pub async_function_prototype: Value,
+    pub async_function: Value,
 }
 
 impl Intrinsics {
@@ -119,7 +123,7 @@ impl Intrinsics {
         number: Value::UNDEFINED,
         boolean: Value::UNDEFINED,
         symbol: Value::UNDEFINED,
-        errors: [Value::UNDEFINED; 7],
+        errors: [Value::UNDEFINED; 8],
         throw_type_error: Value::UNDEFINED,
         stack_get: Value::UNDEFINED,
         stack_set: Value::UNDEFINED,
@@ -136,6 +140,10 @@ impl Intrinsics {
         generator_prototype: Value::UNDEFINED,
         generator_function_prototype: Value::UNDEFINED,
         generator_function: Value::UNDEFINED,
+        promise: Value::UNDEFINED,
+        promise_prototype: Value::UNDEFINED,
+        async_function_prototype: Value::UNDEFINED,
+        async_function: Value::UNDEFINED,
     };
 
     pub(crate) fn trace(&self, out: &mut Vec<Value>) {
@@ -163,6 +171,10 @@ impl Intrinsics {
             self.generator_prototype,
             self.generator_function_prototype,
             self.generator_function,
+            self.promise,
+            self.promise_prototype,
+            self.async_function_prototype,
+            self.async_function,
         ]);
         out.extend_from_slice(&self.errors);
     }
@@ -174,6 +186,7 @@ pub(crate) const CTORS: &[Entry] = &[
     ctor("Object", 1, super::object::construct),
     ctor("Function", 1, super::function::construct),
     ctor("GeneratorFunction", 1, super::function::construct_generator),
+    ctor("AsyncFunction", 1, super::function::construct_async),
     ctor("Array", 1, super::array::construct),
     ctor("Number", 1, super::number::construct),
     ctor("Boolean", 1, super::primitive::construct_boolean),
@@ -186,6 +199,8 @@ pub(crate) const CTORS: &[Entry] = &[
     ctor("SyntaxError", 1, super::error::construct_syntax_error),
     ctor("TypeError", 1, super::error::construct_type_error),
     ctor("URIError", 1, super::error::construct_uri_error),
+    ctor("AggregateError", 2, super::error::construct_aggregate_error),
+    ctor("Promise", 1, super::promise::construct),
     method("FunctionPrototype", 0, super::function::function_prototype),
     method("ThrowTypeError", 0, super::function::throw_type_error),
     method("parseInt", 2, parse_int),
@@ -211,7 +226,9 @@ pub(crate) const GLOBAL: &[Entry] = &[
     intrinsic("Boolean"),
     intrinsic("String"),
     intrinsic("Symbol"),
+    intrinsic("Promise"),
     intrinsic("Error"),
+    intrinsic("AggregateError"),
     intrinsic("EvalError"),
     intrinsic("RangeError"),
     intrinsic("ReferenceError"),
@@ -245,6 +262,7 @@ impl Agent {
             "Boolean" => i.boolean,
             "String" => i.string,
             "Symbol" => i.symbol,
+            "Promise" => i.promise,
             "Math" => i.math,
             "Reflect" => i.reflect,
             "parseInt" => i.parse_int,
@@ -417,6 +435,20 @@ impl Agent {
         if let Some(o) = gf.as_object() {
             self.heap.set_prototype_of(o, function);
         }
+        // %AsyncFunction.prototype% inherits from Function.prototype,
+        // %AsyncFunction% from Function.
+        let afp = self.alloc_object(ObjectCell::new(fp, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.async_function_prototype = afp);
+        let af = self.make_ctor("AsyncFunction", afp)?;
+        self.set_intrinsics(|i| i.async_function = af);
+        if let Some(o) = af.as_object() {
+            self.heap.set_prototype_of(o, function);
+        }
+        // Promise and its prototype.
+        let pp = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.promise_prototype = pp);
+        let promise = self.make_ctor("Promise", pp)?;
+        self.set_intrinsics(|i| i.promise = promise);
         let math = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.math = math);
         let reflect = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
@@ -478,6 +510,19 @@ impl Agent {
             table::GENERATOR_FUNCTION_PROTO,
             Value::UNDEFINED,
             &[i.generator_prototype, i.generator_function],
+        )?;
+        self.install_table(
+            i.async_function_prototype,
+            table::ASYNC_FUNCTION_PROTO,
+            Value::UNDEFINED,
+            &[i.async_function],
+        )?;
+        self.install_table(i.promise, table::PROMISE, Value::UNDEFINED, &[])?;
+        self.install_table(
+            i.promise_prototype,
+            table::PROMISE_PROTO,
+            Value::UNDEFINED,
+            &[i.promise],
         )?;
         self.install_table(i.string, table::STRING, Value::UNDEFINED, &[])?;
         self.install_table(sp, table::STRING_PROTO, i.string, &[])?;

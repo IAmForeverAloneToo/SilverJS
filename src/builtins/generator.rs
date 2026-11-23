@@ -37,6 +37,16 @@ pub(crate) const GENERATOR_FUNCTION_PROTO: &[Entry] = &[
     ),
 ];
 
+/// `%AsyncFunction.prototype%`: given `%AsyncFunction%`.
+pub(crate) const ASYNC_FUNCTION_PROTO: &[Entry] = &[
+    entry(Name::Str("constructor"), What::Given(0), CONFIGURABLE),
+    entry(
+        Name::Sym(Wk::ToStringTag),
+        What::Str("AsyncFunction"),
+        CONFIGURABLE,
+    ),
+];
+
 /// How native `index` of [`GENERATOR_PROTO`] resumes a generator.
 pub(crate) fn resume_of(index: u32) -> Option<Resume> {
     match index {

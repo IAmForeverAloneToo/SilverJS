@@ -53,7 +53,9 @@ const FUNC: usize = 7;
 const RESUME: usize = 8;
 const BASE: usize = 9;
 const MODE: usize = 10;
-const SAVED: usize = 11;
+/// An async function's promise (undefined for a generator).
+const OWNER: usize = 11;
+const SAVED: usize = 12;
 
 fn int(v: Option<&Value>) -> i64 {
     v.and_then(|v| v.as_number()).map_or(-1, |n| n as i64)
@@ -96,6 +98,12 @@ impl Agent {
         let Some(f) = self.vm.frames.last() else {
             return Vec::new();
         };
+        let owner = f
+            .generator
+            .as_object()
+            .and_then(|o| self.heap.objects.get(o))
+            .and_then(|c| c.internal().get(OWNER).copied())
+            .unwrap_or(Value::UNDEFINED);
         let mut slots = vec![
             Value::int(state),
             f.closure,
@@ -108,6 +116,7 @@ impl Agent {
             Value::number(f64::from(resume)),
             Value::number(f64::from(f.base - f.args)),
             Value::number(mode as f64),
+            owner,
         ];
         slots.extend_from_slice(self.vm.stack.get(f.args as usize..).unwrap_or(&[]));
         slots
@@ -256,6 +265,21 @@ impl Agent {
         if self.vm.frames.len() >= MAX_FRAMES {
             return Err(self.throw_error(ErrorType::RangeError, messages::STACK_OVERFLOW));
         }
+        // The stack shows the resuming method under the generator's frame.
+        self.vm.natives.push(NativeFrame {
+            below: u32::try_from(self.vm.frames.len()).unwrap_or(u32::MAX),
+            callee,
+            this: g,
+            construct: false,
+        });
+        self.push_suspended(g, how, sent, entry)?;
+        Ok(None)
+    }
+
+    /// Pushes the frame suspended in `g` (a generator or an async
+    /// function's driver) back, resumed `how` with `sent`; `entry` if it
+    /// is its run's.
+    fn push_suspended(&mut self, g: Value, how: Resume, sent: Value, entry: bool) -> Res<()> {
         let slots = self
             .heap
             .objects
@@ -268,13 +292,6 @@ impl Agent {
         let resume = u32::try_from(int(slots.get(RESUME))).unwrap_or(0);
         let base_offset = u32::try_from(int(slots.get(BASE))).unwrap_or(0);
         let mode = int(slots.get(MODE));
-        // The stack shows the resuming method under the generator's frame.
-        self.vm.natives.push(NativeFrame {
-            below: u32::try_from(self.vm.frames.len()).unwrap_or(u32::MAX),
-            callee,
-            this: g,
-            construct: false,
-        });
         let args = self.vm.stack.len();
         self.vm
             .stack
@@ -323,8 +340,152 @@ impl Agent {
         } else {
             self.vm.acc = Value::UNDEFINED;
         }
-        self.tick()?;
-        Ok(None)
+        self.tick()
+    }
+
+    // Async functions (section 27.7).
+
+    /// Whether `v` is an async function's driver.
+    pub(crate) fn is_async_driver(&self, v: Value) -> bool {
+        v.as_object()
+            .and_then(|o| self.heap.objects.get(o))
+            .is_some_and(|c| c.kind() == ObjectKind::AsyncDriver)
+    }
+
+    /// The async function awaiting the one driven by `d` (a reaction of
+    /// its promise that resumes a driver), if one is.
+    pub(crate) fn async_awaiter(&self, d: Value) -> Option<Value> {
+        if !self.is_async_driver(d) {
+            return None;
+        }
+        let promise = self.async_promise(d);
+        self.promise_awaiter(promise)
+    }
+
+    /// The stack frame of the async function suspended in `d`: where its
+    /// `await` stands.
+    pub(crate) fn suspended_frame(&self, d: Value) -> Option<crate::internal::StackFrame> {
+        let cell = self.heap.objects.get(d.as_object()?)?;
+        let s = cell.internal();
+        if s.len() <= SAVED {
+            return None;
+        }
+        let field = |i: usize| s.get(i).copied().unwrap_or(Value::UNDEFINED);
+        Some(crate::internal::StackFrame {
+            unit: u32::try_from(int(s.get(UNIT))).unwrap_or(0),
+            func: u32::try_from(int(s.get(FUNC))).unwrap_or(0),
+            pc: u32::try_from(int(s.get(RESUME))).unwrap_or(0),
+            receiver: field(THIS),
+            callee: field(CLOSURE),
+            native: false,
+            construct: false,
+            accessor: false,
+            is_async: true,
+        })
+    }
+
+    /// An async function's promise, kept in its driver.
+    fn async_promise(&self, d: Value) -> Value {
+        d.as_object()
+            .and_then(|o| self.heap.objects.get(o))
+            .and_then(|c| c.internal().get(OWNER).copied())
+            .unwrap_or(Value::UNDEFINED)
+    }
+
+    /// `AsyncStart`: the running frame's promise and driver made; the
+    /// frame goes on.
+    #[inline(never)]
+    pub(super) fn async_start(&mut self) -> Res<()> {
+        let promise = self.new_promise()?;
+        self.vm.temps.push(promise);
+        let mut slots = vec![Value::UNDEFINED; SAVED];
+        if let Some(s) = slots.get_mut(STATE) {
+            *s = Value::int(EXECUTING);
+        }
+        if let Some(s) = slots.get_mut(OWNER) {
+            *s = promise;
+        }
+        let d = self.alloc_object(ObjectCell::with_internal(
+            Value::NULL,
+            ObjectKind::AsyncDriver,
+            slots,
+        ));
+        self.vm.temps.pop();
+        let d = d?;
+        if let Some(top) = self.vm.frames.last_mut() {
+            top.generator = d;
+        }
+        Ok(())
+    }
+
+    /// `Await` (section 27.7.5.3): the running async function suspended
+    /// at `resume` on `acc`, its mode to come in register `mode`; gives
+    /// back its promise (what its caller gets) and the frame.
+    #[inline(never)]
+    pub(super) fn async_await(&mut self, resume: u32, mode: usize) -> Res<(Value, Frame)> {
+        let Some(top) = self.vm.frames.last().copied() else {
+            return Err(Abrupt::Throw);
+        };
+        let d = top.generator;
+        let c = self.realm().intrinsics.promise;
+        let v = self.vm.acc;
+        let promise = self.promise_resolve(c, v)?;
+        self.perform_then(promise, d, d, None);
+        let owner = self.async_promise(d);
+        let slots = self.saved_frame(SUSPENDED_YIELD, resume, mode as i64);
+        if let Some(o) = d.as_object() {
+            self.heap.with_internal_slots(o, |s| *s = slots);
+        }
+        let frame = self.leave_generator_frame().ok_or(Abrupt::Throw)?;
+        Ok((owner, frame))
+    }
+
+    /// An async function's return: its promise resolved with `value`,
+    /// what its caller gets.
+    #[inline(never)]
+    pub(super) fn async_return(&mut self, d: Value, value: Value) -> Res<Value> {
+        let promise = self.async_promise(d);
+        self.set_driver_state(d, COMPLETED);
+        self.resolve_promise(promise, value)?;
+        Ok(promise)
+    }
+
+    /// An async function's throw: its promise rejected with `reason`,
+    /// what its caller gets instead.
+    pub(super) fn async_throw(&mut self, d: Value, reason: Value) -> Res<Value> {
+        let promise = self.async_promise(d);
+        self.set_driver_state(d, COMPLETED);
+        self.reject_promise(promise, reason)?;
+        Ok(promise)
+    }
+
+    fn set_driver_state(&mut self, d: Value, state: i32) {
+        if let Some(o) = d.as_object() {
+            self.heap.with_internal_slots(o, |s| {
+                if state == COMPLETED {
+                    s.truncate(SAVED);
+                }
+                if let Some(v) = s.get_mut(STATE) {
+                    *v = Value::int(state);
+                }
+            });
+        }
+    }
+
+    /// An await's reaction job: the async function suspended in `d`
+    /// resumed with `value` (thrown in if `rejected`) and run to its next
+    /// stop.
+    pub(crate) fn resume_async(&mut self, d: Value, value: Value, rejected: bool) -> Res<()> {
+        if self.vm.frames.len() >= MAX_FRAMES {
+            return Err(self.throw_error(ErrorType::RangeError, messages::STACK_OVERFLOW));
+        }
+        let how = if rejected {
+            Resume::Throw
+        } else {
+            Resume::Next
+        };
+        self.push_suspended(d, how, value, true)?;
+        self.run_frames().map(|_| ())
     }
 
     /// `yield*`'s step (section 15.5.5): the inner iterator's `next`,

@@ -207,6 +207,8 @@ ops! {
     CheckSuperOnce() "Throws a ReferenceError if acc (this, raw) is already initialized: super() called twice.",
     ThrowSuperDelete() "Throws the ReferenceError of a delete of a super property.",
     ReturnDerived(R) "acc = what a derived constructor returns: r (its body's value) if an object, else acc (this, raw), checked.",
+    AsyncStart() "An async function's call: its promise and driver made, the frame going on.",
+    Await(R) "Suspends the async function on acc (a promise resolved with it), its caller given the function's promise; resumed, acc is the value or reason and r how (0 fulfilled, 1 rejected).",
     GeneratorStart()"A generator function's call: its generator object made, the frame suspended at its start in it, and the generator returned to the caller.",
     Yield(R) "Suspends the generator, giving its caller {value: acc, done: false}; resumed, acc is the value sent and r how (0 next, 1 throw, 2 return).",
     YieldDelegate(R) "Suspends the generator, giving its caller acc (an inner iterator's result) as it is; resumed as Yield is.",

@@ -22,6 +22,7 @@ mod math;
 mod number;
 mod object;
 mod primitive;
+pub(crate) mod promise;
 mod reflect;
 mod stack;
 mod string;
@@ -169,6 +170,10 @@ const TABLES: &[&[Entry]] = &[
     iterator::STRING_ITERATOR_PROTO,
     generator::GENERATOR_PROTO,
     generator::GENERATOR_FUNCTION_PROTO,
+    promise::PROMISE,
+    promise::PROMISE_PROTO,
+    promise::PROMISE_INTERNAL,
+    generator::ASYNC_FUNCTION_PROTO,
 ];
 
 /// The tables' indices.
@@ -200,6 +205,10 @@ pub(crate) mod table {
     pub const STRING_ITERATOR_PROTO: u32 = 24;
     pub const GENERATOR_PROTO: u32 = 25;
     pub const GENERATOR_FUNCTION_PROTO: u32 = 26;
+    pub const PROMISE: u32 = 27;
+    pub const PROMISE_PROTO: u32 = 28;
+    pub const PROMISE_INTERNAL: u32 = 29;
+    pub const ASYNC_FUNCTION_PROTO: u32 = 30;
 }
 
 /// How native `id` resumes a generator, if it is `%GeneratorPrototype%`'s

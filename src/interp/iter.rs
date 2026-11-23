@@ -26,6 +26,13 @@ impl Agent {
         self.get_iterator_or(iterable, || messages::not_iterable(text))
     }
 
+    /// GetIterator, the error naming the value by type and text (`number
+    /// 1 is not iterable (cannot read property Symbol(Symbol.iterator))`).
+    pub(crate) fn get_iterator_typed(&mut self, iterable: Value) -> Res<(Value, Value)> {
+        let text = self.typed_display(iterable);
+        self.get_iterator_or(iterable, || messages::not_iterable_typed(&text))
+    }
+
     /// GetIterator, `message` the error if `iterable` has no iterator.
     fn get_iterator_or(
         &mut self,

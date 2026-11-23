@@ -14,10 +14,11 @@ pub(crate) enum ErrorType {
     SyntaxError,
     EvalError,
     UriError,
+    AggregateError,
 }
 
 impl ErrorType {
-    pub(crate) const ALL: [ErrorType; 7] = [
+    pub(crate) const ALL: [ErrorType; 8] = [
         ErrorType::Error,
         ErrorType::TypeError,
         ErrorType::RangeError,
@@ -25,6 +26,7 @@ impl ErrorType {
         ErrorType::SyntaxError,
         ErrorType::EvalError,
         ErrorType::UriError,
+        ErrorType::AggregateError,
     ];
 
     pub(crate) fn name(self) -> &'static str {
@@ -36,8 +38,41 @@ impl ErrorType {
             ErrorType::SyntaxError => "SyntaxError",
             ErrorType::EvalError => "EvalError",
             ErrorType::UriError => "URIError",
+            ErrorType::AggregateError => "AggregateError",
         }
     }
+}
+
+/// `Chaining cycle detected for promise #<Promise>`.
+pub(crate) fn promise_cycle() -> String {
+    "Chaining cycle detected for promise #<Promise>".to_owned()
+}
+
+/// NewPromiseCapability's check of the functions it was given.
+pub(crate) fn promise_resolve_not_function(_what: &str) -> String {
+    "Promise resolve or reject function is not callable".to_owned()
+}
+
+pub(crate) fn promise_reject_not_function(_what: &str) -> String {
+    "Promise resolve or reject function is not callable".to_owned()
+}
+
+pub(crate) const CONSTRUCTOR_NOT_OBJECT: &str = "The .constructor property is not an object";
+pub(crate) const PROMISE_WITHOUT_NEW: &str = "Promise constructor cannot be invoked without 'new'";
+pub(crate) const PROMISE_EXECUTOR_TWICE: &str =
+    "Promise executor has already been invoked with non-undefined arguments";
+pub(crate) const PROMISE_RESOLVE_NON_OBJECT: &str = "PromiseResolve called on non-object";
+pub(crate) const ALL_REJECTED: &str = "All promises were rejected";
+
+/// `Promise resolver 1 is not a function`.
+pub(crate) fn promise_resolver(what: &str) -> String {
+    format!("Promise resolver {what} is not a function")
+}
+
+/// `Method Promise.prototype.then called on incompatible receiver
+/// #<Object>`.
+pub(crate) fn incompatible_receiver(method: &str, what: &str) -> String {
+    format!("Method {method} called on incompatible receiver {what}")
 }
 
 /// `Cannot read properties of null (reading 'length')`.

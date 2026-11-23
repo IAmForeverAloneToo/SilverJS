@@ -129,6 +129,12 @@ pub(crate) enum ObjectKind {
     /// A generator: its state and, suspended, its frame (internal slots,
     /// [`crate::interp`]'s generator module).
     Generator,
+    /// An async function's driver: its promise and, suspended at an
+    /// `await`, its frame (as a generator keeps its own).
+    AsyncDriver,
+    /// A promise: its state, result, handled flag and reactions
+    /// ([`crate::builtins`]'s promise module).
+    Promise,
 }
 
 /// An object cell.

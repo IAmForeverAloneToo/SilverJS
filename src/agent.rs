@@ -794,6 +794,8 @@ impl<'a> Scope<'a> {
         let unit = crate::compiler::compile(source, crate::parser::Goal::Script)?;
         let origin = crate::interp::Origin::Script(url.into());
         let completion = self.agent.run_compiled(unit, origin);
+        // Then the jobs it queued, the script's value kept while they run.
+        let completion = self.agent.after_script(completion);
         self.agent.vm.acc = Value::UNDEFINED;
         self.agent.vm.exception = Value::UNDEFINED;
         Ok(match completion {
