@@ -133,6 +133,18 @@ pub(crate) const PROMISE_INTERNAL: &[Entry] = &[
     method("catchFinally", 1, catch_finally),
     method("valueThunk", 0, value_thunk),
     method("thrower", 0, thrower),
+    method("asyncGenReturnFulfilled", 1, async_gen_return_fulfilled),
+    method("asyncGenReturnRejected", 1, async_gen_return_rejected),
+    method("asyncFromSyncUnwrap", 1, async_from_sync_unwrap),
+    method("asyncFromSyncCloseReject", 1, async_from_sync_close_reject),
+];
+
+/// `%AsyncFromSyncIteratorPrototype%` (section 27.1.6.2), which no script
+/// reaches.
+pub(crate) const ASYNC_FROM_SYNC_PROTO: &[Entry] = &[
+    method("next", 1, async_from_sync_next),
+    method("return", 1, async_from_sync_return),
+    method("throw", 1, async_from_sync_throw),
 ];
 
 // Indices in PROMISE_INTERNAL.
@@ -147,6 +159,10 @@ const THEN_FINALLY: u32 = 7;
 const CATCH_FINALLY: u32 = 8;
 const VALUE_THUNK: u32 = 9;
 const THROWER: u32 = 10;
+const ASYNC_GEN_RETURN_FULFILLED: u32 = 11;
+const ASYNC_GEN_RETURN_REJECTED: u32 = 12;
+const ASYNC_FROM_SYNC_UNWRAP: u32 = 13;
+const ASYNC_FROM_SYNC_CLOSE_REJECT: u32 = 14;
 
 /// A capability: a promise and the functions that settle it (undefined
 /// for a native `Promise`'s, settled directly).
@@ -797,6 +813,253 @@ fn then_finally(agent: &mut Agent, c: Call) -> Res<Value> {
 
 fn catch_finally(agent: &mut Agent, c: Call) -> Res<Value> {
     finally_step(agent, c, true)
+}
+
+impl Agent {
+    /// AsyncGeneratorAwaitReturn's reactions, with no generator yet.
+    pub(crate) fn async_gen_return_functions(&mut self) -> Res<(Value, Value)> {
+        let f = self.native_function(internal_id(ASYNC_GEN_RETURN_FULFILLED), 1, "")?;
+        self.vm.temps.push(f);
+        let r = self.native_function(internal_id(ASYNC_GEN_RETURN_REJECTED), 1, "");
+        self.vm.temps.pop();
+        Ok((f, r?))
+    }
+}
+
+fn async_gen_return_fulfilled(agent: &mut Agent, c: Call) -> Res<Value> {
+    let g = agent
+        .slots_of(c.callee)
+        .first()
+        .copied()
+        .unwrap_or(Value::UNDEFINED);
+    let v = agent.arg(c, 0);
+    agent.async_gen_return_settled(g, v, false)?;
+    Ok(Value::UNDEFINED)
+}
+
+fn async_gen_return_rejected(agent: &mut Agent, c: Call) -> Res<Value> {
+    let g = agent
+        .slots_of(c.callee)
+        .first()
+        .copied()
+        .unwrap_or(Value::UNDEFINED);
+    let v = agent.arg(c, 0);
+    agent.async_gen_return_settled(g, v, true)?;
+    Ok(Value::UNDEFINED)
+}
+
+impl Agent {
+    /// CreateAsyncFromSyncIterator (section 27.1.6.1): the wrapper and its
+    /// `next`.
+    pub(crate) fn async_from_sync_iterator(
+        &mut self,
+        sync: Value,
+        next: Value,
+    ) -> Res<(Value, Value)> {
+        let proto = self.realm().intrinsics.async_from_sync_iterator_prototype;
+        self.vm.temps.extend([sync, next]);
+        let o = self.alloc_object(ObjectCell::with_internal(
+            proto,
+            ObjectKind::AsyncFromSyncIterator,
+            vec![sync, next],
+        ));
+        let n = self.vm.temps.len();
+        self.vm.temps.truncate(n.saturating_sub(2));
+        let o = o?;
+        self.vm.temps.push(o);
+        let key = self.name_key(Name::Str("next"));
+        let method = self.get_value(o, key);
+        self.vm.temps.pop();
+        Ok((o, method?))
+    }
+
+    /// AsyncFromSyncIteratorContinuation (section 27.1.6.4): `promise`
+    /// settled from the sync result once its value is awaited; a
+    /// rejected value closes the sync iterator if `close`.
+    fn async_from_sync_continue(
+        &mut self,
+        result: Value,
+        promise: Value,
+        sync: Value,
+        close: bool,
+    ) -> Res<()> {
+        let key = self.name_key(Name::Str("done"));
+        let done = match self.get_value(result, key) {
+            Ok(d) => self.to_boolean(d),
+            Err(e) => return self.reject_abrupt_promise(promise, e),
+        };
+        let key = self.name_key(Name::Str("value"));
+        let value = match self.get_value(result, key) {
+            Ok(v) => v,
+            Err(e) => return self.reject_abrupt_promise(promise, e),
+        };
+        let c = self.realm().intrinsics.promise;
+        let wrapper = match self.promise_resolve(c, value) {
+            Ok(w) => w,
+            Err(Abrupt::Throw) if !done && close => {
+                let e = std::mem::replace(&mut self.vm.exception, Value::UNDEFINED);
+                let _ = self.iterator_close_quiet(sync);
+                return self.reject_promise(promise, e);
+            }
+            Err(e) => return self.reject_abrupt_promise(promise, e),
+        };
+        self.vm.temps.push(wrapper);
+        let r = (|| {
+            let on_f = self.native_function(internal_id(ASYNC_FROM_SYNC_UNWRAP), 1, "")?;
+            if let Some(o) = on_f.as_object() {
+                self.heap
+                    .with_internal_slots(o, |s| *s = vec![Value::bool(done)]);
+            }
+            self.vm.temps.push(on_f);
+            let on_r = if done || !close {
+                Ok(Value::UNDEFINED)
+            } else {
+                self.native_function(internal_id(ASYNC_FROM_SYNC_CLOSE_REJECT), 1, "")
+                    .inspect(|f| {
+                        if let Some(o) = f.as_object() {
+                            self.heap.with_internal_slots(o, |s| *s = vec![sync]);
+                        }
+                    })
+            };
+            self.vm.temps.pop();
+            let on_r = on_r?;
+            self.perform_then(
+                wrapper,
+                on_f,
+                on_r,
+                Some(Capability {
+                    promise,
+                    resolve: Value::UNDEFINED,
+                    reject: Value::UNDEFINED,
+                }),
+            );
+            Ok(())
+        })();
+        self.vm.temps.pop();
+        r
+    }
+
+    /// A promise rejected with what an abrupt step threw.
+    fn reject_abrupt_promise(&mut self, promise: Value, e: Abrupt) -> Res<()> {
+        match e {
+            Abrupt::Throw => {
+                let x = std::mem::replace(&mut self.vm.exception, Value::UNDEFINED);
+                self.reject_promise(promise, x)
+            }
+            other => Err(other),
+        }
+    }
+}
+
+/// `this`'s sync iterator and its `next`.
+fn sync_of(agent: &Agent, c: Call) -> (Value, Value) {
+    let s = agent.slots_of(c.this);
+    (
+        s.first().copied().unwrap_or(Value::UNDEFINED),
+        s.get(1).copied().unwrap_or(Value::UNDEFINED),
+    )
+}
+
+/// The value a method passes on: its argument, if it was given one.
+fn passed(agent: &Agent, c: Call) -> Vec<Value> {
+    if c.argc > 0 {
+        vec![agent.arg(c, 0)]
+    } else {
+        Vec::new()
+    }
+}
+
+/// One of the methods, `step` giving the sync result (or `Ok(None)` when
+/// it settled the promise itself), then the continuation.
+fn async_from_sync(
+    agent: &mut Agent,
+    c: Call,
+    close: bool,
+    step: impl FnOnce(&mut Agent, Value, Value) -> Res<Option<Value>>,
+) -> Res<Value> {
+    let promise = agent.new_promise()?;
+    agent.vm.temps.push(promise);
+    let (sync, next) = sync_of(agent, c);
+    let r = match step(agent, sync, promise) {
+        Ok(Some(result)) => {
+            if result.as_object().is_none() {
+                let text = agent.display(result);
+                agent
+                    .make_error(
+                        ErrorType::TypeError,
+                        &messages::iterator_result_not_object(&text),
+                    )
+                    .and_then(|e| agent.reject_promise(promise, e))
+            } else {
+                agent.vm.temps.push(result);
+                let r = agent.async_from_sync_continue(result, promise, sync, close);
+                agent.vm.temps.pop();
+                r
+            }
+        }
+        Ok(None) => Ok(()),
+        Err(e) => agent.reject_abrupt_promise(promise, e),
+    };
+    let _ = next;
+    agent.vm.temps.pop();
+    r.map(|()| promise)
+}
+
+fn async_from_sync_next(agent: &mut Agent, c: Call) -> Res<Value> {
+    let args = passed(agent, c);
+    let (_, next) = sync_of(agent, c);
+    async_from_sync(agent, c, true, |agent, sync, _| {
+        agent.call_value(next, sync, &args).map(Some)
+    })
+}
+
+fn async_from_sync_return(agent: &mut Agent, c: Call) -> Res<Value> {
+    let args = passed(agent, c);
+    let value = agent.arg(c, 0);
+    async_from_sync(agent, c, false, |agent, sync, promise| {
+        let key = agent.name_key(Name::Str("return"));
+        let ret = agent.get_value(sync, key)?;
+        if ret.is_nullish() {
+            let result = agent.iter_result(value, true)?;
+            agent.resolve_promise(promise, result)?;
+            return Ok(None);
+        }
+        agent.call_value(ret, sync, &args).map(Some)
+    })
+}
+
+fn async_from_sync_throw(agent: &mut Agent, c: Call) -> Res<Value> {
+    let args = passed(agent, c);
+    async_from_sync(agent, c, true, |agent, sync, promise| {
+        let key = agent.name_key(Name::Str("throw"));
+        let thr = agent.get_value(sync, key)?;
+        if thr.is_nullish() {
+            // No throw method: the sync iterator closed, then a TypeError.
+            agent.iterator_close(sync)?;
+            let e = agent.make_error(ErrorType::TypeError, messages::DELEGATE_NO_THROW)?;
+            agent.reject_promise(promise, e)?;
+            return Ok(None);
+        }
+        agent.call_value(thr, sync, &args).map(Some)
+    })
+}
+
+fn async_from_sync_unwrap(agent: &mut Agent, c: Call) -> Res<Value> {
+    let done = agent.slots_of(c.callee).first().copied() == Some(Value::TRUE);
+    let v = agent.arg(c, 0);
+    agent.iter_result(v, done)
+}
+
+fn async_from_sync_close_reject(agent: &mut Agent, c: Call) -> Res<Value> {
+    let sync = agent
+        .slots_of(c.callee)
+        .first()
+        .copied()
+        .unwrap_or(Value::UNDEFINED);
+    let e = agent.arg(c, 0);
+    let _ = agent.iterator_close_quiet(sync);
+    agent.vm.exception = e;
+    Err(Abrupt::Throw)
 }
 
 fn value_thunk(agent: &mut Agent, c: Call) -> Res<Value> {

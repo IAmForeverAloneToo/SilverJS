@@ -295,7 +295,8 @@ impl Agent {
             | FunctionKind::ClassConstructor
             | FunctionKind::DerivedConstructor
             | FunctionKind::Initializer
-            | FunctionKind::Async => true,
+            | FunctionKind::Async
+            | FunctionKind::AsyncGenerator => true,
             _ if in_eval || kind == FunctionKind::Arrow => {
                 self.slot_named(frame.context, "new.target").is_some()
             }

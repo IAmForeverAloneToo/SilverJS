@@ -216,6 +216,20 @@ pub(crate) fn generator_incompatible(method: &str, what: &str) -> String {
     format!("Method [Generator].prototype.{method} called on incompatible receiver {what}")
 }
 
+/// `Method [AsyncGenerator].prototype.next called on incompatible
+/// receiver #<Object>`.
+pub(crate) fn async_generator_incompatible(method: &str, what: &str) -> String {
+    format!("Method [AsyncGenerator].prototype.{method} called on incompatible receiver {what}")
+}
+
+/// `1 is not async iterable`: a `for await`'s value, by its source.
+pub(crate) fn not_async_iterable(what: &str) -> String {
+    format!("{what} is not async iterable")
+}
+
+pub(crate) const ASYNC_ITERATOR_NOT_OBJECT: &str =
+    "Result of the Symbol.asyncIterator method is not an object";
+
 /// `number 1 is not iterable (cannot read property
 /// Symbol(Symbol.iterator))`: a `yield*`'s value.
 pub(crate) fn not_iterable_typed(what: &str) -> String {

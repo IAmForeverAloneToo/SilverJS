@@ -954,6 +954,12 @@ impl Agent {
             self.vm.frames.pop();
             self.vm.current = frame.caller_realm;
             self.vm.stack.truncate(frame.args as usize);
+            if abrupt == Abrupt::Throw && self.is_async_generator(frame.generator) {
+                let reason = std::mem::replace(&mut self.vm.exception, Value::UNDEFINED);
+                self.async_gen_throw(frame.generator, reason)?;
+                self.vm.acc = Value::UNDEFINED;
+                return Ok(frame.entry.then_some(Value::UNDEFINED));
+            }
             if abrupt == Abrupt::Throw && self.is_async_driver(frame.generator) {
                 let reason = std::mem::replace(&mut self.vm.exception, Value::UNDEFINED);
                 let promise = self.async_throw(frame.generator, reason)?;
@@ -1825,7 +1831,9 @@ impl Agent {
                             && top.generator != Value::UNDEFINED
                         {
                             let (g, v) = (top.generator, self.vm.acc);
-                            self.vm.acc = if self.is_async_driver(g) {
+                            self.vm.acc = if self.is_async_generator(g) {
+                                tri!(self.async_gen_return(g, v), start)
+                            } else if self.is_async_driver(g) {
                                 tri!(self.async_return(g, v), start)
                             } else {
                                 tri!(self.generator_return(g, v), start)
@@ -1911,6 +1919,48 @@ impl Agent {
                             return Ok(v);
                         }
                         continue 'frames;
+                    }
+                    Op::IteratorResult => {
+                        let d = r.u();
+                        let off = r.j();
+                        if tri!(self.op_iterator_result(base, d), start) {
+                            r.pc = target(start, off);
+                        }
+                    }
+                    Op::IteratorReturnCall => {
+                        let (it, d, quiet) = (r.u(), r.u(), r.u());
+                        let off = r.j();
+                        if !tri!(self.op_iterator_return_call(base, it, d, quiet == 1), start) {
+                            r.pc = target(start, off);
+                        }
+                    }
+                    Op::CheckIterResult => {
+                        tri!(self.check_iter_result(), start);
+                    }
+                    Op::AsyncDelegateMethod => {
+                        let (it, nx, m, o) = (r.u(), r.u(), r.u(), r.u());
+                        tri!(self.op_async_delegate_method(base, it, nx, m, o), start);
+                    }
+                    Op::AsyncDelegateResult => {
+                        let (m, o) = (r.u(), r.u());
+                        tri!(self.op_async_delegate_result(base, m, o), start);
+                    }
+                    Op::ThrowNoThrowMethod => {
+                        let e = self.throw_error(ErrorType::TypeError, messages::DELEGATE_NO_THROW);
+                        tri!(Err::<(), Abrupt>(e), start);
+                    }
+                    Op::AsyncYield => {
+                        let m = r.u();
+                        match tri!(self.async_gen_yield(r.pc as u32, m), start) {
+                            None => {}
+                            Some((v, frame)) => {
+                                self.vm.acc = v;
+                                if frame.entry {
+                                    return Ok(v);
+                                }
+                                continue 'frames;
+                            }
+                        }
                     }
                     Op::GeneratorStart => {
                         let (g, frame) = tri!(self.generator_start(r.pc as u32), start);

@@ -210,13 +210,7 @@ impl Gen<'_, '_> {
             Expr::Await(e) => {
                 // Suspended on its operand; resumed, a rejection throws.
                 self.expr(*e)?;
-                let m = self.alloc();
-                self.pos(span);
-                self.reg_op(Op::Await, m);
-                let next = self.new_label();
-                self.jump_with(Op::ResumeYield, &[i64::from(m)], next);
-                self.bind(next);
-                self.free(m);
+                self.await_acc(span);
             }
         }
         Ok(())
@@ -1128,6 +1122,9 @@ impl Gen<'_, '_> {
             Some(a) => self.expr(a)?,
             None => self.op(Op::LdaUndefined),
         }
+        if self.is_async_generator() {
+            return self.async_yield(arg, delegate, span);
+        }
         let mode = self.alloc();
         if !delegate {
             self.pos(span);
@@ -1189,6 +1186,137 @@ impl Gen<'_, '_> {
         self.free(next);
         self.free(it);
         self.free(mode);
+        Ok(())
+    }
+}
+
+impl Gen<'_, '_> {
+    /// An async generator's `yield` (section 27.6.3.8): its operand
+    /// awaited, then the first request fulfilled with it; resumed by a
+    /// return, the value sent is awaited before the generator returns.
+    fn async_yield(&mut self, arg: Option<ExprId>, delegate: bool, span: Span) -> R {
+        if delegate {
+            return self.async_yield_star(arg, span);
+        }
+        self.await_acc(span);
+        let mode = self.alloc();
+        self.pos(span);
+        self.reg_op(Op::AsyncYield, mode);
+        let ret = self.new_label();
+        self.jump_with(Op::ResumeYield, &[i64::from(mode)], ret);
+        let past = self.new_label();
+        self.jump(Op::Jump, past);
+        self.bind(ret);
+        self.await_acc(span);
+        self.jump_out(super::Completion::Return);
+        self.bind(past);
+        self.free(mode);
+        let _ = arg;
+        Ok(())
+    }
+
+    /// An async generator's `yield*` (section 15.5.5, async): the inner
+    /// async iterator's methods called with what is sent, each result
+    /// awaited; a value yielded as it is; a return's value awaited.
+    fn async_yield_star(&mut self, arg: Option<ExprId>, span: Span) -> R {
+        let at = arg.map_or(span, |a| self.ast.expr(a).span);
+        let (it, next, mode, outcome, recv, m) = (
+            self.alloc(),
+            self.alloc(),
+            self.alloc(),
+            self.alloc(),
+            self.alloc(),
+            self.alloc(),
+        );
+        self.pos(at);
+        self.emit(Op::GetIterator, &[i64::from(it), i64::from(next), 4]);
+        self.emit(Op::LdaSmi, &[0]);
+        self.reg_op(Op::Star, mode);
+        self.op(Op::LdaUndefined);
+        self.reg_op(Op::Star, recv);
+        let (head, done, ret_recv, ret_val, no_throw) = (
+            self.new_label(),
+            self.new_label(),
+            self.new_label(),
+            self.new_label(),
+            self.new_label(),
+        );
+        self.bind(head);
+        self.reg_op(Op::Ldar, recv);
+        self.pos(at);
+        self.emit(
+            Op::AsyncDelegateMethod,
+            &[
+                i64::from(it),
+                i64::from(next),
+                i64::from(mode),
+                i64::from(outcome),
+            ],
+        );
+        self.reg_op(Op::Star, m);
+        self.emit(Op::LdaSmi, &[2]);
+        self.reg_op(Op::TestStrictEq, outcome);
+        self.jump(Op::JumpIfTrue, ret_recv);
+        self.emit(Op::LdaSmi, &[4]);
+        self.reg_op(Op::TestStrictEq, outcome);
+        self.jump(Op::JumpIfTrue, no_throw);
+        let ic = self.ic();
+        self.pos(at);
+        self.emit(
+            Op::Call,
+            &[i64::from(m), i64::from(it), i64::from(recv), 1, ic],
+        );
+        self.await_acc(at);
+        self.pos(at);
+        self.emit(
+            Op::AsyncDelegateResult,
+            &[i64::from(mode), i64::from(outcome)],
+        );
+        self.reg_op(Op::Star, m);
+        self.emit(Op::LdaSmi, &[1]);
+        self.reg_op(Op::TestStrictEq, outcome);
+        self.jump(Op::JumpIfTrue, done);
+        self.emit(Op::LdaSmi, &[2]);
+        self.reg_op(Op::TestStrictEq, outcome);
+        self.jump(Op::JumpIfTrue, ret_val);
+        self.reg_op(Op::Ldar, m);
+        self.pos(span);
+        self.reg_op(Op::AsyncYield, mode);
+        self.reg_op(Op::Star, recv);
+        self.jump(Op::JumpLoop, head);
+        // No return method: what was sent, awaited, is returned.
+        self.bind(ret_recv);
+        self.reg_op(Op::Ldar, recv);
+        self.await_acc(at);
+        self.jump_out(super::Completion::Return);
+        // The inner iterator returned on a return: its value awaited.
+        self.bind(ret_val);
+        self.reg_op(Op::Ldar, m);
+        self.await_acc(at);
+        self.jump_out(super::Completion::Return);
+        // No throw method: the iterator closed, then a TypeError.
+        self.bind(no_throw);
+        self.op(Op::LdaFalse);
+        self.reg_op(Op::Star, outcome);
+        let skip = self.new_label();
+        self.jump_with(
+            Op::IteratorReturnCall,
+            &[i64::from(it), i64::from(outcome), 0],
+            skip,
+        );
+        self.await_acc(at);
+        self.op(Op::CheckIterResult);
+        self.bind(skip);
+        self.pos(at);
+        self.op(Op::ThrowNoThrowMethod);
+        self.bind(done);
+        self.reg_op(Op::Ldar, m);
+        self.free(m);
+        self.free(recv);
+        self.free(outcome);
+        self.free(mode);
+        self.free(next);
+        self.free(it);
         Ok(())
     }
 }

@@ -575,6 +575,28 @@ impl Gen<'_, '_> {
         Ok(())
     }
 
+    /// Whether the function being compiled is an async generator.
+    pub(super) fn is_async_generator(&self) -> bool {
+        self.a
+            .function(self.index)
+            .func
+            .is_some_and(|f| self.ast.func(f).is_async && self.ast.func(f).is_generator)
+    }
+
+    /// The accumulator awaited (an async function's `await`): a
+    /// rejection throws here.
+    pub(super) fn await_acc(&mut self, span: Span) {
+        let m = self.alloc();
+        if span.end > 0 {
+            self.pos(span);
+        }
+        self.reg_op(Op::Await, m);
+        let next = self.new_label();
+        self.jump_with(Op::ResumeYield, &[i64::from(m)], next);
+        self.bind(next);
+        self.free(m);
+    }
+
     /// Whether the function being compiled is a derived constructor.
     pub(super) fn is_derived(&self) -> bool {
         self.a.function(self.index).derived

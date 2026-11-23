@@ -32,7 +32,12 @@ spread shown beside it.
 Two runs of seven rounds each (tools/abbench.sh, 2026-11-23); each run's
 median ratio is shown. QuickJS-ng's C is built at `/O2` without LTO:
 objects compiled with `/GL` do not link once rustc has bundled them into
-an rlib, so the C side has no link-time code generation.
+an rlib, so the C side has no link-time code generation. The lead kept
+this (2026-11-23): QuickJS-ng's hot code is almost all in one
+translation unit, quickjs.c, so link-time code generation across units
+would gain it little, and building it outside cargo is not worth it.
+Read each ratio knowing it may slightly favour SilverJS, whose Rust is
+built with fat LTO.
 
 | Bench | SilverJS / QuickJS-ng | |
 |---|---|---|

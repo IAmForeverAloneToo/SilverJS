@@ -174,6 +174,10 @@ const TABLES: &[&[Entry]] = &[
     promise::PROMISE_PROTO,
     promise::PROMISE_INTERNAL,
     generator::ASYNC_FUNCTION_PROTO,
+    generator::ASYNC_GENERATOR_PROTO,
+    generator::ASYNC_GENERATOR_FUNCTION_PROTO,
+    generator::ASYNC_ITERATOR_PROTO,
+    promise::ASYNC_FROM_SYNC_PROTO,
 ];
 
 /// The tables' indices.
@@ -209,6 +213,10 @@ pub(crate) mod table {
     pub const PROMISE_PROTO: u32 = 28;
     pub const PROMISE_INTERNAL: u32 = 29;
     pub const ASYNC_FUNCTION_PROTO: u32 = 30;
+    pub const ASYNC_GENERATOR_PROTO: u32 = 31;
+    pub const ASYNC_GENERATOR_FUNCTION_PROTO: u32 = 32;
+    pub const ASYNC_ITERATOR_PROTO: u32 = 33;
+    pub const ASYNC_FROM_SYNC_PROTO: u32 = 34;
 }
 
 /// How native `id` resumes a generator, if it is `%GeneratorPrototype%`'s

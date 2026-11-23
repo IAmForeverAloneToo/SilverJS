@@ -25,6 +25,10 @@ E = 'src/compiler/codegen/expr.rs'
 C = 'src/compiler/codegen/mod.rs'
 I = 'src/interp/mod.rs'
 PA = 'src/parser/mod.rs'
+CL = 'src/compiler/codegen/class.rs'
+IT = 'src/interp/iter.rs'
+GB = 'src/builtins/generator.rs'
+ST = 'src/compiler/codegen/stmt.rs'
 cases = [
     # Resolving.
     (P, '        for g in [f, other] {', '        for g in [f] {'),
@@ -55,17 +59,40 @@ cases = [
     (G, '        self.set_driver_state(d, COMPLETED);\n        self.resolve_promise(promise, value)?;', '        self.set_driver_state(d, COMPLETED);\n        self.reject_promise(promise, value)?;'),
     (G, '        let how = if rejected {\n            Resume::Throw', '        let how = if false {\n            Resume::Throw'),
     (M, '            if abrupt == Abrupt::Throw && self.is_async_driver(frame.generator) {', '            if false && self.is_async_driver(frame.generator) {'),
-    (M, '                            self.vm.acc = if self.is_async_driver(g) {', '                            self.vm.acc = if false {'),
+    (M, '                            } else if self.is_async_driver(g) {', '                            } else if false {'),
     (A, '        let r = self.run_jobs();', '        let r = Ok::<(), Abrupt>(());'),
     (C, '            self.op(Op::AsyncStart);\n', ''),
-    (E, '                let next = self.new_label();\n                self.jump_with(Op::ResumeYield, &[i64::from(m)], next);\n                self.bind(next);',
-        '                let next = self.new_label();\n                self.bind(next);'),
+    (CL, '        let next = self.new_label();\n        self.jump_with(Op::ResumeYield, &[i64::from(m)], next);\n        self.bind(next);',
+        '        let next = self.new_label();\n        self.bind(next);'),
     # Async stack traces and messages.
     (S, '        let mut driver = frames.first().map_or(Value::UNDEFINED, |f| f.generator);', '        let mut driver = Value::UNDEFINED;'),
     (S, '            format!("async {text}")', '            text'),
     (P, '            .find(|h| self.is_async_driver(*h))', '            .find(|h| self.is_async_driver(*h) && false)'),
     (I, '        if literal {', '        if false {'),
     (PA, '        if after_await && !self.cx.await_ && tok.kind != TokenKind::Eof {', '        if false {'),
+    # J3.4b: async generators.
+    (G, '        let slots = self.saved_frame(EXECUTING, resume, mode as i64);', '        let slots = self.saved_frame(SUSPENDED_YIELD, resume, mode as i64);'),
+    (G, '        if let Some((how, value, _)) = self.async_gen_front(g) {', '        if let Some((how, value, _)) = self.async_gen_front(g).filter(|_| false) {'),
+    (G, '            if how != Resume::Next && state == SUSPENDED_START {', '            if false {'),
+    (G, '                        self.set_async_gen_state(g, AWAITING_RETURN);', '                        self.set_async_gen_state(g, COMPLETED);'),
+    (G, '                    Resume::Throw => self.async_gen_complete(g, value, true, true)?,', '                    Resume::Throw => self.async_gen_complete(g, value, true, false)?,'),
+    (G, '        self.async_gen_complete(g, value, true, false)?;', '        self.async_gen_complete(g, value, false, false)?;'),
+    (G, '        self.async_gen_complete(g, reason, true, true)?;', '        self.async_gen_complete(g, reason, true, false)?;'),
+    (G, '        self.vm.temps.push(queue);\n', ''),
+    (G, '            self.async_gen_front(d)?.2', '            self.async_promise(d)'),
+    (G, '            self.prototype_from(top.closure, |r| r.intrinsics.async_generator_prototype)?', '            self.prototype_from(top.closure, |r| r.intrinsics.generator_prototype)?'),
+    (GB, '    if !agent.is_async_generator(c.this) {', '    if false && !agent.is_async_generator(c.this) {'),
+    (GB, '        Name::Sym(Wk::AsyncDispose),', '        Name::Sym(Wk::Dispose),'),
+    (E, '        self.await_acc(span);\n        let mode = self.alloc();\n        self.pos(span);', '        let mode = self.alloc();\n        self.pos(span);'),
+    (ST, '                        if self.is_async_generator() {\n                            self.await_acc(span);\n                        }', '                        if false {\n                            self.await_acc(span);\n                        }'),
+    # J3.4b: for await and yield*.
+    (IT, '            return self.async_from_sync_iterator(i, n);', '            return Ok((i, n));'),
+    (IT, '            4 => self.get_async_iterator(v, messages::not_a_function("undefined"))?,', '            4 => self.get_async_iterator(v, messages::not_async_iterable("x"))?,'),
+    (IT, '            if ret.is_undefined() {\n                return Ok(None);', '            if ret.is_undefined() || true {\n                return Ok(None);'),
+    (IT, '    pub(super) fn op_iterator_result(&mut self, base: u32, d: usize) -> Res<bool> {\n        let result = self.vm.acc;\n        if result.as_object().is_none() {',
+         '    pub(super) fn op_iterator_result(&mut self, base: u32, d: usize) -> Res<bool> {\n        let result = self.vm.acc;\n        if false {'),
+    (IT, '            (true, 2) => 2,', '            (true, 2) => 1,'),
+    (ST, '            let at = target.map_or(span, |t| self.ast.pat(t).span);', '            let at = span;'),
 ]
 
 env = dict(os.environ)

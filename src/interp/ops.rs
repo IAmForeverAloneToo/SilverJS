@@ -1215,6 +1215,9 @@ impl Agent {
         let proto = match kind {
             FunctionKind::Generator => self.realm().intrinsics.generator_function_prototype,
             FunctionKind::Async => self.realm().intrinsics.async_function_prototype,
+            FunctionKind::AsyncGenerator => {
+                self.realm().intrinsics.async_generator_function_prototype
+            }
             _ => self.realm().function_prototype,
         };
         let f = self.alloc_object(ObjectCell::function(
@@ -1223,10 +1226,15 @@ impl Agent {
         ))?;
         self.vm.temps.push(f);
         let mut result = self.finish_function(f, length, &name, kind == FunctionKind::Normal);
-        if generator && result.is_ok() {
+        let async_generator = kind == FunctionKind::AsyncGenerator;
+        if (generator || async_generator) && result.is_ok() {
             // Its `prototype`: what its generators inherit from, writable
             // only, with no `constructor` (section 15.5.4).
-            let gp = self.realm().intrinsics.generator_prototype;
+            let gp = if async_generator {
+                self.realm().intrinsics.async_generator_prototype
+            } else {
+                self.realm().intrinsics.generator_prototype
+            };
             result = self
                 .alloc_object(ObjectCell::new(gp, ObjectKind::Ordinary))
                 .map(|p| {

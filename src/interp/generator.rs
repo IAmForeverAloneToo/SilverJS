@@ -21,6 +21,8 @@ pub(crate) const SUSPENDED_START: i32 = 0;
 pub(crate) const SUSPENDED_YIELD: i32 = 1;
 pub(crate) const EXECUTING: i32 = 2;
 pub(crate) const COMPLETED: i32 = 3;
+/// An async generator's, awaiting a return's value once completed.
+pub(crate) const AWAITING_RETURN: i32 = 4;
 
 /// How `yield*`'s call of the inner iterator went on.
 pub(crate) enum DelegateCall {
@@ -53,7 +55,9 @@ const FUNC: usize = 7;
 const RESUME: usize = 8;
 const BASE: usize = 9;
 const MODE: usize = 10;
-/// An async function's promise (undefined for a generator).
+/// An async function's promise; an async generator's queue, an object
+/// whose internal slots are its requests, three values each (how, the
+/// value sent, the promise to settle); undefined for a generator.
 const OWNER: usize = 11;
 const SAVED: usize = 12;
 
@@ -66,6 +70,17 @@ impl Agent {
     pub(crate) fn generator_state(&self, g: Value) -> Option<i32> {
         let cell = self.heap.objects.get(g.as_object()?)?;
         (cell.kind() == ObjectKind::Generator).then(|| int(cell.internal().get(STATE)) as i32)
+    }
+
+    /// An async generator's state, if `g` is one.
+    pub(crate) fn async_gen_state(&self, g: Value) -> Option<i32> {
+        let cell = self.heap.objects.get(g.as_object()?)?;
+        (cell.kind() == ObjectKind::AsyncGenerator).then(|| int(cell.internal().get(STATE)) as i32)
+    }
+
+    /// Whether `g` is an async generator.
+    pub(crate) fn is_async_generator(&self, g: Value) -> bool {
+        self.async_gen_state(g).is_some()
     }
 
     pub(crate) fn set_generator_state(&mut self, g: Value, state: i32) {
@@ -86,9 +101,12 @@ impl Agent {
     /// a stack frame of its `next` is named after it).
     pub(crate) fn generator_function(&self, g: Value) -> Option<Value> {
         let cell = self.heap.objects.get(g.as_object()?)?;
-        (cell.kind() == ObjectKind::Generator)
-            .then(|| cell.internal().get(CLOSURE).copied())
-            .flatten()
+        matches!(
+            cell.kind(),
+            ObjectKind::Generator | ObjectKind::AsyncGenerator
+        )
+        .then(|| cell.internal().get(CLOSURE).copied())
+        .flatten()
     }
 
     /// The top frame's slots for a generator, the stretch of the register
@@ -159,14 +177,54 @@ impl Agent {
         let Some(top) = self.vm.frames.last().copied() else {
             return Err(Abrupt::Throw);
         };
-        // OrdinaryCreateFromConstructor(F, "%GeneratorPrototype%").
-        let proto = self.prototype_from(top.closure, |r| r.intrinsics.generator_prototype)?;
-        let slots = self.saved_frame(SUSPENDED_START, resume, -1);
+        let kind = self
+            .callable(top.closure)
+            .and_then(|c| match c {
+                super::Callable::Code { unit, func, .. } => self.code_kind(unit, func),
+                _ => None,
+            })
+            .unwrap_or(crate::compiler::FunctionKind::Generator);
+        let is_async = kind == crate::compiler::FunctionKind::AsyncGenerator;
+        // OrdinaryCreateFromConstructor(F, "%GeneratorPrototype%"), or
+        // "%AsyncGeneratorPrototype%".
+        let proto = if is_async {
+            self.prototype_from(top.closure, |r| r.intrinsics.async_generator_prototype)?
+        } else {
+            self.prototype_from(top.closure, |r| r.intrinsics.generator_prototype)?
+        };
+        self.vm.temps.push(proto);
+        let mut slots = self.saved_frame(SUSPENDED_START, resume, -1);
+        let queue = if is_async {
+            let op = self.realm().object_prototype;
+            self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))
+        } else {
+            Ok(Value::UNDEFINED)
+        };
+        let queue = match queue {
+            Ok(q) => q,
+            Err(e) => {
+                self.vm.temps.pop();
+                return Err(e);
+            }
+        };
+        if let Some(s) = slots.get_mut(OWNER) {
+            *s = queue;
+        }
+        // The prototype and the queue rooted while the generator is made.
+        self.vm.temps.push(queue);
         let g = self.alloc_object(ObjectCell::with_internal(
             proto,
-            ObjectKind::Generator,
+            if is_async {
+                ObjectKind::AsyncGenerator
+            } else {
+                ObjectKind::Generator
+            },
             slots,
-        ))?;
+        ));
+        self.vm
+            .temps
+            .truncate(self.vm.temps.len().saturating_sub(2));
+        let g = g?;
         let frame = self.leave_generator_frame().ok_or(Abrupt::Throw)?;
         Ok((g, frame))
     }
@@ -345,11 +403,235 @@ impl Agent {
 
     // Async functions (section 27.7).
 
-    /// Whether `v` is an async function's driver.
+    /// Whether `v` is an async function's driver, or an async
+    /// generator: what an await's reaction resumes.
     pub(crate) fn is_async_driver(&self, v: Value) -> bool {
         v.as_object()
             .and_then(|o| self.heap.objects.get(o))
-            .is_some_and(|c| c.kind() == ObjectKind::AsyncDriver)
+            .is_some_and(|c| {
+                matches!(
+                    c.kind(),
+                    ObjectKind::AsyncDriver | ObjectKind::AsyncGenerator
+                )
+            })
+    }
+
+    // Async generators (section 27.6).
+
+    /// The queue of an async generator: its holder object.
+    fn async_gen_queue(&self, g: Value) -> Value {
+        g.as_object()
+            .and_then(|o| self.heap.objects.get(o))
+            .and_then(|c| c.internal().get(OWNER).copied())
+            .unwrap_or(Value::UNDEFINED)
+    }
+
+    /// The first request of an async generator's queue: how, the value
+    /// sent and the promise.
+    fn async_gen_front(&self, g: Value) -> Option<(Resume, Value, Value)> {
+        let q = self.async_gen_queue(g);
+        let cell = self.heap.objects.get(q.as_object()?)?;
+        let s = cell.internal();
+        let how = match int(s.first()) {
+            1 => Resume::Throw,
+            2 => Resume::Return,
+            _ => Resume::Next,
+        };
+        Some((how, s.get(1).copied()?, s.get(2).copied()?))
+    }
+
+    /// Takes the first request off the queue.
+    fn async_gen_dequeue(&mut self, g: Value) {
+        if let Some(q) = self.async_gen_queue(g).as_object() {
+            self.heap.with_internal_slots(q, |s| {
+                if s.len() >= 3 {
+                    s.drain(..3);
+                }
+            });
+        }
+    }
+
+    fn set_async_gen_state(&mut self, g: Value, state: i32) {
+        if let Some(o) = g.as_object() {
+            self.heap.with_internal_slots(o, |s| {
+                if state == COMPLETED {
+                    s.truncate(SAVED);
+                }
+                if let Some(v) = s.get_mut(STATE) {
+                    *v = Value::int(state);
+                }
+            });
+        }
+    }
+
+    /// AsyncGeneratorEnqueue (section 27.6.3.4), then the generator
+    /// resumed if it is not running: what `next`, `return` and `throw`
+    /// do, their promise given back.
+    pub(crate) fn async_gen_enqueue(&mut self, g: Value, how: Resume, value: Value) -> Res<Value> {
+        let promise = self.new_promise()?;
+        if let Some(q) = self.async_gen_queue(g).as_object() {
+            self.heap
+                .with_internal_slots(q, |s| s.extend([Value::int(how as i32), value, promise]));
+        }
+        self.vm.temps.push(promise);
+        let r = self.async_gen_resume_next(g);
+        self.vm.temps.pop();
+        r.map(|()| promise)
+    }
+
+    /// AsyncGeneratorCompleteStep (section 27.6.3.5): the first request
+    /// settled, fulfilled with `{value, done}` or rejected with `value`,
+    /// and taken off.
+    fn async_gen_complete(
+        &mut self,
+        g: Value,
+        value: Value,
+        done: bool,
+        rejected: bool,
+    ) -> Res<()> {
+        let Some((_, _, promise)) = self.async_gen_front(g) else {
+            return Ok(());
+        };
+        self.async_gen_dequeue(g);
+        self.vm.temps.push(promise);
+        let r = if rejected {
+            self.reject_promise(promise, value)
+        } else {
+            self.iter_result(value, done)
+                .and_then(|result| self.resolve_promise(promise, result))
+        };
+        self.vm.temps.pop();
+        r
+    }
+
+    /// AsyncGeneratorResumeNext, AsyncGeneratorDrainQueue and
+    /// AsyncGeneratorAwaitReturn (sections 27.6.3.6 to 27.6.3.10): the
+    /// requests answered while the generator is done, else its frame
+    /// resumed with the first, run to its next stop.
+    pub(crate) fn async_gen_resume_next(&mut self, g: Value) -> Res<()> {
+        loop {
+            let Some(state) = self.async_gen_state(g) else {
+                return Ok(());
+            };
+            if state == EXECUTING || state == AWAITING_RETURN {
+                return Ok(());
+            }
+            let Some((how, value, _)) = self.async_gen_front(g) else {
+                return Ok(());
+            };
+            let mut state = state;
+            if how != Resume::Next && state == SUSPENDED_START {
+                self.set_async_gen_state(g, COMPLETED);
+                state = COMPLETED;
+            }
+            if state == COMPLETED {
+                match how {
+                    Resume::Next => self.async_gen_complete(g, Value::UNDEFINED, true, false)?,
+                    Resume::Throw => self.async_gen_complete(g, value, true, true)?,
+                    Resume::Return => {
+                        self.set_async_gen_state(g, AWAITING_RETURN);
+                        let c = self.realm().intrinsics.promise;
+                        match self.promise_resolve(c, value) {
+                            Ok(p) => {
+                                self.vm.temps.push(p);
+                                let r = self.await_return_handlers(g);
+                                self.vm.temps.pop();
+                                let (on_f, on_r) = r?;
+                                self.perform_then(p, on_f, on_r, None);
+                                return Ok(());
+                            }
+                            Err(Abrupt::Throw) => {
+                                let e = std::mem::replace(&mut self.vm.exception, Value::UNDEFINED);
+                                self.set_async_gen_state(g, COMPLETED);
+                                self.async_gen_complete(g, e, true, true)?;
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
+                continue;
+            }
+            // Suspended: resumed with the request, run to its next stop.
+            if self.vm.frames.len() >= MAX_FRAMES {
+                return Err(self.throw_error(ErrorType::RangeError, messages::STACK_OVERFLOW));
+            }
+            self.push_suspended(g, how, value, true)?;
+            self.run_frames()?;
+            return Ok(());
+        }
+    }
+
+    /// `AsyncYield`: the first request fulfilled with `{acc, false}`;
+    /// then, if another waits, the frame goes on at once with it
+    /// (`None`), else it is suspended at `resume` (its caller given
+    /// undefined, and the frame).
+    #[inline(never)]
+    pub(super) fn async_gen_yield(
+        &mut self,
+        resume: u32,
+        mode: usize,
+    ) -> Res<Option<(Value, Frame)>> {
+        let Some(top) = self.vm.frames.last().copied() else {
+            return Err(Abrupt::Throw);
+        };
+        let g = top.generator;
+        let v = self.vm.acc;
+        self.async_gen_complete(g, v, false, false)?;
+        if let Some((how, value, _)) = self.async_gen_front(g) {
+            if let Some(slot) = self.vm.stack.get_mut(top.base as usize + mode) {
+                *slot = Value::int(how as i32);
+            }
+            self.vm.acc = value;
+            return Ok(None);
+        }
+        let slots = self.saved_frame(SUSPENDED_YIELD, resume, mode as i64);
+        if let Some(o) = g.as_object() {
+            self.heap.with_internal_slots(o, |s| *s = slots);
+        }
+        let frame = self.leave_generator_frame().ok_or(Abrupt::Throw)?;
+        Ok(Some((Value::UNDEFINED, frame)))
+    }
+
+    /// An async generator's return: the first request fulfilled with
+    /// `{value, done: true}`, the rest answered as a done generator's.
+    #[inline(never)]
+    pub(super) fn async_gen_return(&mut self, g: Value, value: Value) -> Res<Value> {
+        self.set_async_gen_state(g, COMPLETED);
+        self.async_gen_complete(g, value, true, false)?;
+        self.async_gen_resume_next(g)?;
+        Ok(Value::UNDEFINED)
+    }
+
+    /// A throw out of an async generator: the first request rejected,
+    /// the rest answered as a done generator's.
+    pub(super) fn async_gen_throw(&mut self, g: Value, reason: Value) -> Res<()> {
+        self.set_async_gen_state(g, COMPLETED);
+        self.async_gen_complete(g, reason, true, true)?;
+        self.async_gen_resume_next(g)
+    }
+
+    /// AsyncGeneratorAwaitReturn's two reactions, holding `g`.
+    fn await_return_handlers(&mut self, g: Value) -> Res<(Value, Value)> {
+        let (f, r) = self.async_gen_return_functions()?;
+        for h in [f, r] {
+            if let Some(o) = h.as_object() {
+                self.heap.with_internal_slots(o, |s| *s = vec![g]);
+            }
+        }
+        Ok((f, r))
+    }
+
+    /// A done async generator's awaited return value settled: its first
+    /// request answered, then the rest.
+    pub(crate) fn async_gen_return_settled(
+        &mut self,
+        g: Value,
+        value: Value,
+        rejected: bool,
+    ) -> Res<()> {
+        self.set_async_gen_state(g, COMPLETED);
+        self.async_gen_complete(g, value, true, rejected)?;
+        self.async_gen_resume_next(g)
     }
 
     /// The async function awaiting the one driven by `d` (a reaction of
@@ -358,7 +640,13 @@ impl Agent {
         if !self.is_async_driver(d) {
             return None;
         }
-        let promise = self.async_promise(d);
+        // An async generator is awaited through its first request's
+        // promise; an async function, through its own.
+        let promise = if self.is_async_generator(d) {
+            self.async_gen_front(d)?.2
+        } else {
+            self.async_promise(d)
+        };
         self.promise_awaiter(promise)
     }
 
@@ -432,7 +720,9 @@ impl Agent {
         let promise = self.promise_resolve(c, v)?;
         self.perform_then(promise, d, d, None);
         let owner = self.async_promise(d);
-        let slots = self.saved_frame(SUSPENDED_YIELD, resume, mode as i64);
+        // Still running, as far as requests go: an async generator's
+        // `next` only queues while it awaits.
+        let slots = self.saved_frame(EXECUTING, resume, mode as i64);
         if let Some(o) = d.as_object() {
             self.heap.with_internal_slots(o, |s| *s = slots);
         }

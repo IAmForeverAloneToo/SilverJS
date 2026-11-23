@@ -112,6 +112,11 @@ pub(crate) struct Intrinsics {
     pub promise_prototype: Value,
     pub async_function_prototype: Value,
     pub async_function: Value,
+    pub async_iterator_prototype: Value,
+    pub async_generator_prototype: Value,
+    pub async_generator_function_prototype: Value,
+    pub async_generator_function: Value,
+    pub async_from_sync_iterator_prototype: Value,
 }
 
 impl Intrinsics {
@@ -144,6 +149,11 @@ impl Intrinsics {
         promise_prototype: Value::UNDEFINED,
         async_function_prototype: Value::UNDEFINED,
         async_function: Value::UNDEFINED,
+        async_iterator_prototype: Value::UNDEFINED,
+        async_generator_prototype: Value::UNDEFINED,
+        async_generator_function_prototype: Value::UNDEFINED,
+        async_generator_function: Value::UNDEFINED,
+        async_from_sync_iterator_prototype: Value::UNDEFINED,
     };
 
     pub(crate) fn trace(&self, out: &mut Vec<Value>) {
@@ -175,6 +185,11 @@ impl Intrinsics {
             self.promise_prototype,
             self.async_function_prototype,
             self.async_function,
+            self.async_iterator_prototype,
+            self.async_generator_prototype,
+            self.async_generator_function_prototype,
+            self.async_generator_function,
+            self.async_from_sync_iterator_prototype,
         ]);
         out.extend_from_slice(&self.errors);
     }
@@ -187,6 +202,11 @@ pub(crate) const CTORS: &[Entry] = &[
     ctor("Function", 1, super::function::construct),
     ctor("GeneratorFunction", 1, super::function::construct_generator),
     ctor("AsyncFunction", 1, super::function::construct_async),
+    ctor(
+        "AsyncGeneratorFunction",
+        1,
+        super::function::construct_async_generator,
+    ),
     ctor("Array", 1, super::array::construct),
     ctor("Number", 1, super::number::construct),
     ctor("Boolean", 1, super::primitive::construct_boolean),
@@ -444,6 +464,22 @@ impl Agent {
         if let Some(o) = af.as_object() {
             self.heap.set_prototype_of(o, function);
         }
+        // The async generators': %AsyncIteratorPrototype% inherits from
+        // Object.prototype, %AsyncGeneratorPrototype% from it,
+        // %AsyncGeneratorFunction.prototype% from Function.prototype.
+        let aip = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.async_iterator_prototype = aip);
+        let agp = self.alloc_object(ObjectCell::new(aip, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.async_generator_prototype = agp);
+        let afs = self.alloc_object(ObjectCell::new(aip, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.async_from_sync_iterator_prototype = afs);
+        let agfp = self.alloc_object(ObjectCell::new(fp, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.async_generator_function_prototype = agfp);
+        let agf = self.make_ctor("AsyncGeneratorFunction", agfp)?;
+        self.set_intrinsics(|i| i.async_generator_function = agf);
+        if let Some(o) = agf.as_object() {
+            self.heap.set_prototype_of(o, function);
+        }
         // Promise and its prototype.
         let pp = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.promise_prototype = pp);
@@ -516,6 +552,30 @@ impl Agent {
             table::ASYNC_FUNCTION_PROTO,
             Value::UNDEFINED,
             &[i.async_function],
+        )?;
+        self.install_table(
+            i.async_iterator_prototype,
+            table::ASYNC_ITERATOR_PROTO,
+            Value::UNDEFINED,
+            &[],
+        )?;
+        self.install_table(
+            i.async_from_sync_iterator_prototype,
+            table::ASYNC_FROM_SYNC_PROTO,
+            Value::UNDEFINED,
+            &[],
+        )?;
+        self.install_table(
+            i.async_generator_prototype,
+            table::ASYNC_GENERATOR_PROTO,
+            Value::UNDEFINED,
+            &[i.async_generator_function_prototype],
+        )?;
+        self.install_table(
+            i.async_generator_function_prototype,
+            table::ASYNC_GENERATOR_FUNCTION_PROTO,
+            Value::UNDEFINED,
+            &[i.async_generator_prototype, i.async_generator_function],
         )?;
         self.install_table(i.promise, table::PROMISE, Value::UNDEFINED, &[])?;
         self.install_table(

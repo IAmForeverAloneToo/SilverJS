@@ -129,6 +129,11 @@ pub(crate) enum ObjectKind {
     /// A generator: its state and, suspended, its frame (internal slots,
     /// [`crate::interp`]'s generator module).
     Generator,
+    /// An async-from-sync iterator: the sync iterator and its `next`.
+    AsyncFromSyncIterator,
+    /// An async generator: its state, its queue of requests (an object
+    /// held in a slot) and, suspended, its frame.
+    AsyncGenerator,
     /// An async function's driver: its promise and, suspended at an
     /// `await`, its frame (as a generator keeps its own).
     AsyncDriver,

@@ -136,6 +136,9 @@ pub enum FunctionKind {
     /// An async function, arrow or method: its call gives a promise,
     /// its frame suspended at `await`.
     Async,
+    /// An async generator function or method: its call makes an async
+    /// generator, whose requests it settles in turn.
+    AsyncGenerator,
     /// A class field's initializer or a static block: called by the
     /// class, never by a script; its frame shows its name alone
     /// (`<instance_members_initializer>`, `<static_initializer>`).

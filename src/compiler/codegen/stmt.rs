@@ -88,15 +88,23 @@ impl Gen<'_, '_> {
             Stmt::ForIn { left, right, body } => {
                 self.for_in(id, left, *right, *body, labels, span)?
             }
-            Stmt::ForOf { is_await: true, .. } => return Err(unsupported("async functions", span)),
             Stmt::ForOf {
-                left, right, body, ..
-            } => self.for_of(id, left, *right, *body, labels)?,
+                left,
+                right,
+                body,
+                is_await,
+            } => self.for_of(id, left, *right, *body, labels, *is_await, span)?,
             Stmt::While { test, body } => self.while_stmt(*test, *body, labels)?,
             Stmt::DoWhile { body, test } => self.do_while(*body, *test, labels)?,
             Stmt::Return(e) => {
                 match e {
-                    Some(e) => self.expr(*e)?,
+                    Some(e) => {
+                        self.expr(*e)?;
+                        // An async generator's return awaits its value.
+                        if self.is_async_generator() {
+                            self.await_acc(span);
+                        }
+                    }
                     None => self.op(Op::LdaUndefined),
                 }
                 self.jump_out(Completion::Return);
@@ -312,14 +320,14 @@ impl Gen<'_, '_> {
             if goal == Some(level) {
                 if let (
                     Some(Control::Breakable {
-                        iterator: Some((it, done)),
+                        iterator: Some((it, done, is_async)),
                         ..
                     }),
                     Completion::Break(_),
                 ) = (self.control.get(level), target)
                 {
-                    let (it, done) = (*it, *done);
-                    self.emit(Op::IteratorClose, &[i64::from(it), i64::from(done)]);
+                    let (it, done, is_async) = (*it, *done, *is_async);
+                    self.close_iterator(it, done, is_async);
                 }
                 if let Some(r) = pop {
                     self.reg_op(Op::PopContext, r);
@@ -369,12 +377,12 @@ impl Gen<'_, '_> {
                     return;
                 }
                 Some(Control::Breakable {
-                    iterator: Some((it, done)),
+                    iterator: Some((it, done, is_async)),
                     ..
                 }) => {
-                    let (it, done) = (*it, *done);
+                    let (it, done, is_async) = (*it, *done, *is_async);
                     // A return's value stays in the accumulator.
-                    self.emit(Op::IteratorClose, &[i64::from(it), i64::from(done)]);
+                    self.close_iterator(it, done, is_async);
                 }
                 Some(Control::Breakable { .. }) | None => {}
             }
@@ -622,6 +630,29 @@ impl Gen<'_, '_> {
     /// Stores the accumulator into a member expression (a for-in head).
     /// `for (left of right) body` (section 14.7.5): the iterator closed
     /// when the loop is left early, by a jump or a throw.
+    /// Closes a loop's iterator, the accumulator kept: IteratorClose, or
+    /// for `for await` AsyncIteratorClose (its `return()` awaited).
+    pub(super) fn close_iterator(&mut self, it: u32, done: u32, is_async: bool) {
+        if !is_async {
+            self.emit(Op::IteratorClose, &[i64::from(it), i64::from(done)]);
+            return;
+        }
+        let kept = self.alloc();
+        self.reg_op(Op::Star, kept);
+        let skip = self.new_label();
+        self.jump_with(
+            Op::IteratorReturnCall,
+            &[i64::from(it), i64::from(done), 0],
+            skip,
+        );
+        self.await_acc(Span::new(0, 0));
+        self.op(Op::CheckIterResult);
+        self.bind(skip);
+        self.reg_op(Op::Ldar, kept);
+        self.free(kept);
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn for_of(
         &mut self,
         id: StmtId,
@@ -629,6 +660,8 @@ impl Gen<'_, '_> {
         right: crate::ast::ExprId,
         body: StmtId,
         labels: Vec<crate::ast::Name>,
+        is_await: bool,
+        span: Span,
     ) -> R {
         let lexical = matches!(left, ForHead::Var(d) if d.kind != VarKind::Var);
         // The iterable is evaluated with the head's names in their TDZ.
@@ -641,7 +674,9 @@ impl Gen<'_, '_> {
         }
         let (it, next, done) = (self.alloc(), self.alloc(), self.alloc());
         self.pos(self.ast.expr(right).span);
-        self.emit(Op::GetIterator, &[i64::from(it), i64::from(next), 0]);
+        // `for await`: the async iterator (a sync one wrapped).
+        let how = if is_await { 3 } else { 0 };
+        self.emit(Op::GetIterator, &[i64::from(it), i64::from(next), how]);
         self.op(Op::LdaFalse);
         self.reg_op(Op::Star, done);
         let (head, end, cont) = (self.new_label(), self.new_label(), self.new_label());
@@ -651,11 +686,33 @@ impl Gen<'_, '_> {
             kind: BreakKind::Loop,
             break_to: end,
             continue_to: Some(cont),
-            iterator: Some((it, done)),
+            iterator: Some((it, done, is_await)),
         });
         let start = self.pc();
         self.bind(head);
-        self.iterator_next(it, next, done, end);
+        if is_await {
+            // next() called (done meanwhile: a throw closes nothing),
+            // its result awaited, then read. A frame waiting here stands
+            // at the head's target, as Chrome 157 shows it.
+            let target = match left {
+                ForHead::Var(d) => d.decls.first().map(|d| d.target),
+                ForHead::Pattern(p) => Some(*p),
+            };
+            let at = target.map_or(span, |t| self.ast.pat(t).span);
+            self.op(Op::LdaTrue);
+            self.reg_op(Op::Star, done);
+            let ic = self.ic();
+            self.pos(span);
+            self.emit(
+                Op::Call,
+                &[i64::from(next), i64::from(it), i64::from(it), 0, ic],
+            );
+            self.await_acc(at);
+            self.pos(span);
+            self.jump_with(Op::IteratorResult, &[i64::from(done)], end);
+        } else {
+            self.iterator_next(it, next, done, end);
+        }
         // Each iteration a new environment for a `let` or `const` head.
         let save = if lexical {
             let v = self.alloc();
@@ -684,7 +741,33 @@ impl Gen<'_, '_> {
             target,
             context,
         });
-        self.emit(Op::IteratorCloseQuiet, &[i64::from(it), i64::from(done)]);
+        if is_await {
+            // AsyncIteratorClose with a throw: `return()` awaited, what it
+            // throws or rejects with dropped, the throw going on.
+            let e = self.alloc();
+            self.reg_op(Op::Star, e);
+            let after = self.new_label();
+            let quiet_start = self.pc();
+            self.jump_with(
+                Op::IteratorReturnCall,
+                &[i64::from(it), i64::from(done), 1],
+                after,
+            );
+            self.await_acc(span);
+            let quiet_end = self.pc();
+            let quiet_target = self.pc();
+            self.handler(Handler {
+                start: quiet_start,
+                end: quiet_end,
+                target: quiet_target,
+                context: None,
+            });
+            self.bind(after);
+            self.reg_op(Op::Ldar, e);
+            self.free(e);
+        } else {
+            self.emit(Op::IteratorCloseQuiet, &[i64::from(it), i64::from(done)]);
+        }
         self.op(Op::Throw);
         self.bind(end);
         if let Some(c) = context {

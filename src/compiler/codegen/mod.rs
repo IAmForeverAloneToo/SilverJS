@@ -177,9 +177,10 @@ pub(super) enum Control {
         kind: BreakKind,
         break_to: Label,
         continue_to: Option<Label>,
-        /// A `for-of`'s iterator and its done register: closed by a
-        /// `break` of the loop and by a jump past it, not by `continue`.
-        iterator: Option<(u32, u32)>,
+        /// A `for-of`'s iterator, its done register and whether it is a
+        /// `for await`'s: closed by a `break` of the loop and by a jump
+        /// past it, not by `continue`.
+        iterator: Option<(u32, u32, bool)>,
     },
     /// An environment pushed, the one before it saved in `save`.
     Context { save: u32 },
@@ -530,12 +531,11 @@ impl<'s, 'a> Gen<'s, 'a> {
                     // interpreter makes: their kind is their own.
                     None => (
                         f.name.as_ref().map(|n| units(&n.name)).unwrap_or_default(),
-                        if f.is_generator {
-                            FunctionKind::Generator
-                        } else if f.is_async {
-                            FunctionKind::Async
-                        } else {
-                            FunctionKind::Normal
+                        match (f.is_async, f.is_generator) {
+                            (true, true) => FunctionKind::AsyncGenerator,
+                            (false, true) => FunctionKind::Generator,
+                            (true, false) => FunctionKind::Async,
+                            (false, false) => FunctionKind::Normal,
                         },
                     ),
                 };
@@ -641,12 +641,9 @@ impl<'s, 'a> Gen<'s, 'a> {
 
     fn body(&mut self, fid: FuncId) -> R {
         let f = self.ast.func(fid);
-        if f.is_async && f.is_generator {
-            return Err(unsupported("async generators", f.span));
-        }
         // An async function's promise, made before its parameters are
         // bound: what they throw rejects it.
-        if f.is_async {
+        if f.is_async && !f.is_generator {
             self.op(Op::AsyncStart);
         }
         let derived = self.is_derived();
@@ -785,9 +782,6 @@ impl<'s, 'a> Gen<'s, 'a> {
     pub(super) fn closure(&mut self, fid: FuncId, inferred: Option<&[u16]>) -> R {
         let f = self.ast.func(fid);
         let index = self.a.func_index.get(&fid).copied().unwrap_or(0);
-        if f.is_async && f.is_generator {
-            return Err(unsupported("async generators", f.span));
-        }
         let kind = match f.kind {
             FuncKind::Normal => FunctionKind::Normal,
             FuncKind::Arrow => FunctionKind::Arrow,
@@ -796,12 +790,11 @@ impl<'s, 'a> Gen<'s, 'a> {
                 return Err(unsupported("classes", f.span));
             }
         };
-        let kind = if f.is_generator {
-            FunctionKind::Generator
-        } else if f.is_async {
-            FunctionKind::Async
-        } else {
-            kind
+        let kind = match (f.is_async, f.is_generator) {
+            (true, true) => FunctionKind::AsyncGenerator,
+            (false, true) => FunctionKind::Generator,
+            (true, false) => FunctionKind::Async,
+            (false, false) => kind,
         };
         let name = match (&f.name, inferred) {
             (Some(n), _) => units(&n.name),

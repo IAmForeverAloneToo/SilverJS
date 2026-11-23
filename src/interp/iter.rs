@@ -220,6 +220,13 @@ impl Agent {
                 let text = self.display(v);
                 self.get_iterator(v, &text)?
             }
+            // `for await` (its source in the error) and an async
+            // generator's `yield*` (V8's call of the missing method).
+            3 => {
+                let text = self.text_at(unit, func, pc);
+                self.get_async_iterator(v, messages::not_async_iterable(&text))?
+            }
+            4 => self.get_async_iterator(v, messages::not_a_function("undefined"))?,
             _ => {
                 let text = self.typed_display(v);
                 self.get_iterator_or(v, || messages::not_iterable_typed(&text))?
@@ -227,6 +234,167 @@ impl Agent {
         };
         self.set_reg(base, it, i);
         self.set_reg(base, nx, n);
+        Ok(())
+    }
+
+    /// GetIterator(obj, async) (section 7.4.3): `@@asyncIterator`'s
+    /// iterator, else the sync one wrapped (CreateAsyncFromSyncIterator);
+    /// `message` the error if there is neither.
+    pub(crate) fn get_async_iterator(&mut self, v: Value, message: String) -> Res<(Value, Value)> {
+        let key = self.well_known_key(crate::builtins::Wk::AsyncIterator);
+        let method = self.get_method_value(v, key)?;
+        if method.is_undefined() {
+            let key = self.well_known_key(crate::builtins::Wk::Iterator);
+            let sync = self.get_method_value(v, key)?;
+            if sync.is_undefined() {
+                return Err(self.throw_error(crate::interp::ErrorType::TypeError, message));
+            }
+            let (i, n) = self.get_iterator_or(v, || message)?;
+            return self.async_from_sync_iterator(i, n);
+        }
+        let iterator = self.call_value(method, v, &[])?;
+        if iterator.as_object().is_none() {
+            return Err(self.throw_error(
+                crate::interp::ErrorType::TypeError,
+                messages::ASYNC_ITERATOR_NOT_OBJECT,
+            ));
+        }
+        let key = self.name_key(crate::builtins::Name::Str("next"));
+        self.vm.temps.push(iterator);
+        let next = self.get_value(iterator, key);
+        self.vm.temps.pop();
+        Ok((iterator, next?))
+    }
+
+    /// GetMethod: `v[key]`, undefined for null and undefined.
+    fn get_method_value(&mut self, v: Value, key: crate::string::PropertyKey) -> Res<Value> {
+        if v.is_nullish() {
+            return Ok(Value::UNDEFINED);
+        }
+        let m = self.get_value(v, key)?;
+        Ok(if m.is_nullish() { Value::UNDEFINED } else { m })
+    }
+
+    /// `IteratorResult`: the awaited result in the accumulator read;
+    /// whether it is done.
+    #[inline(never)]
+    pub(super) fn op_iterator_result(&mut self, base: u32, d: usize) -> Res<bool> {
+        let result = self.vm.acc;
+        if result.as_object().is_none() {
+            let text = self.display(result);
+            return Err(self.throw_error(
+                crate::interp::ErrorType::TypeError,
+                messages::iterator_result_not_object(&text),
+            ));
+        }
+        let key = self.name_key(crate::builtins::Name::Str("done"));
+        let done = self.get_value(result, key)?;
+        if self.to_boolean(done) {
+            return Ok(true);
+        }
+        let key = self.name_key(crate::builtins::Name::Str("value"));
+        self.vm.acc = self.get_value(result, key)?;
+        self.set_reg(base, d, Value::FALSE);
+        Ok(false)
+    }
+
+    /// `IteratorReturnCall`: an async iterator's `return()` called, its
+    /// result in the accumulator to await; false if there is none.
+    #[inline(never)]
+    pub(super) fn op_iterator_return_call(
+        &mut self,
+        base: u32,
+        it: usize,
+        d: usize,
+        quiet: bool,
+    ) -> Res<bool> {
+        if self.reg(base, d) == Value::TRUE {
+            return Ok(false);
+        }
+        self.set_reg(base, d, Value::TRUE);
+        let i = self.reg(base, it);
+        let called = (|| {
+            let key = self.name_key(crate::builtins::Name::Str("return"));
+            let ret = self.get_method_value(i, key)?;
+            if ret.is_undefined() {
+                return Ok(None);
+            }
+            self.call_value(ret, i, &[]).map(Some)
+        })();
+        match called {
+            Ok(Some(v)) => {
+                self.vm.acc = v;
+                Ok(true)
+            }
+            Ok(None) => Ok(false),
+            Err(Abrupt::Throw) if quiet => {
+                self.vm.exception = Value::UNDEFINED;
+                Ok(false)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// `CheckIterResult`.
+    pub(super) fn check_iter_result(&mut self) -> Res<()> {
+        let result = self.vm.acc;
+        if result.as_object().is_none() {
+            let text = self.display(result);
+            return Err(self.throw_error(
+                crate::interp::ErrorType::TypeError,
+                messages::iterator_result_not_object(&text),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `AsyncDelegateMethod`.
+    #[inline(never)]
+    pub(super) fn op_async_delegate_method(
+        &mut self,
+        base: u32,
+        it: usize,
+        nx: usize,
+        m: usize,
+        o: usize,
+    ) -> Res<()> {
+        let how = self.reg(base, m).as_int().unwrap_or(0);
+        let i = self.reg(base, it);
+        let (method, outcome) = match how {
+            0 => (self.reg(base, nx), 0),
+            1 => {
+                let key = self.name_key(crate::builtins::Name::Str("throw"));
+                let t = self.get_method_value(i, key)?;
+                (t, if t.is_undefined() { 4 } else { 0 })
+            }
+            _ => {
+                let key = self.name_key(crate::builtins::Name::Str("return"));
+                let r = self.get_method_value(i, key)?;
+                (r, if r.is_undefined() { 2 } else { 0 })
+            }
+        };
+        self.set_reg(base, o, Value::int(outcome));
+        self.vm.acc = method;
+        Ok(())
+    }
+
+    /// `AsyncDelegateResult`.
+    #[inline(never)]
+    pub(super) fn op_async_delegate_result(&mut self, base: u32, m: usize, o: usize) -> Res<()> {
+        self.check_iter_result()?;
+        let result = self.vm.acc;
+        let key = self.name_key(crate::builtins::Name::Str("done"));
+        let done = self.get_value(result, key)?;
+        let done = self.to_boolean(done);
+        let key = self.name_key(crate::builtins::Name::Str("value"));
+        self.vm.acc = self.get_value(result, key)?;
+        let how = self.reg(base, m).as_int().unwrap_or(0);
+        let outcome = match (done, how) {
+            (false, _) => 0,
+            (true, 2) => 2,
+            (true, _) => 1,
+        };
+        self.set_reg(base, o, Value::int(outcome));
         Ok(())
     }
 

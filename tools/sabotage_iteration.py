@@ -27,7 +27,7 @@ S = 'src/compiler/codegen/stmt.rs'
 E = 'src/compiler/codegen/expr.rs'
 cases = [
     # The instructions.
-    (I, '        if self.reg(base, d) == Value::TRUE {\n            return Ok(false);\n        }\n', ''),
+    (I, '        nx: usize,\n        d: usize,\n    ) -> Res<bool> {\n        if self.reg(base, d) == Value::TRUE {\n            return Ok(false);\n        }\n', '        nx: usize,\n        d: usize,\n    ) -> Res<bool> {\n'),
     (I, '        // closed (section 7.4.8).\n        self.set_reg(base, d, Value::TRUE);\n', '        // closed (section 7.4.8).\n'),
     (I, '                self.set_reg(base, d, Value::FALSE);\n', ''),
     (I, '            None => {\n                self.vm.acc = acc;\n                Ok(false)', '            None => {\n                Ok(false)'),
@@ -39,7 +39,7 @@ cases = [
     # The protocol.
     (I, '        if method.is_undefined() {\n            return Err(self.throw_error(ErrorType::TypeError, message()));',
         '        if false {\n            return Err(self.throw_error(ErrorType::TypeError, message()));'),
-    (I, '        if iterator.as_object().is_none() {', '        if false {'),
+    (I, '        let iterator = self.call_value(method, iterable, &[])?;\n        if iterator.as_object().is_none() {', '        let iterator = self.call_value(method, iterable, &[])?;\n        if false {'),
     (I, '        let result = self.call_value(next, iterator, &[])?;\n        if result.as_object().is_none() {', '        let result = self.call_value(next, iterator, &[])?;\n        if false {'),
     (I, '        let result = self.call_value(method, iterator, &[])?;\n        if result.as_object().is_none() {', '        let result = self.call_value(method, iterator, &[])?;\n        if false {'),
     (I, '            if self.to_boolean(done) {', '            if !self.to_boolean(done) && false {'),
@@ -55,12 +55,12 @@ cases = [
     (O, '        self.heap.define_own_property(o, key, hidden(values));\n', ''),
     (J, '            if let Err(e) = added {\n                agent.iterator_close_quiet(iterator)?;', '            if let Err(e) = added {'),
     # Code generation: closing.
-    (S, '                    let (it, done) = (*it, *done);\n                    self.emit(Op::IteratorClose, &[i64::from(it), i64::from(done)]);\n                }\n                if let Some(r) = pop {',
+    (S, '                    let (it, done, is_async) = (*it, *done, *is_async);\n                    self.close_iterator(it, done, is_async);\n                }\n                if let Some(r) = pop {',
         '                    let _ = (it, done);\n                }\n                if let Some(r) = pop {'),
-    (S, '                    // A return\'s value stays in the accumulator.\n                    self.emit(Op::IteratorClose, &[i64::from(it), i64::from(done)]);',
+    (S, '                    // A return\'s value stays in the accumulator.\n                    self.close_iterator(it, done, is_async);',
         '                    let _ = (it, done);'),
-    (S, '        self.emit(Op::IteratorCloseQuiet, &[i64::from(it), i64::from(done)]);\n        self.op(Op::Throw);\n        self.bind(end);',
-        '        self.op(Op::Throw);\n        self.bind(end);'),
+    (S, '            self.emit(Op::IteratorCloseQuiet, &[i64::from(it), i64::from(done)]);\n        }\n        self.op(Op::Throw);\n        self.bind(end);',
+        '        }\n        self.op(Op::Throw);\n        self.bind(end);'),
     (P, '        // Done with it before it was: closed.\n        self.emit(Op::IteratorClose, &[i64::from(it), i64::from(done)]);\n', ''),
     (P, '        self.emit(Op::IteratorCloseQuiet, &[i64::from(it), i64::from(done)]);\n        self.op(Op::Throw);\n        self.bind(past);',
         '        self.op(Op::Throw);\n        self.bind(past);'),
