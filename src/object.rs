@@ -144,6 +144,20 @@ pub(crate) enum ObjectKind {
     /// A promise: its state, result, handled flag and reactions
     /// ([`crate::builtins`]'s promise module).
     Promise,
+    /// The collections (section 24): their table, an internal cell
+    /// ([`crate::table`]), in their first internal slot.
+    Map,
+    Set,
+    WeakMap,
+    WeakSet,
+    /// A map's or set's iterator: the table (undefined once done), the
+    /// next entry's index and what it gives.
+    MapIterator,
+    SetIterator,
+    /// A `WeakRef` (section 26.1): a weak table of its one target.
+    WeakRef,
+    /// A `FinalizationRegistry` (section 26.2): its registry table.
+    FinalizationRegistry,
 }
 
 /// An object cell.
@@ -884,7 +898,7 @@ impl Heap {
         let (env, slot) = Self::mapping(cell, key)?;
         match self.internals.get(env)? {
             InternalCell::Env(e) => e.slots.get(slot).copied(),
-            InternalCell::ForIn(_) | InternalCell::Stack(_) => None,
+            _ => None,
         }
     }
 

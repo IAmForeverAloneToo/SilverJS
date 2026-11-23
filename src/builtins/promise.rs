@@ -52,6 +52,8 @@ pub(crate) enum Job {
         thenable: Value,
         then: Value,
     },
+    /// A finalization registry's cleanup (section 9.13): its table.
+    Cleanup { table: Value },
 }
 
 impl Job {
@@ -81,6 +83,14 @@ impl Job {
                 promise,
                 thenable,
                 then,
+                Value::UNDEFINED,
+                Value::UNDEFINED,
+                Value::UNDEFINED,
+            ],
+            Job::Cleanup { table } => [
+                table,
+                Value::UNDEFINED,
+                Value::UNDEFINED,
                 Value::UNDEFINED,
                 Value::UNDEFINED,
                 Value::UNDEFINED,
@@ -591,6 +601,7 @@ impl Agent {
                 self.vm.temps.truncate(n.saturating_sub(2));
                 r
             }
+            Job::Cleanup { table } => self.run_cleanup(table),
         }
     }
 

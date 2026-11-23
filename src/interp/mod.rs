@@ -177,6 +177,9 @@ pub(crate) struct Vm {
     pub stack_symbol: Value,
     /// The arrays `join` is joining, for its cycle check.
     pub joining: Vec<Value>,
+    /// What `WeakRef`s keep alive until the job ends (section 9.10's
+    /// [[KeptAlive]]).
+    pub kept_alive: Vec<Value>,
     /// The embedder's natives.
     pub(crate) hosts: Vec<crate::embed::Host>,
     /// The agent's jobs, run when the embedder asks and after each
@@ -206,6 +209,7 @@ impl Default for Vm {
             accessor_call: false,
             stack_symbol: Value::UNDEFINED,
             joining: Vec::new(),
+            kept_alive: Vec::new(),
             hosts: Vec::new(),
             jobs: crate::builtins::promise::Jobs::new(),
         }
@@ -235,6 +239,7 @@ impl Vm {
         out.extend_from_slice(&self.well_known);
         out.extend(self.registry.values());
         out.extend_from_slice(&self.joining);
+        out.extend_from_slice(&self.kept_alive);
         out.push(self.stack_symbol);
         for n in &self.natives {
             out.extend([n.callee, n.this]);
@@ -1176,7 +1181,7 @@ impl Agent {
         for _ in 0..depth {
             at = match self.heap.internals.get(at.as_reference()?.1)? {
                 InternalCell::Env(e) => e.parent,
-                InternalCell::ForIn(_) | InternalCell::Stack(_) => return None,
+                _ => return None,
             };
         }
         match at.as_reference()? {

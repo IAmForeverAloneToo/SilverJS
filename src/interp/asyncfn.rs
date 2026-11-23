@@ -17,6 +17,7 @@ impl Agent {
         self.vm.temps.push(held);
         let r = self.run_jobs();
         self.vm.temps.pop();
+        self.vm.kept_alive.clear();
         match r {
             Err(Abrupt::Terminate) => Completion::Terminated,
             _ => completion,

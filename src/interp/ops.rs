@@ -647,8 +647,10 @@ impl Agent {
             Value::TRUE => "true".into(),
             Value::FALSE => "false".into(),
             _ if self.callable(v).is_some() => "function".into(),
-            _ if v.as_object().is_some() => "#<Object>".into(),
-            _ => "Symbol()".into(),
+            _ => match v.as_object() {
+                Some(o) => self.object_display(o),
+                None => "Symbol()".into(),
+            },
         }
     }
 

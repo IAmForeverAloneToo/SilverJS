@@ -31,7 +31,7 @@ cases = [
         "pub(crate) fn get(&self, index: u32) -> Option<&T> {\n        let i = index as usize;\n        if false {"),
     (H, "// Made now, it outlives the sweep under way.\n        self.set_mark(index);",
         "// Made now, it outlives the sweep under way."),
-    (H, "if self.objects.keep(i)\n                        && let Some(cell) = self.objects.get_raw(i)\n                    {\n                        cell.trace(&mut stack);",
+    (H, "if self.objects.keep(i)\n                        && let Some(cell) = self.objects.get_raw(i)\n                    {\n                        cell.trace(stack);",
         "if self.objects.keep(i)\n                        && let Some(cell) = self.objects.get_raw(i)\n                    {\n                        let _ = cell;"),
     (H, "self.strings.keep(i);", ""),
     (H, "self.dead = self.live - self.kept;\n        self.dead_extra = self.extra - self.kept_extra;",

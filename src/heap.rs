@@ -20,6 +20,7 @@ pub(crate) use crate::internal::InternalCell;
 pub(crate) use crate::object::ObjectCell;
 pub(crate) use crate::string::StringCell;
 use crate::string::{Atoms, BUFFER_FROM, PropertyKey, Shared, Units, concat_window};
+use crate::table::Strength;
 use crate::value::{RefKind, Value};
 
 /// What a cell reaches, for marking.
@@ -360,6 +361,9 @@ pub(crate) struct Heap {
     /// The key `length`, which arrays answer for themselves.
     pub(crate) length_key: PropertyKey,
     pub(crate) collections: u64,
+    /// The registries' tables (internal cells) whose cleared lists the
+    /// last collections filled, for their cleanup jobs.
+    pub(crate) finalized: Vec<u32>,
     /// The bytes of string units copied since the heap was made: what
     /// the tests hold string building to (linear in what is built).
     pub(crate) string_copies: usize,
@@ -383,6 +387,7 @@ impl Heap {
             atoms,
             length_key,
             collections: 0,
+            finalized: Vec::new(),
             string_copies: 0,
             unit_strings: std::collections::HashMap::new(),
             hidden_symbol: None,
@@ -565,35 +570,28 @@ impl Heap {
         self.internals.begin_collection();
         let mut stack: Vec<Value> = roots.into_iter().collect();
         stack.extend(self.unit_strings.values());
-        while let Some(value) = stack.pop() {
-            match value.as_reference() {
-                Some((RefKind::Object, i)) => {
-                    if self.objects.keep(i)
-                        && let Some(cell) = self.objects.get_raw(i)
-                    {
-                        cell.trace(&mut stack);
+        let mut weak = Vec::new();
+        self.mark(&mut stack, &mut weak);
+        // Ephemerons: a weak table's value lives while its key does, to a
+        // fixed point.
+        loop {
+            for &i in &weak {
+                if let Some(InternalCell::Table(t)) = self.internals.get_raw(i)
+                    && t.strength == Strength::Weak
+                {
+                    for &(k, v) in &t.entries {
+                        if k != Value::HOLE && self.kept(k) && !self.kept(v) {
+                            stack.push(v);
+                        }
                     }
                 }
-                Some((RefKind::String, i)) => {
-                    self.strings.keep(i);
-                }
-                Some((RefKind::Symbol, i)) => {
-                    if self.symbols.keep(i)
-                        && let Some(cell) = self.symbols.get_raw(i)
-                    {
-                        cell.trace(&mut stack);
-                    }
-                }
-                Some((RefKind::Internal, i)) => {
-                    if self.internals.keep(i)
-                        && let Some(cell) = self.internals.get_raw(i)
-                    {
-                        cell.trace(&mut stack);
-                    }
-                }
-                _ => {}
             }
+            if stack.is_empty() {
+                break;
+            }
+            self.mark(&mut stack, &mut weak);
         }
+        self.clear_weak(&weak);
         if cfg!(any(debug_assertions, feature = "gc-stress")) {
             self.verify();
         }
@@ -603,6 +601,100 @@ impl Heap {
         self.symbols.end_collection();
         self.internals.end_collection();
         self.collections += 1;
+    }
+
+    /// Clears the weak tables' entries whose keys died: a registry's
+    /// held value goes to its cleared list, its table to `finalized`; an
+    /// unregister token that died is forgotten.
+    fn clear_weak(&mut self, weak: &[u32]) {
+        for &i in weak {
+            let Some(InternalCell::Table(t)) = self.internals.get_raw(i) else {
+                continue;
+            };
+            let dead: Vec<usize> = t
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.0 != Value::HOLE && !self.kept(e.0))
+                .map(|(j, _)| j)
+                .collect();
+            let dead_tokens: Vec<usize> = t
+                .tokens
+                .iter()
+                .enumerate()
+                .filter(|(_, k)| **k != Value::HOLE && !self.kept(**k))
+                .map(|(j, _)| j)
+                .collect();
+            if dead.is_empty() && dead_tokens.is_empty() {
+                continue;
+            }
+            let mut finalized = false;
+            let mut sizes = (0, 0);
+            if let Some(InternalCell::Table(t)) = self.internals.get_mut(i) {
+                sizes.0 = t.extra_bytes();
+                for j in dead_tokens {
+                    if let Some(k) = t.tokens.get_mut(j) {
+                        *k = Value::UNDEFINED;
+                    }
+                }
+                for j in dead {
+                    if t.strength == Strength::Registry
+                        && let Some(&(_, held)) = t.entries.get(j)
+                    {
+                        t.cleared.push(held);
+                        finalized = !t.cleanup_queued;
+                    }
+                    t.remove_at(j);
+                }
+                sizes.1 = t.extra_bytes();
+            }
+            // The cell is kept: its bytes counted as both held and kept.
+            self.internals.update_extra(sizes.0, sizes.1);
+            self.internals.kept_extra = self.internals.kept_extra + sizes.1 - sizes.0;
+            if finalized {
+                self.finalized.push(i);
+            }
+        }
+    }
+
+    /// Marks what `stack` holds and what it reaches; a weak table is
+    /// kept, its held values marked, and its index left in `weak`.
+    fn mark(&mut self, stack: &mut Vec<Value>, weak: &mut Vec<u32>) {
+        while let Some(value) = stack.pop() {
+            match value.as_reference() {
+                Some((RefKind::Object, i)) => {
+                    if self.objects.keep(i)
+                        && let Some(cell) = self.objects.get_raw(i)
+                    {
+                        cell.trace(stack);
+                    }
+                }
+                Some((RefKind::String, i)) => {
+                    self.strings.keep(i);
+                }
+                Some((RefKind::Symbol, i)) => {
+                    if self.symbols.keep(i)
+                        && let Some(cell) = self.symbols.get_raw(i)
+                    {
+                        cell.trace(stack);
+                    }
+                }
+                Some((RefKind::Internal, i)) => {
+                    if self.internals.keep(i)
+                        && let Some(cell) = self.internals.get_raw(i)
+                    {
+                        match cell {
+                            InternalCell::Table(t) if t.strength != Strength::Strong => {
+                                t.trace_held(stack);
+                                weak.push(i);
+                            }
+                            _ => cell.trace(stack),
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// The heap verifier: every value a marked cell holds names a marked,

@@ -13,6 +13,7 @@
 //! order is data, not an accident of the code.
 
 mod array;
+mod collection;
 mod error;
 mod function;
 mod generator;
@@ -181,6 +182,16 @@ const TABLES: &[&[Entry]] = &[
     promise::ASYNC_FROM_SYNC_PROTO,
     proxy::PROXY,
     proxy::PROXY_INTERNAL,
+    collection::MAP,
+    collection::MAP_PROTO,
+    collection::SET,
+    collection::SET_PROTO,
+    collection::WEAK_MAP_PROTO,
+    collection::WEAK_SET_PROTO,
+    collection::WEAK_REF_PROTO,
+    collection::REGISTRY_PROTO,
+    collection::MAP_ITERATOR_PROTO,
+    collection::SET_ITERATOR_PROTO,
 ];
 
 /// The tables' indices.
@@ -222,6 +233,16 @@ pub(crate) mod table {
     pub const ASYNC_FROM_SYNC_PROTO: u32 = 34;
     pub const PROXY: u32 = 35;
     pub const PROXY_INTERNAL: u32 = 36;
+    pub const MAP: u32 = 37;
+    pub const MAP_PROTO: u32 = 38;
+    pub const SET: u32 = 39;
+    pub const SET_PROTO: u32 = 40;
+    pub const WEAK_MAP_PROTO: u32 = 41;
+    pub const WEAK_SET_PROTO: u32 = 42;
+    pub const WEAK_REF_PROTO: u32 = 43;
+    pub const REGISTRY_PROTO: u32 = 44;
+    pub const MAP_ITERATOR_PROTO: u32 = 45;
+    pub const SET_ITERATOR_PROTO: u32 = 46;
 }
 
 /// How native `id` resumes a generator, if it is `%GeneratorPrototype%`'s
@@ -731,6 +752,80 @@ impl Agent {
             Some(i) => self.o_has_property(i, key),
             None => Ok(false),
         }
+    }
+
+    /// A data property of `o` or its prototypes, read with no side
+    /// effects: none through an accessor or a proxy.
+    #[inline(never)]
+    fn data_property(&self, o: u32, key: PropertyKey) -> Option<Value> {
+        let mut at = o;
+        for _ in 0..10_000 {
+            let cell = self.heap.objects.get(at)?;
+            if cell.kind() == ObjectKind::Proxy {
+                return None;
+            }
+            match self.heap.get_own_property(at, key) {
+                Some(crate::object::OwnProperty::Data { value, .. }) => return Some(value),
+                Some(crate::object::OwnProperty::Accessor { .. }) => return None,
+                None => at = self.heap.get_prototype_of(at).as_object()?,
+            }
+        }
+        None
+    }
+
+    /// An object as the reference browser names it in a message (its
+    /// NoSideEffectsToString): an error as `Name: message`; one whose
+    /// `toString` is `Object.prototype.toString` by its constructor's
+    /// name (`#<Map>`); the rest as `[object Tag]`.
+    #[inline(never)]
+    pub(crate) fn object_display(&self, o: u32) -> String {
+        let r = self.realm();
+        let text = |v: Option<Value>| {
+            v.and_then(|v| self.string_units(v))
+                .map(|u| String::from_utf16_lossy(&u))
+        };
+        let kind = self.heap.objects.get(o).map(|c| c.kind());
+        if kind == Some(ObjectKind::Error) {
+            let name = text(self.data_property(o, r.name_key)).unwrap_or_else(|| "Error".into());
+            let message = text(self.data_property(o, r.message_key)).unwrap_or_default();
+            return match (name.is_empty(), message.is_empty()) {
+                (_, true) => name,
+                (true, false) => message,
+                (false, false) => format!("{name}: {message}"),
+            };
+        }
+        let object_to_string = r
+            .object_prototype
+            .as_object()
+            .and_then(|p| self.data_property(p, r.to_string_key));
+        if object_to_string.is_some() && self.data_property(o, r.to_string_key) == object_to_string
+        {
+            let ctor = self
+                .data_property(o, r.constructor_key)
+                .filter(|c| self.callable(*c).is_some());
+            if let Some(name) = text(
+                ctor.and_then(|c| c.as_object())
+                    .and_then(|c| self.heap.get_own_property(c, r.name_key))
+                    .and_then(|p| match p {
+                        crate::object::OwnProperty::Data { value, .. } => Some(value),
+                        _ => None,
+                    }),
+            ) && !name.is_empty()
+            {
+                return format!("#<{name}>");
+            }
+        }
+        let tag =
+            text(self.data_property(o, self.well_known_key(crate::builtins::Wk::ToStringTag)));
+        let builtin = match kind {
+            Some(ObjectKind::Array) => "Array",
+            Some(ObjectKind::Arguments) => "Arguments",
+            Some(ObjectKind::Boolean) => "Boolean",
+            Some(ObjectKind::Number) => "Number",
+            Some(ObjectKind::String) => "String",
+            _ => "Object",
+        };
+        format!("[object {}]", tag.unwrap_or_else(|| builtin.into()))
     }
 
     /// A new array of `values`.

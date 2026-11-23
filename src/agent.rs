@@ -161,6 +161,18 @@ impl Agent {
             .chain(self.vm.roots())
             .collect();
         self.heap.collect(roots);
+        // The registries whose targets died: a cleanup job each.
+        for i in std::mem::take(&mut self.heap.finalized) {
+            let table = Value::reference(crate::value::RefKind::Internal, i);
+            self.heap.with_internal(i, |cell| {
+                if let crate::internal::InternalCell::Table(t) = cell {
+                    t.cleanup_queued = true;
+                }
+            });
+            self.vm
+                .jobs
+                .push_back(crate::builtins::promise::Job::Cleanup { table });
+        }
         self.next_collection = ((self.heap.bytes() as f64 * GROWTH) as usize).max(FIRST_COLLECTION);
     }
 

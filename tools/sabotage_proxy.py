@@ -56,7 +56,7 @@ cases = [
     # A proxy's target and handler kept alive by it alone.
     (H, '            out.extend(extra.internal.iter().filter(|v| **v != Value::HOLE));', '            out.extend(extra.internal.iter().filter(|v| **v != Value::HOLE && self.kind != ObjectKind::Proxy));'),
     # for-in through the traps.
-    (X, '                if self.o_get_own_property(o, key)?.is_some_and(|p| enumerable(&p)) {', '                if true {'),
+    (X, '                if self\n                    .o_get_own_property(o, key)?\n                    .is_some_and(|p| enumerable(&p))\n                {', '                if true {'),
     # The reference browser's messages.
     (O, '        let text = if agent.is_proxy(i) {\n            messages::PROXY_PREVENT_FALSE', '        let text = if false {\n            messages::PROXY_PREVENT_FALSE'),
     (X, '            let text = if self.is_proxy(o) {\n                messages::proxy_delete_false', '            let text = if false {\n                messages::proxy_delete_false'),

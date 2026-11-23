@@ -118,6 +118,20 @@ pub(crate) struct Intrinsics {
     pub async_generator_function: Value,
     pub async_from_sync_iterator_prototype: Value,
     pub proxy: Value,
+    pub map: Value,
+    pub map_prototype: Value,
+    pub set: Value,
+    pub set_prototype: Value,
+    pub weak_map: Value,
+    pub weak_map_prototype: Value,
+    pub weak_set: Value,
+    pub weak_set_prototype: Value,
+    pub weak_ref: Value,
+    pub weak_ref_prototype: Value,
+    pub registry: Value,
+    pub registry_prototype: Value,
+    pub map_iterator_prototype: Value,
+    pub set_iterator_prototype: Value,
 }
 
 impl Intrinsics {
@@ -156,6 +170,20 @@ impl Intrinsics {
         async_generator_function: Value::UNDEFINED,
         async_from_sync_iterator_prototype: Value::UNDEFINED,
         proxy: Value::UNDEFINED,
+        map: Value::UNDEFINED,
+        map_prototype: Value::UNDEFINED,
+        set: Value::UNDEFINED,
+        set_prototype: Value::UNDEFINED,
+        weak_map: Value::UNDEFINED,
+        weak_map_prototype: Value::UNDEFINED,
+        weak_set: Value::UNDEFINED,
+        weak_set_prototype: Value::UNDEFINED,
+        weak_ref: Value::UNDEFINED,
+        weak_ref_prototype: Value::UNDEFINED,
+        registry: Value::UNDEFINED,
+        registry_prototype: Value::UNDEFINED,
+        map_iterator_prototype: Value::UNDEFINED,
+        set_iterator_prototype: Value::UNDEFINED,
     };
 
     pub(crate) fn trace(&self, out: &mut Vec<Value>) {
@@ -193,6 +221,20 @@ impl Intrinsics {
             self.async_generator_function,
             self.async_from_sync_iterator_prototype,
             self.proxy,
+            self.map,
+            self.map_prototype,
+            self.set,
+            self.set_prototype,
+            self.weak_map,
+            self.weak_map_prototype,
+            self.weak_set,
+            self.weak_set_prototype,
+            self.weak_ref,
+            self.weak_ref_prototype,
+            self.registry,
+            self.registry_prototype,
+            self.map_iterator_prototype,
+            self.set_iterator_prototype,
         ]);
         out.extend_from_slice(&self.errors);
     }
@@ -225,6 +267,16 @@ pub(crate) const CTORS: &[Entry] = &[
     ctor("AggregateError", 2, super::error::construct_aggregate_error),
     ctor("Promise", 1, super::promise::construct),
     ctor("Proxy", 2, super::proxy::construct),
+    ctor("Map", 0, super::collection::construct_map),
+    ctor("Set", 0, super::collection::construct_set),
+    ctor("WeakMap", 0, super::collection::construct_weak_map),
+    ctor("WeakSet", 0, super::collection::construct_weak_set),
+    ctor("WeakRef", 1, super::collection::construct_weak_ref),
+    ctor(
+        "FinalizationRegistry",
+        1,
+        super::collection::construct_registry,
+    ),
     method("FunctionPrototype", 0, super::function::function_prototype),
     method("ThrowTypeError", 0, super::function::throw_type_error),
     method("parseInt", 2, parse_int),
@@ -261,8 +313,14 @@ pub(crate) const GLOBAL: &[Entry] = &[
     intrinsic("URIError"),
     intrinsic("globalThis"),
     intrinsic("Math"),
+    intrinsic("Map"),
+    intrinsic("Set"),
+    intrinsic("WeakMap"),
+    intrinsic("WeakSet"),
     intrinsic("Proxy"),
     intrinsic("Reflect"),
+    intrinsic("FinalizationRegistry"),
+    intrinsic("WeakRef"),
     method("decodeURI", 1, super::uri::decode_uri),
     method("decodeURIComponent", 1, super::uri::decode_uri_component),
     method("encodeURI", 1, super::uri::encode_uri),
@@ -291,6 +349,12 @@ impl Agent {
             "Math" => i.math,
             "Reflect" => i.reflect,
             "Proxy" => i.proxy,
+            "Map" => i.map,
+            "Set" => i.set,
+            "WeakMap" => i.weak_map,
+            "WeakSet" => i.weak_set,
+            "WeakRef" => i.weak_ref,
+            "FinalizationRegistry" => i.registry,
             "parseInt" => i.parse_int,
             "parseFloat" => i.parse_float,
             "globalThis" => r.global,
@@ -495,6 +559,34 @@ impl Agent {
         self.set_intrinsics(|i| i.promise_prototype = pp);
         let promise = self.make_ctor("Promise", pp)?;
         self.set_intrinsics(|i| i.promise = promise);
+        // The collections, their prototypes and iterators'.
+        for (name, ctor_slot) in [
+            ("Map", 0),
+            ("Set", 1),
+            ("WeakMap", 2),
+            ("WeakSet", 3),
+            ("WeakRef", 4),
+            ("FinalizationRegistry", 5),
+        ] {
+            let p = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
+            self.vm.temps.push(p);
+            let c = self.make_ctor(name, p);
+            self.vm.temps.pop();
+            let c = c?;
+            self.set_intrinsics(|i| match ctor_slot {
+                0 => (i.map, i.map_prototype) = (c, p),
+                1 => (i.set, i.set_prototype) = (c, p),
+                2 => (i.weak_map, i.weak_map_prototype) = (c, p),
+                3 => (i.weak_set, i.weak_set_prototype) = (c, p),
+                4 => (i.weak_ref, i.weak_ref_prototype) = (c, p),
+                _ => (i.registry, i.registry_prototype) = (c, p),
+            });
+        }
+        let ip = self.realm().intrinsics.iterator_prototype;
+        let mip = self.alloc_object(ObjectCell::new(ip, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.map_iterator_prototype = mip);
+        let sip = self.alloc_object(ObjectCell::new(ip, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.set_iterator_prototype = sip);
         let math = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.math = math);
         let reflect = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
@@ -588,6 +680,26 @@ impl Agent {
             &[i.async_generator_prototype, i.async_generator_function],
         )?;
         self.install_table(i.proxy, table::PROXY, Value::UNDEFINED, &[])?;
+        self.install_table(i.map, table::MAP, Value::UNDEFINED, &[])?;
+        self.install_table(i.map_prototype, table::MAP_PROTO, i.map, &[])?;
+        self.install_table(i.set, table::SET, Value::UNDEFINED, &[])?;
+        self.install_table(i.set_prototype, table::SET_PROTO, i.set, &[])?;
+        self.install_table(i.weak_map_prototype, table::WEAK_MAP_PROTO, i.weak_map, &[])?;
+        self.install_table(i.weak_set_prototype, table::WEAK_SET_PROTO, i.weak_set, &[])?;
+        self.install_table(i.weak_ref_prototype, table::WEAK_REF_PROTO, i.weak_ref, &[])?;
+        self.install_table(i.registry_prototype, table::REGISTRY_PROTO, i.registry, &[])?;
+        self.install_table(
+            i.map_iterator_prototype,
+            table::MAP_ITERATOR_PROTO,
+            Value::UNDEFINED,
+            &[],
+        )?;
+        self.install_table(
+            i.set_iterator_prototype,
+            table::SET_ITERATOR_PROTO,
+            Value::UNDEFINED,
+            &[],
+        )?;
         self.install_table(i.promise, table::PROMISE, Value::UNDEFINED, &[])?;
         self.install_table(
             i.promise_prototype,

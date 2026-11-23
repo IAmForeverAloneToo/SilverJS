@@ -695,8 +695,10 @@ memoization already removes the security reason for one.
 
 **Pass-rate targets** (of the measured set) per milestone in section
 3: J1 99% of the parse-phase tests (every negative syntax test and the
-parse of every positive one); J2 35%; J3 65%; J4 90%; J5 93%; J6 no
-regression (the expectations file only shrinks). J7, before the
+parse of every positive one); J2 35%; J3 65%; J4 90% with Temporal
+set aside (the lead, 2026-11-23: 38,619 of 42,910, the module tests
+counted); J5 93%; J6 no regression (the expectations file only
+shrinks). J7, before the
 replacement is allowed (the lead, 2026-11-20), on the measured set with
 Temporal set aside: at least QuickJS-ng's 98.95% in aggregate, and no
 test of `test262/quickjs-ng-passes.txt` failing unless its failure is

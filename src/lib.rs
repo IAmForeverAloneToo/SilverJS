@@ -31,6 +31,7 @@ pub mod parser;
 mod regexp;
 mod stack;
 mod string;
+mod table;
 mod unicode;
 mod unicode_tables;
 pub mod value;
@@ -41,6 +42,8 @@ mod async_tests;
 mod builtins_tests;
 #[cfg(test)]
 mod class_tests;
+#[cfg(test)]
+mod collection_tests;
 #[cfg(test)]
 mod compiler_tests;
 #[cfg(test)]

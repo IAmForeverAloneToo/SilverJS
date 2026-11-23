@@ -67,6 +67,8 @@ pub(crate) enum InternalCell {
     Env(Env),
     ForIn(ForIn),
     Stack(StackData),
+    /// A `Map`'s, `Set`'s or weak collection's entries.
+    Table(Box<crate::table::Table>),
 }
 
 impl Trace for InternalCell {
@@ -90,6 +92,7 @@ impl Trace for InternalCell {
                     out.push(f.callee);
                 }
             }
+            InternalCell::Table(t) => t.trace(out),
         }
     }
 
@@ -98,6 +101,7 @@ impl Trace for InternalCell {
             InternalCell::Env(e) => e.slots.capacity() * 8,
             InternalCell::ForIn(f) => f.keys.capacity() * 8,
             InternalCell::Stack(s) => s.frames.capacity() * std::mem::size_of::<StackFrame>(),
+            InternalCell::Table(t) => std::mem::size_of::<crate::table::Table>() + t.extra_bytes(),
         }
     }
 }
