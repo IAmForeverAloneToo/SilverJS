@@ -601,6 +601,12 @@ which natives use far less than `Local`s; J6's benches report it.
     `silverjs_gen` is written, and with them the check that every
     handle resolves in its own agent and a stale one panics rather
     than resolves;
+  - `silverjs_buffers`: the bytes made a script of views over
+    resizable and fixed buffers whose methods run while values'
+    `valueOf`, getters and callbacks resize, detach and grow the
+    buffers; no panic, only the spec's TypeErrors and RangeErrors, a
+    detached view empty, no view past its buffer (J4.2, the lead's
+    condition);
   - `silverjs_bytecode`: any bytes to the compiled-unit reader, which
     must refuse what it did not write (a checksum and a structural
     validation), never panic, never run it.

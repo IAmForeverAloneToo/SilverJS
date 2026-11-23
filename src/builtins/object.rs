@@ -268,6 +268,13 @@ impl Agent {
         if !self.o_prevent_extensions(i)? {
             return Ok(false);
         }
+        // A typed array's elements stay writable and configurable: the
+        // first one refuses (section 10.4.5.3), in the reference
+        // browser's words.
+        if self.heap.view_length(i).is_some_and(|n| n > 0) {
+            let what = if frozen { "freeze" } else { "seal" };
+            return Err(self.type_error(format!("Cannot {what} array buffer views with elements")));
+        }
         for key in self.o_own_keys(i)? {
             let d = match self.o_get_own_property(i, key)? {
                 Some(OwnProperty::Data { .. }) if frozen => Descriptor {

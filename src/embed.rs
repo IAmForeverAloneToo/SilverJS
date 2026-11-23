@@ -194,6 +194,27 @@ impl<'a> Scope<'a> {
         Ok(String::from_utf16_lossy(&units))
     }
 
+    /// DetachArrayBuffer (ECMA-262 section 25.1.3.5): `buffer`'s bytes
+    /// let go and its views out of bounds, as a host detaches a buffer it
+    /// transfers; false when `buffer` is no `ArrayBuffer`.
+    pub fn detach_array_buffer(&mut self, buffer: Local<'_>) -> bool {
+        let Some(o) = self.value_of(buffer).as_object() else {
+            return false;
+        };
+        let heap = &mut self.agent_mut().heap;
+        let is_buffer = heap
+            .objects
+            .get(o)
+            .is_some_and(|c| c.kind() == crate::object::ObjectKind::ArrayBuffer);
+        is_buffer
+            && heap
+                .with_buffer(o, |b| {
+                    b.bytes = Vec::new();
+                    b.detached = true;
+                })
+                .is_some()
+    }
+
     /// Whether `v` is a function.
     pub fn is_function(&self, v: Local<'_>) -> bool {
         let v = self.value_of(v);

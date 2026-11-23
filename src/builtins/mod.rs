@@ -28,6 +28,7 @@ pub(crate) mod proxy;
 mod reflect;
 mod stack;
 mod string;
+mod typed;
 mod uri;
 
 use crate::agent::Agent;
@@ -192,6 +193,12 @@ const TABLES: &[&[Entry]] = &[
     collection::REGISTRY_PROTO,
     collection::MAP_ITERATOR_PROTO,
     collection::SET_ITERATOR_PROTO,
+    typed::ARRAY_BUFFER,
+    typed::ARRAY_BUFFER_PROTO,
+    typed::TYPED_ARRAY,
+    typed::TYPED_ARRAY_PROTO,
+    typed::TYPED_CTOR,
+    typed::TYPED_PROTO,
 ];
 
 /// The tables' indices.
@@ -243,6 +250,12 @@ pub(crate) mod table {
     pub const REGISTRY_PROTO: u32 = 44;
     pub const MAP_ITERATOR_PROTO: u32 = 45;
     pub const SET_ITERATOR_PROTO: u32 = 46;
+    pub const ARRAY_BUFFER: u32 = 47;
+    pub const ARRAY_BUFFER_PROTO: u32 = 48;
+    pub const TYPED_ARRAY: u32 = 49;
+    pub const TYPED_ARRAY_PROTO: u32 = 50;
+    pub const TYPED_CTOR: u32 = 51;
+    pub const TYPED_PROTO: u32 = 52;
 }
 
 /// How native `id` resumes a generator, if it is `%GeneratorPrototype%`'s
@@ -720,6 +733,11 @@ impl Agent {
         } else if o.as_object().is_some_and(|i| self.is_proxy(i)) {
             let k = self.key_display(key);
             Err(self.type_error(messages::proxy_define_false(&k)))
+        } else if let Some(i) = o.as_object()
+            && let Some(index) = self.heap.typed_key(i, key)
+            && !self.heap.view_valid(i, index)
+        {
+            Err(self.type_error("Invalid typed array index"))
         } else {
             let k = self.key_display(key);
             Err(self.type_error(format!("Cannot redefine property: {k}")))
@@ -823,6 +841,7 @@ impl Agent {
             Some(ObjectKind::Boolean) => "Boolean",
             Some(ObjectKind::Number) => "Number",
             Some(ObjectKind::String) => "String",
+            Some(ObjectKind::TypedArray) => self.heap.view(o).map_or("Object", |v| v.elem.name()),
             _ => "Object",
         };
         format!("[object {}]", tag.unwrap_or_else(|| builtin.into()))

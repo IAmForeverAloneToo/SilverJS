@@ -804,6 +804,7 @@ impl Agent {
                     Err(self.throw_error(ErrorType::TypeError, messages::proxy_set_false(&k)))
                 }
             }
+            SetOutcome::Typed(t) => self.typed_set(t, key, value),
             SetOutcome::Proxy(p) => {
                 if self.proxy_set(p, key, value, receiver)? || !strict {
                     Ok(())

@@ -132,6 +132,15 @@ pub(crate) struct Intrinsics {
     pub registry_prototype: Value,
     pub map_iterator_prototype: Value,
     pub set_iterator_prototype: Value,
+    pub array_buffer: Value,
+    pub array_buffer_prototype: Value,
+    /// `%TypedArray%` and its prototype.
+    pub typed_array: Value,
+    pub typed_array_prototype: Value,
+    /// The typed array constructors and their prototypes, by
+    /// [`crate::buffer::Elem`].
+    pub typed: [Value; 10],
+    pub typed_prototypes: [Value; 10],
 }
 
 impl Intrinsics {
@@ -184,7 +193,29 @@ impl Intrinsics {
         registry_prototype: Value::UNDEFINED,
         map_iterator_prototype: Value::UNDEFINED,
         set_iterator_prototype: Value::UNDEFINED,
+        array_buffer: Value::UNDEFINED,
+        array_buffer_prototype: Value::UNDEFINED,
+        typed_array: Value::UNDEFINED,
+        typed_array_prototype: Value::UNDEFINED,
+        typed: [Value::UNDEFINED; 10],
+        typed_prototypes: [Value::UNDEFINED; 10],
     };
+
+    /// The typed array constructor of `elem`.
+    pub(crate) fn typed_ctor(&self, elem: crate::buffer::Elem) -> Value {
+        self.typed
+            .get(elem as usize)
+            .copied()
+            .unwrap_or(Value::UNDEFINED)
+    }
+
+    /// Its prototype.
+    pub(crate) fn typed_proto(&self, elem: crate::buffer::Elem) -> Value {
+        self.typed_prototypes
+            .get(elem as usize)
+            .copied()
+            .unwrap_or(Value::UNDEFINED)
+    }
 
     pub(crate) fn trace(&self, out: &mut Vec<Value>) {
         out.extend([
@@ -235,7 +266,13 @@ impl Intrinsics {
             self.registry_prototype,
             self.map_iterator_prototype,
             self.set_iterator_prototype,
+            self.array_buffer,
+            self.array_buffer_prototype,
+            self.typed_array,
+            self.typed_array_prototype,
         ]);
+        out.extend_from_slice(&self.typed);
+        out.extend_from_slice(&self.typed_prototypes);
         out.extend_from_slice(&self.errors);
     }
 }
@@ -277,6 +314,22 @@ pub(crate) const CTORS: &[Entry] = &[
         1,
         super::collection::construct_registry,
     ),
+    ctor("ArrayBuffer", 1, super::typed::construct_array_buffer),
+    ctor("TypedArray", 0, super::typed::construct_abstract),
+    ctor("Uint8Array", 3, super::typed::construct_uint8),
+    ctor("Int8Array", 3, super::typed::construct_int8),
+    ctor("Uint16Array", 3, super::typed::construct_uint16),
+    ctor("Int16Array", 3, super::typed::construct_int16),
+    ctor("Uint32Array", 3, super::typed::construct_uint32),
+    ctor("Int32Array", 3, super::typed::construct_int32),
+    ctor(
+        "Uint8ClampedArray",
+        3,
+        super::typed::construct_uint8_clamped,
+    ),
+    ctor("Float32Array", 3, super::typed::construct_float32),
+    ctor("Float64Array", 3, super::typed::construct_float64),
+    ctor("Float16Array", 3, super::typed::construct_float16),
     method("FunctionPrototype", 0, super::function::function_prototype),
     method("ThrowTypeError", 0, super::function::throw_type_error),
     method("parseInt", 2, parse_int),
@@ -313,6 +366,17 @@ pub(crate) const GLOBAL: &[Entry] = &[
     intrinsic("URIError"),
     intrinsic("globalThis"),
     intrinsic("Math"),
+    intrinsic("ArrayBuffer"),
+    intrinsic("Uint8Array"),
+    intrinsic("Int8Array"),
+    intrinsic("Uint16Array"),
+    intrinsic("Int16Array"),
+    intrinsic("Uint32Array"),
+    intrinsic("Int32Array"),
+    intrinsic("Uint8ClampedArray"),
+    intrinsic("Float32Array"),
+    intrinsic("Float64Array"),
+    intrinsic("Float16Array"),
     intrinsic("Map"),
     intrinsic("Set"),
     intrinsic("WeakMap"),
@@ -358,6 +422,12 @@ impl Agent {
             "parseInt" => i.parse_int,
             "parseFloat" => i.parse_float,
             "globalThis" => r.global,
+            "ArrayBuffer" => i.array_buffer,
+            _ if name.ends_with("Array") => crate::buffer::Elem::ALL
+                .iter()
+                .position(|e| e.name() == name)
+                .and_then(|k| i.typed.get(k).copied())
+                .unwrap_or(Value::UNDEFINED),
             _ => ErrorType::ALL
                 .iter()
                 .find(|t| t.name() == name)
@@ -582,6 +652,32 @@ impl Agent {
                 _ => (i.registry, i.registry_prototype) = (c, p),
             });
         }
+        // ArrayBuffer, %TypedArray% and the typed arrays: each
+        // constructor inherits from %TypedArray%, each prototype from
+        // %TypedArray%.prototype.
+        let abp = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.array_buffer_prototype = abp);
+        let ab = self.make_ctor("ArrayBuffer", abp)?;
+        self.set_intrinsics(|i| i.array_buffer = ab);
+        let tap = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.typed_array_prototype = tap);
+        let ta = self.make_ctor("TypedArray", tap)?;
+        self.set_intrinsics(|i| i.typed_array = ta);
+        for (k, e) in crate::buffer::Elem::ALL.iter().enumerate() {
+            let p = self.alloc_object(ObjectCell::new(tap, ObjectKind::Ordinary))?;
+            self.vm.temps.push(p);
+            let c = self.make_ctor(e.name(), p);
+            self.vm.temps.pop();
+            let c = c?;
+            self.set_intrinsics(|i| {
+                if let (Some(cs), Some(ps)) = (i.typed.get_mut(k), i.typed_prototypes.get_mut(k)) {
+                    (*cs, *ps) = (c, p);
+                }
+            });
+            if let Some(o) = c.as_object() {
+                self.heap.set_prototype_of(o, ta);
+            }
+        }
         let ip = self.realm().intrinsics.iterator_prototype;
         let mip = self.alloc_object(ObjectCell::new(ip, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.map_iterator_prototype = mip);
@@ -700,6 +796,40 @@ impl Agent {
             Value::UNDEFINED,
             &[],
         )?;
+        self.install_table(i.array_buffer, table::ARRAY_BUFFER, Value::UNDEFINED, &[])?;
+        self.install_table(
+            i.array_buffer_prototype,
+            table::ARRAY_BUFFER_PROTO,
+            i.array_buffer,
+            &[],
+        )?;
+        self.install_table(i.typed_array, table::TYPED_ARRAY, Value::UNDEFINED, &[])?;
+        let to_string = self.name_key(Name::Str("toString"));
+        let to_string = match ap
+            .as_object()
+            .and_then(|a| self.heap.get_own_property(a, to_string))
+        {
+            Some(crate::object::OwnProperty::Data { value, .. }) => value,
+            _ => Value::UNDEFINED,
+        };
+        self.install_table(
+            i.typed_array_prototype,
+            table::TYPED_ARRAY_PROTO,
+            i.typed_array,
+            &[to_string],
+        )?;
+        for (k, e) in crate::buffer::Elem::ALL.iter().enumerate() {
+            let size = Value::int(e.size() as i32);
+            let (c, p) = (
+                i.typed.get(k).copied().unwrap_or(Value::UNDEFINED),
+                i.typed_prototypes
+                    .get(k)
+                    .copied()
+                    .unwrap_or(Value::UNDEFINED),
+            );
+            self.install_table(c, table::TYPED_CTOR, Value::UNDEFINED, &[size])?;
+            self.install_table(p, table::TYPED_PROTO, c, &[size])?;
+        }
         self.install_table(i.promise, table::PROMISE, Value::UNDEFINED, &[])?;
         self.install_table(
             i.promise_prototype,

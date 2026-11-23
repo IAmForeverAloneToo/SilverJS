@@ -196,6 +196,11 @@ impl Agent {
         if stressed || wanted > self.next_collection || wanted > self.limit {
             self.stress_count = 0;
             self.collect();
+            // The next collection waits for growth past this request too:
+            // a request over half the live heap must not collect again
+            // at every allocation.
+            let after = self.heap.bytes() + bytes;
+            self.next_collection = self.next_collection.max((after as f64 * GROWTH) as usize);
         }
         if self.heap.bytes() + bytes > self.limit {
             return Err(OutOfMemory);
@@ -667,7 +672,7 @@ impl<'a> Scope<'a> {
         Some(match self.agent.heap.set(o, key, value, receiver) {
             SetOutcome::Done(done) => SetResult::Done(done),
             SetOutcome::Setter(s) => SetResult::Setter(self.local(s)),
-            SetOutcome::Proxy(_) | SetOutcome::Receiver(_) => return None,
+            SetOutcome::Proxy(_) | SetOutcome::Receiver(_) | SetOutcome::Typed(_) => return None,
         })
     }
 

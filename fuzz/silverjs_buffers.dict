@@ -1,0 +1,11 @@
+# Tokens for silverjs_buffers: steps of three bytes (step, view,
+# action), the actions that detach (4), shrink (8) and grow (12).
+detach="\x04\x00\x04"
+shrink="\x04\x00\x08"
+grow="\x04\x00\x0c"
+fill_detaching="\x05\x00\x04"
+sort_shrinking="\x0c\x00\x08"
+iterate_detaching="\x1a\x00\x04"
+set_like="\x07\x00\x05"
+new_view="\x03\x01\x06"
+check="\x1f\x00\x00"

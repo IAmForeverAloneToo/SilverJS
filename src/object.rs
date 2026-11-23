@@ -158,6 +158,12 @@ pub(crate) enum ObjectKind {
     WeakRef,
     /// A `FinalizationRegistry` (section 26.2): its registry table.
     FinalizationRegistry,
+    /// An `ArrayBuffer` (section 25.1): its data block, an internal cell
+    /// ([`crate::buffer`]), in its first internal slot.
+    ArrayBuffer,
+    /// A typed array (section 10.4.5): its buffer, element type, byte
+    /// offset and length ([`crate::buffer::View`]).
+    TypedArray,
 }
 
 /// An object cell.
@@ -263,6 +269,9 @@ pub enum SetOutcome {
     Setter(Value),
     /// The chain reached this proxy: its `[[Set]]` goes on.
     Proxy(u32),
+    /// An element of this typed array, the receiver, is written with a
+    /// value whose conversion to a number may run script.
+    Typed(u32),
     /// The property is to be made on the receiver, a proxy: through its
     /// `[[GetOwnProperty]]` and `[[DefineOwnProperty]]`.
     Receiver(u32),
@@ -857,6 +866,11 @@ impl Heap {
                     return Some(p);
                 }
             }
+            ObjectKind::TypedArray => {
+                if let Some(i) = self.numeric_key(key) {
+                    return self.view_own(o, i);
+                }
+            }
             ObjectKind::Arguments => {
                 let mut p = cell.own_property(key)?;
                 if let (Some(v), OwnProperty::Data { value, .. }) = (self.mapped(cell, key), &mut p)
@@ -956,6 +970,11 @@ impl Heap {
         }
         if kind == ObjectKind::Arguments && self.is_mapped(o, key) {
             return self.arguments_define(o, key, desc);
+        }
+        if kind == ObjectKind::TypedArray
+            && let Some(i) = self.numeric_key(key)
+        {
+            return self.view_define(o, i, desc);
         }
         if kind == ObjectKind::Array {
             if key == self.length_key {
@@ -1168,6 +1187,9 @@ impl Heap {
     pub(crate) fn has_property(&self, o: u32, key: PropertyKey) -> bool {
         let mut at = Some(o);
         while let Some(o) = at {
+            if let Some(i) = self.typed_key(o, key) {
+                return self.view_valid(o, i);
+            }
             if self.get_own_property(o, key).is_some() {
                 return true;
             }
@@ -1181,8 +1203,15 @@ impl Heap {
     pub(crate) fn get(&self, o: u32, key: PropertyKey) -> Got {
         let mut at = Some(o);
         while let Some(o) = at {
-            if self.object(o).is_some_and(|c| c.kind == ObjectKind::Proxy) {
+            let kind = self.object(o).map(|c| c.kind);
+            if kind == Some(ObjectKind::Proxy) {
                 return Got::Proxy(o);
+            }
+            if kind == Some(ObjectKind::TypedArray)
+                && let Some(i) = self.numeric_key(key)
+            {
+                let v = i.and_then(|i| self.view_get(o, i));
+                return Got::Value(v.map_or(Value::UNDEFINED, Value::number));
             }
             match self.get_own_property(o, key) {
                 Some(OwnProperty::Data { value, .. }) => return Got::Value(value),
@@ -1215,8 +1244,28 @@ impl Heap {
         let mut at = Some(o);
         let mut found = None;
         while let Some(o) = at {
-            if self.object(o).is_some_and(|c| c.kind == ObjectKind::Proxy) {
+            let kind = self.object(o).map(|c| c.kind);
+            if kind == Some(ObjectKind::Proxy) {
                 return SetOutcome::Proxy(o);
+            }
+            if kind == Some(ObjectKind::TypedArray)
+                && let Some(i) = self.numeric_key(key)
+            {
+                // TypedArray [[Set]] (section 10.4.5.5).
+                if receiver.as_object() == Some(o) {
+                    let Some(n) = self.plain_number(value) else {
+                        return SetOutcome::Typed(o);
+                    };
+                    if let Some(i) = i {
+                        self.view_set(o, i, n);
+                    }
+                    return SetOutcome::Done(true);
+                }
+                if !self.view_valid(o, i) {
+                    return SetOutcome::Done(true);
+                }
+                found = self.view_own(o, i);
+                break;
             }
             if let Some(p) = self.get_own_property(o, key) {
                 found = Some(p);
@@ -1239,7 +1288,12 @@ impl Heap {
                 let Some(r) = receiver.as_object() else {
                     return SetOutcome::Done(false);
                 };
-                if self.object(r).is_some_and(|c| c.kind == ObjectKind::Proxy) {
+                // A proxy receiver, or a typed array one given a value
+                // whose conversion may run script: the agent's to finish.
+                let kind = self.object(r).map(|c| c.kind);
+                if kind == Some(ObjectKind::Proxy)
+                    || (kind == Some(ObjectKind::TypedArray) && self.plain_number(value).is_none())
+                {
                     return SetOutcome::Receiver(r);
                 }
                 let done = match self.get_own_property(r, key) {
@@ -1264,6 +1318,9 @@ impl Heap {
 
     /// `[[Delete]]` (section 10.1.10).
     pub(crate) fn delete(&mut self, o: u32, key: PropertyKey) -> bool {
+        if let Some(i) = self.typed_key(o, key) {
+            return !self.view_valid(o, i);
+        }
         match self.get_own_property(o, key) {
             None => true,
             Some(p) if p.configurable() => {
@@ -1311,10 +1368,69 @@ impl Heap {
             all.extend(keys.iter().skip(split).copied());
             keys = all;
         }
+        // A typed array's indices come first (section 10.4.5.7).
+        if cell.kind == ObjectKind::TypedArray
+            && let Some(n) = self.view_length(o)
+        {
+            let mut all: Vec<PropertyKey> = (0..n)
+                .map(|i| match u32::try_from(i) {
+                    Ok(i) if i < u32::MAX => PropertyKey::Index(i),
+                    _ => PropertyKey::Index(u32::MAX - 1),
+                })
+                .collect();
+            all.extend(keys);
+            keys = all;
+        }
         keys
     }
 
+    /// The numeric index `key` names if `o` is a typed array and `key` a
+    /// canonical numeric string.
+    pub(crate) fn typed_key(&self, o: u32, key: PropertyKey) -> Option<Option<usize>> {
+        if matches!(key, PropertyKey::Symbol(_)) || self.object(o)?.kind != ObjectKind::TypedArray {
+            return None;
+        }
+        self.numeric_key(key)
+    }
+
+    /// A typed array's `[[DefineOwnProperty]]` of a numeric key (section
+    /// 10.4.5.3); a value that is an object is the agent's to convert
+    /// first.
+    fn view_define(&mut self, o: u32, i: Option<usize>, desc: Descriptor) -> bool {
+        if !self.view_valid(o, i) {
+            return false;
+        }
+        if desc.configurable == Some(false)
+            || desc.enumerable == Some(false)
+            || desc.is_accessor()
+            || desc.writable == Some(false)
+        {
+            return false;
+        }
+        if let Some(v) = desc.value {
+            let Some(n) = self.plain_number(v) else {
+                return false;
+            };
+            if let Some(i) = i {
+                self.view_set(o, i, n);
+            }
+        }
+        true
+    }
+
+    /// IsTypedArrayFixedLength (section 10.4.5.11 and its callers): a
+    /// typed array that is not may not be made non-extensible.
+    fn fixed_length(&self, o: u32) -> bool {
+        let Some(v) = self.view(o) else {
+            return true;
+        };
+        v.length.is_some() && self.buffer(v.buffer).is_some_and(|b| b.max.is_none())
+    }
+
     pub(crate) fn prevent_extensions(&mut self, o: u32) -> bool {
+        if !self.fixed_length(o) {
+            return false;
+        }
         self.with_object(o, |c| c.extensible = false).is_some()
     }
 

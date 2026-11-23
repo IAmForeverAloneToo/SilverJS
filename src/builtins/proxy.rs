@@ -301,6 +301,25 @@ impl Agent {
         desc: Descriptor,
     ) -> Res<bool> {
         if !self.is_proxy(o) {
+            if let Some(v) = desc.value
+                && self.heap.plain_number(v).is_none()
+                && let Some(i) = self.heap.typed_key(o, key)
+            {
+                // The value converted once the key and descriptor are
+                // found good (section 10.4.5.3).
+                let check = Descriptor {
+                    value: None,
+                    ..desc
+                };
+                if !self.heap.define_own_property(o, key, check) {
+                    return Ok(false);
+                }
+                let n = self.number(v)?;
+                if let Some(i) = i {
+                    self.heap.view_set(o, i, n);
+                }
+                return Ok(true);
+            }
             return Ok(self.heap.define_own_property(o, key, desc));
         }
         let (target, handler, trap) = self.proxy_trap(o, "defineProperty")?;
@@ -361,6 +380,9 @@ impl Agent {
         loop {
             if self.is_proxy(at) {
                 return self.proxy_has(at, key);
+            }
+            if let Some(i) = self.heap.typed_key(at, key) {
+                return Ok(self.heap.view_valid(at, i));
             }
             if self.heap.get_own_property(at, key).is_some() {
                 return Ok(true);
@@ -453,6 +475,7 @@ impl Agent {
             }
             SetOutcome::Proxy(p) => self.proxy_set(p, key, value, receiver),
             SetOutcome::Receiver(r) => self.set_on_receiver(r, key, value),
+            SetOutcome::Typed(t) => self.typed_set(t, key, value).map(|()| true),
         }
     }
 

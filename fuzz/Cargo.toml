@@ -40,5 +40,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "silverjs_buffers"
+path = "fuzz_targets/silverjs_buffers.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

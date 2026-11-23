@@ -47,7 +47,7 @@ use silverjs::agent::{
 };
 use silverjs::compiler::CompileError;
 use silverjs::parser::{Goal, parse_with_stack};
-use silverjs::{JsResult, Thrown};
+use silverjs::{ErrorKind, JsResult, Thrown};
 
 /// The Test262 revision the expectations are measured on.
 const REVISION: &str = "2e58f87d8350ad51224617a041c6e041d52f8444";
@@ -67,6 +67,10 @@ const NOT_APPLICABLE: &[&str] = &[
     "source-phase-imports",
     "source-phase-imports-module-source",
     "ShadowRealm",
+    // A proposal the reference browser does not ship: its
+    // `ArrayBuffer.prototype` has no `transferToImmutable` (the binary
+    // data probe, J4.2a).
+    "immutable-arraybuffer",
 ];
 
 /// Features the reference browser does not implement, though ECMA-262
@@ -319,6 +323,15 @@ fn install_host<'s>(
         Ok(scope.undefined())
     })?;
     define(scope, host, "gc", gc);
+    let detach = scope.native_function("detachArrayBuffer", 1, |scope, _, args| {
+        let detached = args.first().is_some_and(|&b| scope.detach_array_buffer(b));
+        if detached {
+            return Ok(scope.undefined());
+        }
+        let e = scope.new_error(ErrorKind::TypeError, "not an ArrayBuffer")?;
+        Err(Thrown::Value(e))
+    })?;
+    define(scope, host, "detachArrayBuffer", detach);
     // A new realm, with its own `print` and `$262`: the new `$262`.
     let out = Rc::clone(printed);
     let create_realm = scope.native_function("createRealm", 0, move |scope, _, _| {

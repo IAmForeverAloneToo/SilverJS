@@ -803,6 +803,7 @@ impl Agent {
                         .throw_error(ErrorType::TypeError, messages::read_only(&k, "#<Object>")))
                 }
             }
+            SetOutcome::Typed(t) => self.typed_set(t, key, value),
             SetOutcome::Proxy(p) => {
                 if self.proxy_set(p, key, value, target)? || !strict {
                     Ok(())

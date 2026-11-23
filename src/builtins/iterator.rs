@@ -125,7 +125,20 @@ fn array_iterator_next(agent: &mut Agent, c: Call) -> Res<Value> {
     if array.is_undefined() {
         return agent.iter_result(Value::UNDEFINED, true);
     }
-    let len = agent.length_of(array)?;
+    // A typed array's length is its own (section 23.1.5.2.1), a TypeError
+    // once it is out of bounds.
+    let view = array.as_object().filter(|&o| agent.heap.view(o).is_some());
+    let len = match view {
+        Some(o) => match agent.heap.view_length(o) {
+            Some(n) => n as f64,
+            None => {
+                return Err(agent.type_error(
+                    "Cannot perform Array Iterator.prototype.next on a detached or out-of-bounds ArrayBuffer",
+                ));
+            }
+        },
+        None => agent.length_of(array)?,
+    };
     if index >= len {
         agent.set_internal(c.this, 0, Value::UNDEFINED);
         return agent.iter_result(Value::UNDEFINED, true);

@@ -18,6 +18,7 @@
 
 pub mod agent;
 pub mod ast;
+mod buffer;
 mod builtins;
 pub mod compiler;
 mod embed;
@@ -68,6 +69,8 @@ mod proxy_tests;
 mod realm_tests;
 #[cfg(test)]
 mod stack_tests;
+#[cfg(test)]
+mod typed_tests;
 
 pub use embed::{ErrorKind, HostFn, JsResult, RealmId, Thrown};
 pub use heap::HeapStats;
