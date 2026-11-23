@@ -31,13 +31,6 @@ fn ops(src: &str, f: usize) -> Vec<Op> {
     out
 }
 
-fn refused(src: &str) -> &'static str {
-    match compile(src, Goal::Script) {
-        Err(CompileError::Unsupported { feature, .. }) => feature,
-        other => panic!("{src}: {other:?}"),
-    }
-}
-
 /// Runs `f` on a thread with a large stack, as the deep tests need in
 /// debug builds.
 fn on_big_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
@@ -337,7 +330,6 @@ fn wide_operands_are_used_past_a_byte() {
 
 #[test]
 fn what_is_not_compiled_yet_is_refused() {
-    assert_eq!(refused("tag`x`"), "tagged templates");
     assert!(matches!(
         compile("export {}", Goal::Module),
         Err(CompileError::Unsupported {

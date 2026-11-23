@@ -174,6 +174,10 @@ pub(crate) struct Analysis {
     /// Each class constructor's class, whose instance elements it (or
     /// its `super()`) initializes.
     pub ctor_class: HashMap<FuncId, ClassId>,
+    /// The function declarations of sloppy blocks that are also a `var`
+    /// of their function or script (Annex B.3.2): set to the block's
+    /// binding where the declaration stands.
+    pub annex_b: std::collections::HashSet<FuncId>,
 }
 
 /// Where a name resolves, from a scope.
@@ -231,6 +235,32 @@ impl Analysis {
 
     pub(crate) fn key(&self, key: ScopeKey) -> Option<ScopeId> {
         self.keys.get(&key).copied()
+    }
+
+    /// Where `name` resolves from `from` when only the bindings of
+    /// `target` and the scopes around it count (a block function's `var`
+    /// of Annex B, past the block's own binding).
+    pub(crate) fn resolve_past(&self, from: ScopeId, name: &str, target: ScopeId) -> Resolved {
+        let mut depth = 0u32;
+        let mut cur = from;
+        while cur != target {
+            let scope = self.scope(cur);
+            if scope.has_env {
+                depth += 1;
+            }
+            match scope.parent {
+                Some(p) => cur = p,
+                None => break,
+            }
+        }
+        let mut r = self.resolve(target, name);
+        if let Place::Slot { depth: d, slot } = r.place {
+            r.place = Place::Slot {
+                depth: d + depth,
+                slot,
+            };
+        }
+        r
     }
 
     /// Where `name` resolves from `from`, as the code generator needs it.
@@ -338,6 +368,11 @@ struct Walker<'a> {
     current: Vec<ScopeId>,
     refs: Vec<(ScopeId, crate::ast::Name)>,
     evals: Vec<ScopeId>,
+    /// The function declarations met in blocks, with their block.
+    block_functions: Vec<(ScopeId, FuncId)>,
+    /// The catch scopes whose parameter is a pattern (B.3.4: only a
+    /// plain one may share its name with a block function's `var`).
+    pattern_catches: std::collections::HashSet<ScopeId>,
 }
 
 /// Analyzes a script.
@@ -358,6 +393,8 @@ fn analyze_as(program: &Program, top_kind: ScopeKind) -> Analysis {
         current: Vec::new(),
         refs: Vec::new(),
         evals: Vec::new(),
+        block_functions: Vec::new(),
+        pattern_catches: std::collections::HashSet::new(),
     };
     w.a.functions.push(FunctionInfo {
         scope: ScopeId(0),
@@ -373,6 +410,7 @@ fn analyze_as(program: &Program, top_kind: ScopeKind) -> Analysis {
     w.current.push(top);
     w.push_stmts(&program.body);
     w.run();
+    w.annex_b();
     w.resolve_all();
     w.place_all();
     w.a
@@ -424,6 +462,58 @@ impl<'a> Walker<'a> {
     }
 
     /// The nearest scope `var` declarations go to.
+    /// Annex B.3.2 and B.3.3: each plain function declared in a sloppy
+    /// block is also a `var` of its function or script, where a `var` of
+    /// its name would not clash with a lexical declaration around it (or
+    /// a parameter).
+    fn annex_b(&mut self) {
+        for (block, fid) in std::mem::take(&mut self.block_functions) {
+            let f = self.program.ast.func(fid);
+            let Some(name) = f.name.as_ref().map(|n| n.name.clone()) else {
+                continue;
+            };
+            // Sloppy code around it (the function itself may be strict).
+            let around = self.a.scope(block).func;
+            if f.is_async || f.is_generator || self.a.functions[around as usize].strict {
+                continue;
+            }
+            let vs = self.var_scope(block);
+            // A function's `arguments` is never hoisted.
+            if &*name == "arguments" && matches!(self.a.scope(vs).kind, ScopeKind::Function { .. })
+            {
+                continue;
+            }
+            let pattern_catches = &self.pattern_catches;
+            let clash = |kind: BindingKind, s: ScopeId, at_top: bool| match kind {
+                BindingKind::Let | BindingKind::Const | BindingKind::Class => true,
+                BindingKind::Function => !at_top,
+                BindingKind::Param => at_top,
+                BindingKind::CatchParam => pattern_catches.contains(&s),
+                _ => false,
+            };
+            let mut at = self.a.scope(block).parent;
+            let mut ok = true;
+            while let Some(s) = at {
+                let scope = self.a.scope(s);
+                if let Some(&i) = scope.names.get(&*name)
+                    && clash(scope.bindings[i as usize].kind, s, s == vs)
+                {
+                    ok = false;
+                    break;
+                }
+                if s == vs {
+                    break;
+                }
+                at = scope.parent;
+            }
+            if !ok {
+                continue;
+            }
+            self.declare(vs, &name, BindingKind::Var, 0, None, None);
+            self.a.annex_b.insert(fid);
+        }
+    }
+
     fn var_scope(&self, from: ScopeId) -> ScopeId {
         let mut s = from;
         loop {
@@ -602,6 +692,9 @@ impl<'a> Walker<'a> {
                 if let Some(name) = &func.name {
                     self.declare(cur, &name.name, BindingKind::Function, 0, None, Some(*f));
                 }
+                if self.var_scope(cur) != cur {
+                    self.block_functions.push((cur, *f));
+                }
                 self.work.push(Item::Func(*f, false));
             }
             Stmt::Class(c) => {
@@ -688,6 +781,9 @@ impl<'a> Walker<'a> {
                     self.work.push(Item::Leave);
                     self.push_stmts(&c.body);
                     if let Some(p) = c.param {
+                        if !matches!(self.program.ast.pat(p).kind, Pat::Ident(_)) {
+                            self.pattern_catches.insert(s);
+                        }
                         self.work.push(Item::Pat(
                             p,
                             Target::Declare(BindingKind::CatchParam, 0, None),

@@ -216,6 +216,7 @@ ops! {
     AsyncDelegateMethod(R, R, R, R) "Async yield*'s method for how r3 (iterator r1, next r2), into acc, the value sent in acc before; r4 = 0 to call it, 2 to return what was sent (no return method), 4 for no throw method.",
     AsyncDelegateResult(R, R) "Async yield*'s awaited result in acc (how r1): a TypeError if not an object; done, r2 = 1 (or 2 for a return) and acc its value; else r2 = 0 and acc its value.",
     ThrowNoThrowMethod() "Throws the TypeError of a yield* whose iterator has no throw method.",
+    GetTemplateObject(U) "acc = the template object of the tagged template whose strings are constant u: made once per realm, then the same.",
     GeneratorStart()"A generator function's call: its generator object made, the frame suspended at its start in it, and the generator returned to the caller.",
     Yield(R) "Suspends the generator, giving its caller {value: acc, done: false}; resumed, acc is the value sent and r how (0 next, 1 throw, 2 return).",
     YieldDelegate(R) "Suspends the generator, giving its caller acc (an inner iterator's result) as it is; resumed as Yield is.",

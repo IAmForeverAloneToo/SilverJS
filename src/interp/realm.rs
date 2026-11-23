@@ -50,6 +50,9 @@ pub(crate) struct Realm {
     pub errors: [Value; 8],
     pub intrinsics: Intrinsics,
     pub lexical: HashMap<PropertyKey, Lexical>,
+    /// The template objects of the tagged templates run in this realm,
+    /// by their site: unit, function and constant.
+    pub templates: HashMap<(u32, u32, u32), Value>,
     pub strings: Strings,
     pub prototype_key: PropertyKey,
     pub constructor_key: PropertyKey,
@@ -85,6 +88,7 @@ impl Realm {
         out.extend_from_slice(&self.errors);
         self.intrinsics.trace(out);
         out.extend(self.lexical.values().map(|b| b.value));
+        out.extend(self.templates.values().copied());
         let s = &self.strings;
         out.extend([
             s.empty,
@@ -164,6 +168,7 @@ impl Agent {
             errors: [u; 8],
             intrinsics: Intrinsics::NONE,
             lexical: HashMap::new(),
+            templates: HashMap::new(),
             strings,
             prototype_key: self.key_named("prototype"),
             constructor_key: self.key_named("constructor"),

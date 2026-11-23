@@ -1049,6 +1049,71 @@ impl Agent {
         }
     }
 
+    /// GetTemplateObject (section 13.2.8.4): the site's template object,
+    /// made once per realm: its cooked strings frozen with their `raw`.
+    #[inline(never)]
+    fn template_object(&mut self, unit: u32, func: u32, k: usize) -> Res<Value> {
+        let site = (unit, func, u32::try_from(k).unwrap_or(u32::MAX));
+        if let Some(v) = self.realm().templates.get(&site) {
+            return Ok(*v);
+        }
+        let c = self
+            .vm
+            .units
+            .get(unit as usize)
+            .and_then(|u| u.code.functions.get(func as usize))
+            .and_then(|f| f.constants.get(k))
+            .cloned();
+        let Some(Constant::Template { cooked, raw }) = c else {
+            return Ok(Value::UNDEFINED);
+        };
+        let at = self.vm.temps.len();
+        let made = (|| {
+            let mut raws = Vec::with_capacity(raw.len());
+            for r in raw.iter() {
+                let s = self.new_string_units(r)?;
+                self.vm.temps.push(s);
+                raws.push(s);
+            }
+            let mut cooks = Vec::with_capacity(cooked.len());
+            for c in cooked.iter() {
+                let s = match c {
+                    Some(c) => self.new_string_units(c)?,
+                    None => Value::UNDEFINED,
+                };
+                self.vm.temps.push(s);
+                cooks.push(s);
+            }
+            let raw_array = self.array_of(&raws)?;
+            self.vm.temps.push(raw_array);
+            self.freeze_value(raw_array)?;
+            let template = self.array_of(&cooks)?;
+            self.vm.temps.push(template);
+            let key = self.name_key(crate::builtins::Name::Str("raw"));
+            if let Some(o) = template.as_object() {
+                self.heap.define_own_property(
+                    o,
+                    key,
+                    crate::object::Descriptor {
+                        value: Some(raw_array),
+                        writable: Some(false),
+                        enumerable: Some(false),
+                        configurable: Some(false),
+                        ..crate::object::Descriptor::default()
+                    },
+                );
+            }
+            self.freeze_value(template)?;
+            Ok(template)
+        })();
+        self.vm.temps.truncate(at);
+        let template = made?;
+        if let Some(r) = self.realm_mut() {
+            r.templates.insert(site, template);
+        }
+        Ok(template)
+    }
+
     /// The property key the constant `k` names.
     #[inline]
     fn key_constant(&self, unit: u32, func: u32, k: usize) -> PropertyKey {
@@ -1948,6 +2013,10 @@ impl Agent {
                     Op::ThrowNoThrowMethod => {
                         let e = self.throw_error(ErrorType::TypeError, messages::DELEGATE_NO_THROW);
                         tri!(Err::<(), Abrupt>(e), start);
+                    }
+                    Op::GetTemplateObject => {
+                        let k = r.u();
+                        self.vm.acc = tri!(self.template_object(u, fi, k), start);
                     }
                     Op::AsyncYield => {
                         let m = r.u();

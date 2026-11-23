@@ -248,6 +248,12 @@ impl Agent {
         result
     }
 
+    /// An object frozen (SetIntegrityLevel), as the engine freezes what
+    /// it makes.
+    pub(crate) fn freeze_value(&mut self, o: Value) -> Res<()> {
+        self.set_integrity(o, true).map(|_| ())
+    }
+
     /// SetIntegrityLevel (section 7.3.16): sealed, or frozen.
     fn set_integrity(&mut self, o: Value, frozen: bool) -> Res<bool> {
         let Some(i) = o.as_object() else {

@@ -122,7 +122,9 @@ impl Gen<'_, '_> {
                 self.emit(Op::CreateRegExp, &[b, f]);
             }
             Expr::Template { quasis, exprs } => self.template(quasis, exprs, span)?,
-            Expr::TaggedTemplate { .. } => return Err(unsupported("tagged templates", span)),
+            Expr::TaggedTemplate { tag, quasis, exprs } => {
+                self.tagged_template(*tag, quasis, exprs, span)?
+            }
             Expr::Array(elems) => self.array(elems)?,
             Expr::Object(props) => self.object(props)?,
             Expr::Function(f) | Expr::Arrow(f) => self.closure(*f, name)?,
@@ -1191,6 +1193,68 @@ impl Gen<'_, '_> {
 }
 
 impl Gen<'_, '_> {
+    /// A tagged template (section 13.3.11): the tag called (a member's
+    /// object its `this`) with the site's template object, then the
+    /// substitutions.
+    fn tagged_template(
+        &mut self,
+        tag: ExprId,
+        quasis: &[crate::ast::Quasi],
+        exprs: &[ExprId],
+        span: Span,
+    ) -> R {
+        let t = self.unparen(tag);
+        let tnode = self.ast.expr(t);
+        let recv = self.alloc();
+        let f = self.alloc();
+        match &tnode.kind {
+            Expr::Member {
+                object,
+                prop,
+                optional: false,
+            } => {
+                self.expr(*object)?;
+                self.reg_op(Op::Star, recv);
+                self.get(recv, prop, tnode.span)?;
+            }
+            _ => {
+                self.op(Op::LdaUndefined);
+                self.reg_op(Op::Star, recv);
+                self.expr(tag)?;
+            }
+        }
+        self.reg_op(Op::Star, f);
+        let c = self.constant(Constant::Template {
+            cooked: quasis.iter().map(|q| q.cooked.clone()).collect(),
+            raw: quasis.iter().map(|q| units(&q.raw)).collect(),
+        });
+        let n = u32::try_from(exprs.len() + 1).unwrap_or(u32::MAX);
+        let first = self.alloc_n(n);
+        self.emit(Op::GetTemplateObject, &[c]);
+        self.reg_op(Op::Star, first);
+        for (i, e) in exprs.iter().enumerate() {
+            self.expr(*e)?;
+            self.reg_op(Op::Star, first + 1 + u32::try_from(i).unwrap_or(0));
+        }
+        let ic = self.ic();
+        self.pos_at(tnode.span, self.stack_at(t));
+        self.emit(
+            Op::Call,
+            &[
+                i64::from(f),
+                i64::from(recv),
+                i64::from(first),
+                i64::from(n),
+                ic,
+            ],
+        );
+        let _ = span;
+        self.free_n(first, n);
+        self.free(f);
+        self.free(recv);
+        Ok(())
+    }
+
     /// An async generator's `yield` (section 27.6.3.8): its operand
     /// awaited, then the first request fulfilled with it; resumed by a
     /// return, the value sent is awaited before the generator returns.

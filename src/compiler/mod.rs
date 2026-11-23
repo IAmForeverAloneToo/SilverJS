@@ -76,6 +76,12 @@ pub enum Constant {
         radix: u32,
         digits: Box<str>,
     },
+    /// A tagged template's strings: each part cooked (none for an
+    /// invalid escape) and raw.
+    Template {
+        cooked: Box<[Option<Box<[u16]>>]>,
+        raw: Box<[Box<[u16]>]>,
+    },
 }
 
 /// What an environment of a scope holds: each slot's name (for lookups
@@ -334,6 +340,9 @@ impl FunctionCode {
                         }
                         Some(Constant::BigInt { radix, digits }) => {
                             let _ = write!(out, " {digits}n/{radix}");
+                        }
+                        Some(Constant::Template { raw, .. }) => {
+                            let _ = write!(out, " template({})", raw.len());
                         }
                         None => out.push_str(" ?"),
                     }

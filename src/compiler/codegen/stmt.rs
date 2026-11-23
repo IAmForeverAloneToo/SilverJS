@@ -64,7 +64,9 @@ impl Gen<'_, '_> {
                 }
             }
             Stmt::Var(decl) => self.var_decl(decl, span)?,
-            // Made at their scope's entry.
+            // Made at their scope's entry; a sloppy block's, also a `var`
+            // of its function, set where it stands (Annex B.3.2).
+            Stmt::Function(f) if self.a.annex_b.contains(f) => self.annex_b_store(*f, span)?,
             Stmt::Function(_) | Stmt::Empty => {}
             Stmt::Class(c) => {
                 self.class(*c, None)?;

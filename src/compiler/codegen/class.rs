@@ -575,6 +575,35 @@ impl Gen<'_, '_> {
         Ok(())
     }
 
+    /// Annex B.3.2's step at a block's function declaration: the block's
+    /// binding copied to the function's (or script's) `var`.
+    pub(super) fn annex_b_store(&mut self, f: FuncId, span: Span) -> R {
+        let Some(name) = self.ast.func(f).name.clone() else {
+            return Ok(());
+        };
+        self.load_name(&name.name, span, false)?;
+        let vs = self.a.function(self.index).scope;
+        let r = self.a.resolve_past(self.scope, &name.name, vs);
+        let n = self.name(&name.name);
+        match r.place {
+            Place::Register(reg) => self.reg_op(Op::Star, reg),
+            Place::Slot { depth, slot } => {
+                self.emit(Op::StaSlot, &[i64::from(depth), i64::from(slot)]);
+            }
+            Place::Global => {
+                let ic = self.ic();
+                self.pos(span);
+                self.emit(Op::StaGlobal, &[n, ic]);
+            }
+            Place::Dynamic => {
+                self.pos(span);
+                self.emit(Op::StaDynamic, &[n]);
+            }
+            Place::Intrinsic | Place::GlobalThis => {}
+        }
+        Ok(())
+    }
+
     /// Whether the function being compiled is an async generator.
     pub(super) fn is_async_generator(&self) -> bool {
         self.a

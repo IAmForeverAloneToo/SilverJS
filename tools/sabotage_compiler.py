@@ -31,7 +31,7 @@ cases = [
     (S, "Loc::Register(p)\n", "Loc::Register(p + 1)\n"),
     (S, "s.has_env = !s.slots.is_empty() || s.has_eval || s.kind == ScopeKind::With;",
         "s.has_env = !s.slots.is_empty() || s.has_eval;"),
-    (S, "depth += 1;", "depth += 0;"),
+    (S, "depth += 1;\n            }\n            cur = scope.parent;", "depth += 0;\n            }\n            cur = scope.parent;"),
     (S, "ScopeKind::FuncName { .. } => depth.saturating_sub(1),", "ScopeKind::FuncName { .. } => depth,"),
     (S, '"arguments" => Some(BindingKind::Arguments),', '"arguments" => None,'),
     (S, "(ScopeKind::Script | ScopeKind::Eval | ScopeKind::Function { .. }, _)\n                | (_, None) => return s,",
