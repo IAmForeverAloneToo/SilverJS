@@ -117,6 +117,7 @@ pub(crate) struct Intrinsics {
     pub async_generator_function_prototype: Value,
     pub async_generator_function: Value,
     pub async_from_sync_iterator_prototype: Value,
+    pub proxy: Value,
 }
 
 impl Intrinsics {
@@ -154,6 +155,7 @@ impl Intrinsics {
         async_generator_function_prototype: Value::UNDEFINED,
         async_generator_function: Value::UNDEFINED,
         async_from_sync_iterator_prototype: Value::UNDEFINED,
+        proxy: Value::UNDEFINED,
     };
 
     pub(crate) fn trace(&self, out: &mut Vec<Value>) {
@@ -190,6 +192,7 @@ impl Intrinsics {
             self.async_generator_function_prototype,
             self.async_generator_function,
             self.async_from_sync_iterator_prototype,
+            self.proxy,
         ]);
         out.extend_from_slice(&self.errors);
     }
@@ -221,6 +224,7 @@ pub(crate) const CTORS: &[Entry] = &[
     ctor("URIError", 1, super::error::construct_uri_error),
     ctor("AggregateError", 2, super::error::construct_aggregate_error),
     ctor("Promise", 1, super::promise::construct),
+    ctor("Proxy", 2, super::proxy::construct),
     method("FunctionPrototype", 0, super::function::function_prototype),
     method("ThrowTypeError", 0, super::function::throw_type_error),
     method("parseInt", 2, parse_int),
@@ -257,6 +261,7 @@ pub(crate) const GLOBAL: &[Entry] = &[
     intrinsic("URIError"),
     intrinsic("globalThis"),
     intrinsic("Math"),
+    intrinsic("Proxy"),
     intrinsic("Reflect"),
     method("decodeURI", 1, super::uri::decode_uri),
     method("decodeURIComponent", 1, super::uri::decode_uri_component),
@@ -285,6 +290,7 @@ impl Agent {
             "Promise" => i.promise,
             "Math" => i.math,
             "Reflect" => i.reflect,
+            "Proxy" => i.proxy,
             "parseInt" => i.parse_int,
             "parseFloat" => i.parse_float,
             "globalThis" => r.global,
@@ -480,6 +486,10 @@ impl Agent {
         if let Some(o) = agf.as_object() {
             self.heap.set_prototype_of(o, function);
         }
+        // Proxy: a constructor with no `prototype`.
+        let id = id_of(table::CTORS, "Proxy").unwrap_or(0);
+        let proxy = self.native_function(id, 2, "Proxy")?;
+        self.set_intrinsics(|i| i.proxy = proxy);
         // Promise and its prototype.
         let pp = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.promise_prototype = pp);
@@ -577,6 +587,7 @@ impl Agent {
             Value::UNDEFINED,
             &[i.async_generator_prototype, i.async_generator_function],
         )?;
+        self.install_table(i.proxy, table::PROXY, Value::UNDEFINED, &[])?;
         self.install_table(i.promise, table::PROMISE, Value::UNDEFINED, &[])?;
         self.install_table(
             i.promise_prototype,

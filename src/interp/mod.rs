@@ -361,6 +361,15 @@ impl Agent {
                         .map_or(self.vm.current, |u| u.realm);
                 }
                 Some(Callable::Native { realm, .. }) => return realm,
+                // A proxy's target's (a revoked proxy's: the current).
+                Some(Callable::Proxy) => {
+                    at = at
+                        .as_object()
+                        .and_then(|o| self.heap.objects.get(o))
+                        .and_then(|c| c.internal().first().copied())
+                        .filter(|t| !t.is_null())
+                        .unwrap_or(Value::UNDEFINED);
+                }
                 Some(Callable::Bound) => {
                     at = at
                         .as_object()
@@ -734,10 +743,38 @@ impl Agent {
                 self.vm.natives.pop();
                 r.map(Some)
             }
+            Some(Callable::Proxy) => {
+                let argv: Vec<Value> = (0..argc)
+                    .map(|i| {
+                        self.vm
+                            .stack
+                            .get(args + i)
+                            .copied()
+                            .unwrap_or(Value::UNDEFINED)
+                    })
+                    .collect();
+                self.proxy_invoke(callee, this, &argv, new_target).map(Some)
+            }
             Some(Callable::Bound) | None => {
                 let text = self.display(callee);
                 Err(self.throw_error(ErrorType::TypeError, messages::not_a_function(&text)))
             }
+        }
+    }
+
+    /// A callable proxy's `[[Call]]`, or `[[Construct]]` with
+    /// `new_target`.
+    fn proxy_invoke(
+        &mut self,
+        callee: Value,
+        this: Value,
+        args: &[Value],
+        new_target: Option<Value>,
+    ) -> Res<Value> {
+        let o = callee.as_object().unwrap_or(0);
+        match new_target {
+            Some(nt) => self.proxy_construct(o, args, nt),
+            None => self.proxy_call(o, this, args),
         }
     }
 
@@ -801,6 +838,11 @@ impl Agent {
                     self.vm.stack.truncate(args);
                 }
                 r
+            }
+            Some(Callable::Proxy) => {
+                let argv: Vec<Value> = self.vm.stack.get(args..).unwrap_or(&[]).to_vec();
+                self.vm.stack.truncate(args);
+                self.proxy_invoke(callee, this, &argv, new_target).map(Some)
             }
             Some(Callable::Bound) | None => {
                 self.vm.stack.truncate(args);
@@ -1017,6 +1059,7 @@ impl Agent {
             || inner.starts_with("class")
             || inner.starts_with("async ")
             || inner.starts_with("async(")
+            || inner.starts_with("new ")
             || (inner.contains("=>") && text.trim().starts_with('('));
         if literal {
             "(intermediate value)".to_owned()
@@ -1878,7 +1921,7 @@ impl Agent {
                                 }
                                 continue 'frames;
                             }
-                            Callable::Native { .. } | Callable::Bound => {
+                            Callable::Native { .. } | Callable::Bound | Callable::Proxy => {
                                 let nt = construct.then_some(callee);
                                 match self.begin_call(callee, recv, args, argc, nt, false) {
                                     Ok(Some(v)) => self.vm.acc = v,
@@ -2185,7 +2228,7 @@ impl Agent {
                 }),
             Callable::Native { id, .. } => crate::builtins::native_constructs(id),
             // Answered by the target, in `is_constructor_value`.
-            Callable::Bound => false,
+            Callable::Bound | Callable::Proxy => false,
         }
     }
 
@@ -2201,6 +2244,9 @@ impl Agent {
                         .and_then(|o| self.heap.objects.get(o))
                         .and_then(|c| c.internal().first().copied())
                         .unwrap_or(Value::UNDEFINED);
+                }
+                Some(Callable::Proxy) => {
+                    return at.as_object().is_some_and(|o| self.proxy_constructs(o));
                 }
                 Some(c) => return self.is_constructor(c),
                 None => return false,

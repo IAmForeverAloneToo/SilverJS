@@ -3,7 +3,6 @@
 use super::{CONFIGURABLE, Call, Entry, Name, What, Wk, entry, method};
 use crate::agent::Agent;
 use crate::interp::Res;
-use crate::object::{Got, SetOutcome};
 use crate::string::PropertyKey;
 use crate::value::Value;
 
@@ -79,30 +78,26 @@ fn define_property(agent: &mut Agent, c: Call) -> Res<Value> {
     {
         d.value = Some(agent.array_length_value(v)?);
     }
-    Ok(Value::bool(agent.heap.define_own_property(o, k, d)))
+    agent.o_define_own_property(o, k, d).map(Value::bool)
 }
 
 fn delete_property(agent: &mut Agent, c: Call) -> Res<Value> {
     let (_, o) = target(agent, c, "deleteProperty")?;
     let k = key(agent, c)?;
-    Ok(Value::bool(agent.heap.delete(o, k)))
+    agent.o_delete(o, k).map(Value::bool)
 }
 
 fn get(agent: &mut Agent, c: Call) -> Res<Value> {
     let (t, o) = target(agent, c, "get")?;
     let k = key(agent, c)?;
     let receiver = if c.argc > 2 { agent.arg(c, 2) } else { t };
-    match agent.heap.get(o, k) {
-        Got::Value(v) => Ok(v),
-        Got::Getter(g) if g.is_undefined() => Ok(Value::UNDEFINED),
-        Got::Getter(g) => agent.call_value(g, receiver, &[]),
-    }
+    agent.o_get(o, k, receiver)
 }
 
 fn get_own_property_descriptor(agent: &mut Agent, c: Call) -> Res<Value> {
     let (_, o) = target(agent, c, "getOwnPropertyDescriptor")?;
     let k = key(agent, c)?;
-    match agent.heap.get_own_property(o, k) {
+    match agent.o_get_own_property(o, k)? {
         Some(p) => agent.descriptor_object(p),
         None => Ok(Value::UNDEFINED),
     }
@@ -110,23 +105,23 @@ fn get_own_property_descriptor(agent: &mut Agent, c: Call) -> Res<Value> {
 
 fn get_prototype_of(agent: &mut Agent, c: Call) -> Res<Value> {
     let (_, o) = target(agent, c, "getPrototypeOf")?;
-    Ok(agent.heap.get_prototype_of(o))
+    agent.o_get_prototype_of(o)
 }
 
 fn has(agent: &mut Agent, c: Call) -> Res<Value> {
     let (_, o) = target(agent, c, "has")?;
     let k = key(agent, c)?;
-    Ok(Value::bool(agent.heap.has_property(o, k)))
+    agent.o_has_property(o, k).map(Value::bool)
 }
 
 fn is_extensible(agent: &mut Agent, c: Call) -> Res<Value> {
     let (_, o) = target(agent, c, "isExtensible")?;
-    Ok(Value::bool(agent.heap.is_extensible(o)))
+    agent.o_is_extensible(o).map(Value::bool)
 }
 
 fn own_keys(agent: &mut Agent, c: Call) -> Res<Value> {
     let (_, o) = target(agent, c, "ownKeys")?;
-    let keys = agent.heap.own_keys(o);
+    let keys = agent.o_own_keys(o)?;
     let out = agent.array_of(&[])?;
     agent.vm.temps.push(out);
     let mut result = Ok(out);
@@ -147,7 +142,7 @@ fn own_keys(agent: &mut Agent, c: Call) -> Res<Value> {
 
 fn prevent_extensions(agent: &mut Agent, c: Call) -> Res<Value> {
     let (_, o) = target(agent, c, "preventExtensions")?;
-    Ok(Value::bool(agent.heap.prevent_extensions(o)))
+    agent.o_prevent_extensions(o).map(Value::bool)
 }
 
 fn set(agent: &mut Agent, c: Call) -> Res<Value> {
@@ -165,13 +160,7 @@ fn set(agent: &mut Agent, c: Call) -> Res<Value> {
     {
         v = agent.array_length_value(v)?;
     }
-    match agent.heap.set(o, k, v, receiver) {
-        SetOutcome::Done(done) => Ok(Value::bool(done)),
-        SetOutcome::Setter(s) => {
-            agent.call_value(s, receiver, &[v])?;
-            Ok(Value::TRUE)
-        }
-    }
+    agent.o_set(o, k, v, receiver).map(Value::bool)
 }
 
 fn set_prototype_of(agent: &mut Agent, c: Call) -> Res<Value> {
@@ -183,5 +172,5 @@ fn set_prototype_of(agent: &mut Agent, c: Call) -> Res<Value> {
             "Object prototype may only be an Object or null: {text}"
         )));
     }
-    Ok(Value::bool(agent.heap.set_prototype_of(o, proto)))
+    agent.o_set_prototype_of(o, proto).map(Value::bool)
 }

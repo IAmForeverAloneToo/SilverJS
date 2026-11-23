@@ -33,8 +33,8 @@ cases = [
     (B, '                realm: self.vm.current,\n', '                realm: 0,\n'),
     (M, '                        .map_or(self.vm.current, |u| u.realm);\n                }', '                        .map_or(self.vm.current, |_| self.vm.current);\n                }'),
     (M, '                Some(Callable::Native { realm, .. }) => return realm,', '                Some(Callable::Native { .. }) => return self.vm.current,'),
-    (M, '                Some(Callable::Native { realm, .. }) => return realm,\n                Some(Callable::Bound) => {\n                    at = at',
-        '                Some(Callable::Native { realm, .. }) => return realm,\n                Some(Callable::Bound) => {\n                    let _ = at;\n                    return self.vm.current;\n                }\n                Some(Callable::Bound) if false => {\n                    at = at'),
+    (M, '                        .unwrap_or(Value::UNDEFINED);\n                }\n                Some(Callable::Bound) => {\n                    at = at',
+        '                        .unwrap_or(Value::UNDEFINED);\n                }\n                Some(Callable::Bound) => {\n                    let _ = at;\n                    return self.vm.current;\n                }\n                Some(Callable::Bound) if false => {\n                    at = at'),
     (M, '        let realm = self.function_realm(ctor);\n', '        let realm = self.vm.current;\n'),
     # ArraySpeciesCreate's realm check.
     (A, '            if realm != self.vm.current\n', '            if false && realm != self.vm.current\n'),

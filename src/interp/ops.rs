@@ -9,7 +9,7 @@ use crate::compiler::{FunctionKind, Op};
 use crate::heap::{InternalCell, ObjectCell, StringCell};
 use crate::internal::ForIn;
 use crate::number::number_to_string;
-use crate::object::{Callable, Descriptor, Got, ObjectKind, OwnProperty, SetOutcome};
+use crate::object::{Callable, Descriptor, ObjectKind, OwnProperty, SetOutcome};
 use crate::string::PropertyKey;
 use crate::value::{RefKind, Value};
 
@@ -703,14 +703,7 @@ impl Agent {
                 }
             }
         };
-        match self.heap.get(holder, key) {
-            Got::Value(v) => Ok(v),
-            Got::Getter(g) if g.is_undefined() => Ok(Value::UNDEFINED),
-            Got::Getter(g) => {
-                self.vm.accessor_call = true;
-                self.call_value(g, target, &[])
-            }
-        }
+        self.o_get(holder, key, target)
     }
 
     pub(crate) fn get_keyed(&mut self, target: Value, k: Value) -> Res<Value> {
@@ -799,6 +792,23 @@ impl Agent {
                 self.vm.accessor_call = true;
                 self.call_value(s, target, &[value]).map(|_| ())
             }
+            SetOutcome::Receiver(r) => {
+                if self.set_on_receiver(r, key, value)? || !strict {
+                    Ok(())
+                } else {
+                    let k = self.key_display(key);
+                    Err(self
+                        .throw_error(ErrorType::TypeError, messages::read_only(&k, "#<Object>")))
+                }
+            }
+            SetOutcome::Proxy(p) => {
+                if self.proxy_set(p, key, value, target)? || !strict {
+                    Ok(())
+                } else {
+                    let k = self.key_display(key);
+                    Err(self.throw_error(ErrorType::TypeError, messages::proxy_set_false(&k)))
+                }
+            }
         }
     }
 
@@ -874,13 +884,15 @@ impl Agent {
             }
             return Ok(Value::bool(!own));
         };
-        let done = self.heap.delete(o, key);
+        let done = self.o_delete(o, key)?;
         if !done && strict {
             let k = self.key_display(key);
-            return Err(self.throw_error(
-                ErrorType::TypeError,
-                messages::cannot_delete(&k, "#<Object>"),
-            ));
+            let text = if self.is_proxy(o) {
+                messages::proxy_delete_false(&k)
+            } else {
+                messages::cannot_delete(&k, "#<Object>")
+            };
+            return Err(self.throw_error(ErrorType::TypeError, text));
         }
         Ok(Value::bool(done))
     }
@@ -911,11 +923,11 @@ impl Agent {
             }
             return Ok(());
         };
-        for key in self.heap.own_keys(s) {
+        for key in self.o_own_keys(s)? {
             if excluded.contains(&key) {
                 continue;
             }
-            if let Some(p) = self.heap.get_own_property(s, key)
+            if let Some(p) = self.o_get_own_property(s, key)?
                 && enumerable(&p)
             {
                 let v = self.get_value(source, key)?;
@@ -990,7 +1002,7 @@ impl Agent {
             return Err(self.throw_error(ErrorType::TypeError, messages::in_not_object(&k, &v)));
         };
         let key = self.property_key(key)?;
-        Ok(self.heap.has_property(o, key))
+        self.o_has_property(o, key)
     }
 
     /// InstanceofOperator (section 13.10.2).
@@ -1411,20 +1423,22 @@ impl Agent {
             names.extend((0..units.len()).map(|i| PropertyKey::Index(i as u32)));
             at = self.primitive_proto(object).as_object();
         }
+        // A proxy's keys, then its prototype, then each key's descriptor:
+        // the reference browser's trap order.
         while let Some(o) = at {
-            for key in self.heap.own_keys(o) {
+            let keys = self.o_own_keys(o)?;
+            at = self.o_get_prototype_of(o)?.as_object();
+            for key in keys {
                 if matches!(key, PropertyKey::Symbol(_)) || !seen.insert(key) {
                     continue;
                 }
                 if self
-                    .heap
-                    .get_own_property(o, key)
+                    .o_get_own_property(o, key)?
                     .is_some_and(|p| enumerable(&p))
                 {
                     names.push(key);
                 }
             }
-            at = self.heap.get_prototype_of(o).as_object();
         }
         let it = self.alloc_internal(InternalCell::ForIn(ForIn {
             object,

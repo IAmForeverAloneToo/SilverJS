@@ -636,6 +636,8 @@ impl<'a> Scope<'a> {
         Some(match self.agent.heap.get(o, key) {
             Got::Value(v) => GetResult::Value(self.local(v)),
             Got::Getter(g) => GetResult::Getter(self.local(g)),
+            // A proxy's [[Get]] runs script: not an ordinary read (J5).
+            Got::Proxy(_) => return None,
         })
     }
 
@@ -653,6 +655,7 @@ impl<'a> Scope<'a> {
         Some(match self.agent.heap.set(o, key, value, receiver) {
             SetOutcome::Done(done) => SetResult::Done(done),
             SetOutcome::Setter(s) => SetResult::Setter(self.local(s)),
+            SetOutcome::Proxy(_) | SetOutcome::Receiver(_) => return None,
         })
     }
 

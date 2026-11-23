@@ -115,7 +115,7 @@ impl Agent {
 
     /// ArraySpeciesCreate (section 10.4.2.3).
     fn array_species_create(&mut self, original: Value, length: f64) -> Res<Value> {
-        if !self.is_array(original) {
+        if !self.is_array_through(original) {
             return self.array_create(length, None);
         }
         let key = self.realm().constructor_key;
@@ -160,7 +160,7 @@ impl Agent {
         self.get_value(o, key)
     }
 
-    fn has_index(&mut self, o: Value, i: f64) -> bool {
+    fn has_index(&mut self, o: Value, i: f64) -> Res<bool> {
         let key = self.index_key(i);
         self.has_property(o, key)
     }
@@ -235,7 +235,7 @@ pub(crate) fn construct(agent: &mut Agent, c: Call) -> Res<Value> {
 }
 
 fn is_array(agent: &mut Agent, c: Call) -> Res<Value> {
-    Ok(Value::bool(agent.is_array(agent.arg(c, 0))))
+    Ok(Value::bool(agent.is_array_through(agent.arg(c, 0))))
 }
 
 fn species(_: &mut Agent, c: Call) -> Res<Value> {
@@ -386,7 +386,7 @@ fn spreadable(agent: &mut Agent, v: Value) -> Res<bool> {
     if !s.is_undefined() {
         return Ok(agent.to_boolean(s));
     }
-    Ok(agent.is_array(v))
+    Ok(agent.is_array_through(v))
 }
 
 fn concat(agent: &mut Agent, c: Call) -> Res<Value> {
@@ -406,7 +406,7 @@ fn concat(agent: &mut Agent, c: Call) -> Res<Value> {
                     let mut k = 0.0;
                     while k < len {
                         agent.tick()?;
-                        if agent.has_index(e, k) {
+                        if agent.has_index(e, k)? {
                             let v = agent.get_index(e, k)?;
                             agent.create_index(a, n, v)?;
                         }
@@ -441,7 +441,7 @@ fn copy_within(agent: &mut Agent, c: Call) -> Res<Value> {
         };
         while count > 0.0 {
             agent.tick()?;
-            if agent.has_index(o, from) {
+            if agent.has_index(o, from)? {
                 let v = agent.get_index(o, from)?;
                 agent.put_index(o, to, v)?;
             } else {
@@ -519,7 +519,7 @@ fn index_of(agent: &mut Agent, c: Call) -> Res<Value> {
         let mut k = agent.relative(agent.arg(c, 1), len, 0.0)?;
         while k < len {
             agent.tick()?;
-            if agent.has_index(o, k) {
+            if agent.has_index(o, k)? {
                 let v = agent.get_index(o, k)?;
                 if agent.strict_equals(v, target) {
                     return Ok(Value::number(k));
@@ -546,7 +546,7 @@ fn last_index_of(agent: &mut Agent, c: Call) -> Res<Value> {
         };
         while k >= 0.0 {
             agent.tick()?;
-            if agent.has_index(o, k) {
+            if agent.has_index(o, k)? {
                 let v = agent.get_index(o, k)?;
                 if agent.strict_equals(v, target) {
                     return Ok(Value::number(k));
@@ -622,7 +622,7 @@ fn reverse(agent: &mut Agent, c: Call) -> Res<Value> {
         while lower != middle {
             agent.tick()?;
             let upper = len - lower - 1.0;
-            let has_lower = agent.has_index(o, lower);
+            let has_lower = agent.has_index(o, lower)?;
             let lv = if has_lower {
                 agent.get_index(o, lower)?
             } else {
@@ -630,7 +630,7 @@ fn reverse(agent: &mut Agent, c: Call) -> Res<Value> {
             };
             agent.vm.temps.push(lv);
             let r = (|| {
-                let has_upper = agent.has_index(o, upper);
+                let has_upper = agent.has_index(o, upper)?;
                 let uv = if has_upper {
                     agent.get_index(o, upper)?
                 } else {
@@ -672,7 +672,7 @@ fn shift(agent: &mut Agent, c: Call) -> Res<Value> {
             let mut k = 1.0;
             while k < len {
                 agent.tick()?;
-                if agent.has_index(o, k) {
+                if agent.has_index(o, k)? {
                     let v = agent.get_index(o, k)?;
                     agent.put_index(o, k - 1.0, v)?;
                 } else {
@@ -699,7 +699,7 @@ fn unshift(agent: &mut Agent, c: Call) -> Res<Value> {
             while k > 0.0 {
                 agent.tick()?;
                 let from = k - 1.0;
-                if agent.has_index(o, from) {
+                if agent.has_index(o, from)? {
                     let v = agent.get_index(o, from)?;
                     agent.put_index(o, k + n - 1.0, v)?;
                 } else {
@@ -728,7 +728,7 @@ fn slice(agent: &mut Agent, c: Call) -> Res<Value> {
             let mut n = 0.0;
             while k < fin {
                 agent.tick()?;
-                if agent.has_index(o, k) {
+                if agent.has_index(o, k)? {
                     let v = agent.get_index(o, k)?;
                     agent.create_index(a, n, v)?;
                 }
@@ -776,7 +776,7 @@ impl Agent {
         let mut k = 0.0;
         while k < len {
             self.tick()?;
-            if holes || self.has_index(o, k) {
+            if holes || self.has_index(o, k)? {
                 let v = self.get_index(o, k)?;
                 if v.is_undefined() {
                     undefined += 1;
@@ -899,7 +899,7 @@ fn splice(agent: &mut Agent, c: Call) -> Res<Value> {
             let mut k = 0.0;
             while k < delete {
                 agent.tick()?;
-                if agent.has_index(o, start + k) {
+                if agent.has_index(o, start + k)? {
                     let v = agent.get_index(o, start + k)?;
                     agent.create_index(a, k, v)?;
                 }
@@ -911,7 +911,7 @@ fn splice(agent: &mut Agent, c: Call) -> Res<Value> {
                 while k < len - delete {
                     agent.tick()?;
                     let (from, to) = (k + delete, k + insert);
-                    if agent.has_index(o, from) {
+                    if agent.has_index(o, from)? {
                         let v = agent.get_index(o, from)?;
                         agent.put_index(o, to, v)?;
                     } else {
@@ -930,7 +930,7 @@ fn splice(agent: &mut Agent, c: Call) -> Res<Value> {
                 while k > start {
                     agent.tick()?;
                     let (from, to) = (k + delete - 1.0, k + insert - 1.0);
-                    if agent.has_index(o, from) {
+                    if agent.has_index(o, from)? {
                         let v = agent.get_index(o, from)?;
                         agent.put_index(o, to, v)?;
                     } else {
@@ -1117,7 +1117,7 @@ fn each(
         let mut k = 0.0;
         while k < len {
             agent.tick()?;
-            if agent.has_index(o, k) {
+            if agent.has_index(o, k)? {
                 let v = agent.get_index(o, k)?;
                 agent.vm.temps.push(v);
                 let r = agent.call_value(f, this_arg, &[v, Value::number(k), o]);
@@ -1206,7 +1206,7 @@ fn reduce_with(agent: &mut Agent, c: Call, right: bool) -> Res<Value> {
                 }
                 let k = index(i);
                 i += 1.0;
-                if agent.has_index(o, k) {
+                if agent.has_index(o, k)? {
                     break agent.get_index(o, k)?;
                 }
             }
@@ -1216,7 +1216,7 @@ fn reduce_with(agent: &mut Agent, c: Call, right: bool) -> Res<Value> {
             while i < len {
                 agent.tick()?;
                 let k = index(i);
-                if agent.has_index(o, k) {
+                if agent.has_index(o, k)? {
                     let v = agent.get_index(o, k)?;
                     agent.vm.temps.push(acc);
                     acc = agent.call_value(f, Value::UNDEFINED, &[acc, v, Value::number(k), o])?;
@@ -1261,14 +1261,14 @@ impl Agent {
                 }
                 work.push((src, len, k + 1.0, d));
                 self.tick()?;
-                if !self.has_index(src, k) {
+                if !self.has_index(src, k)? {
                     continue;
                 }
                 let mut v = self.get_index(src, k)?;
                 if let Some((f, this_arg)) = mapper.filter(|_| work.len() == 1) {
                     v = self.call_value(f, this_arg, &[v, Value::number(k), src])?;
                 }
-                if d > 0.0 && self.is_array(v) {
+                if d > 0.0 && self.is_array_through(v) {
                     self.vm.temps.push(v);
                     let l = self.length_of(v)?;
                     work.push((v, l, 0.0, d - 1.0));

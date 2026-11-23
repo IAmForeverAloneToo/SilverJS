@@ -23,6 +23,7 @@ mod number;
 mod object;
 mod primitive;
 pub(crate) mod promise;
+pub(crate) mod proxy;
 mod reflect;
 mod stack;
 mod string;
@@ -178,6 +179,8 @@ const TABLES: &[&[Entry]] = &[
     generator::ASYNC_GENERATOR_FUNCTION_PROTO,
     generator::ASYNC_ITERATOR_PROTO,
     promise::ASYNC_FROM_SYNC_PROTO,
+    proxy::PROXY,
+    proxy::PROXY_INTERNAL,
 ];
 
 /// The tables' indices.
@@ -217,6 +220,8 @@ pub(crate) mod table {
     pub const ASYNC_GENERATOR_FUNCTION_PROTO: u32 = 32;
     pub const ASYNC_ITERATOR_PROTO: u32 = 33;
     pub const ASYNC_FROM_SYNC_PROTO: u32 = 34;
+    pub const PROXY: u32 = 35;
+    pub const PROXY_INTERNAL: u32 = 36;
 }
 
 /// How native `id` resumes a generator, if it is `%GeneratorPrototype%`'s
@@ -685,10 +690,15 @@ impl Agent {
         {
             d.value = Some(self.array_length_value(v)?);
         }
-        if o.as_object()
-            .is_some_and(|i| self.heap.define_own_property(i, key, d))
-        {
+        let done = match o.as_object() {
+            Some(i) => self.o_define_own_property(i, key, d)?,
+            None => false,
+        };
+        if done {
             Ok(())
+        } else if o.as_object().is_some_and(|i| self.is_proxy(i)) {
+            let k = self.key_display(key);
+            Err(self.type_error(messages::proxy_define_false(&k)))
         } else {
             let k = self.key_display(key);
             Err(self.type_error(format!("Cannot redefine property: {k}")))
@@ -716,9 +726,11 @@ impl Agent {
             .is_some_and(|i| self.heap.get_own_property(i, key).is_some())
     }
 
-    pub(crate) fn has_property(&self, o: Value, key: PropertyKey) -> bool {
-        o.as_object()
-            .is_some_and(|i| self.heap.has_property(i, key))
+    pub(crate) fn has_property(&mut self, o: Value, key: PropertyKey) -> Res<bool> {
+        match o.as_object() {
+            Some(i) => self.o_has_property(i, key),
+            None => Ok(false),
+        }
     }
 
     /// A new array of `values`.
@@ -759,6 +771,21 @@ impl Agent {
         v.as_object()
             .and_then(|o| self.heap.objects.get(o))
             .is_some_and(|c| c.kind() == ObjectKind::Array)
+    }
+
+    /// IsArray (section 7.2.2): an array, or a proxy of one.
+    pub(crate) fn is_array_through(&self, v: Value) -> bool {
+        let mut at = v;
+        loop {
+            let Some(c) = at.as_object().and_then(|o| self.heap.objects.get(o)) else {
+                return false;
+            };
+            match c.kind() {
+                ObjectKind::Array => return true,
+                ObjectKind::Proxy => at = c.internal().first().copied().unwrap_or(Value::NULL),
+                _ => return false,
+            }
+        }
     }
 
     pub(crate) fn kind_of(&self, v: Value) -> Option<ObjectKind> {

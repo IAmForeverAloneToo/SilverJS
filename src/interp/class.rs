@@ -777,6 +777,7 @@ impl Agent {
             Got::Value(v) => Ok(v),
             Got::Getter(g) if g.is_undefined() => Ok(Value::UNDEFINED),
             Got::Getter(g) => self.call_value(g, receiver, &[]),
+            Got::Proxy(p) => self.proxy_get(p, key, receiver),
         }
     }
 
@@ -795,6 +796,22 @@ impl Agent {
         };
         match self.heap.set(o, key, value, receiver) {
             SetOutcome::Done(true) => Ok(()),
+            SetOutcome::Receiver(r) => {
+                if self.set_on_receiver(r, key, value)? || !strict {
+                    Ok(())
+                } else {
+                    let k = self.key_display(key);
+                    Err(self.throw_error(ErrorType::TypeError, messages::proxy_set_false(&k)))
+                }
+            }
+            SetOutcome::Proxy(p) => {
+                if self.proxy_set(p, key, value, receiver)? || !strict {
+                    Ok(())
+                } else {
+                    let k = self.key_display(key);
+                    Err(self.throw_error(ErrorType::TypeError, messages::proxy_set_false(&k)))
+                }
+            }
             // Sloppy code ignores a refusal.
             SetOutcome::Done(false) if !strict => Ok(()),
             SetOutcome::Setter(s) if s.is_undefined() && !strict => Ok(()),

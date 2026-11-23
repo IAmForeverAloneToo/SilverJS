@@ -201,6 +201,169 @@ pub(crate) fn field_not_extensible(key: &str) -> String {
     format!("Cannot define property {key}, object is not extensible")
 }
 
+pub(crate) const PROXY_WITHOUT_NEW: &str = "Constructor Proxy requires 'new'";
+pub(crate) const PROXY_NON_OBJECT: &str =
+    "Cannot create proxy with a non-object as target or handler";
+pub(crate) const PROXY_PROTO_BAD: &str =
+    "'getPrototypeOf' on proxy: trap returned neither object nor null";
+pub(crate) const PROXY_PROTO_INVARIANT: &str = "'getPrototypeOf' on proxy: proxy target is non-extensible but the trap did not return its actual prototype";
+pub(crate) const PROXY_SET_PROTO_INVARIANT: &str = "'setPrototypeOf' on proxy: trap returned truish for setting a new prototype on the non-extensible proxy target";
+pub(crate) const PROXY_PREVENT_INVARIANT: &str =
+    "'preventExtensions' on proxy: trap returned truish but the proxy target is extensible";
+pub(crate) const PROXY_OWN_KEYS_NOT_OBJECT: &str = "CreateListFromArrayLike called on non-object";
+pub(crate) const PROXY_OWN_KEYS_EXTRA: &str =
+    "'ownKeys' on proxy: trap returned extra keys but proxy target is non-extensible";
+pub(crate) const PROXY_OWN_KEYS_DUPLICATE: &str =
+    "'ownKeys' on proxy: trap returned duplicate entries";
+pub(crate) const PROXY_SET_PROTO_FALSE: &str =
+    "'setPrototypeOf' on proxy: trap returned falsish for property 'undefined'";
+pub(crate) const PROXY_PREVENT_FALSE: &str = "'preventExtensions' on proxy: trap returned falsish";
+
+/// A proxy's `construct` trap returning a primitive.
+pub(crate) fn proxy_construct_not_object(what: &str) -> String {
+    format!("'construct' on proxy: trap returned non-object ('{what}')")
+}
+
+/// A proxy's `deleteProperty` trap refusing in strict code.
+pub(crate) fn proxy_delete_false(key: &str) -> String {
+    format!("'deleteProperty' on proxy: trap returned falsish for property '{key}'")
+}
+
+pub(crate) const CANNOT_PREVENT_EXTENSIONS: &str = "Cannot prevent extensions";
+
+/// A proxy's `defineProperty` trap refusing.
+pub(crate) fn proxy_define_false(key: &str) -> String {
+    format!("'defineProperty' on proxy: trap returned falsish for property '{key}'")
+}
+
+/// A proxy's `set` trap refusing in strict code.
+pub(crate) fn proxy_set_false(key: &str) -> String {
+    format!("'set' on proxy: trap returned falsish for property '{key}'")
+}
+
+/// `Cannot perform 'get' on a proxy that has been revoked`.
+pub(crate) fn proxy_revoked(what: &str) -> String {
+    format!("Cannot perform '{what}' on a proxy that has been revoked")
+}
+
+pub(crate) fn proxy_trap_not_function(trap: &str, value: &str, handler: &str) -> String {
+    format!("'{value}' returned for property '{trap}' of object '{handler}' is not a function")
+}
+
+pub(crate) fn proxy_extensible_invariant(expected: bool) -> String {
+    format!(
+        "'isExtensible' on proxy: trap result does not reflect extensibility of proxy target (which is '{expected}')"
+    )
+}
+
+pub(crate) fn proxy_gopd_bad(key: &str) -> String {
+    format!(
+        "'getOwnPropertyDescriptor' on proxy: trap returned neither object nor undefined for property '{key}'"
+    )
+}
+
+pub(crate) fn proxy_gopd_hide_nonconfigurable(key: &str) -> String {
+    format!(
+        "'getOwnPropertyDescriptor' on proxy: trap returned undefined for property '{key}' which is non-configurable in the proxy target"
+    )
+}
+
+pub(crate) fn proxy_gopd_hide_nonextensible(key: &str) -> String {
+    format!(
+        "'getOwnPropertyDescriptor' on proxy: trap returned undefined for property '{key}' which exists in the non-extensible proxy target"
+    )
+}
+
+pub(crate) fn proxy_gopd_incompatible(key: &str) -> String {
+    format!(
+        "'getOwnPropertyDescriptor' on proxy: trap returned descriptor for property '{key}' that is incompatible with the existing property in the proxy target"
+    )
+}
+
+pub(crate) fn proxy_gopd_nonconfigurable(key: &str) -> String {
+    format!(
+        "'getOwnPropertyDescriptor' on proxy: trap reported non-configurability for property '{key}' which is either non-existent or configurable in the proxy target"
+    )
+}
+
+pub(crate) fn proxy_define_nonextensible(key: &str) -> String {
+    format!(
+        "'defineProperty' on proxy: trap returned truish for adding property '{key}'  to the non-extensible proxy target"
+    )
+}
+
+pub(crate) fn proxy_define_nonconfigurable(key: &str) -> String {
+    format!(
+        "'defineProperty' on proxy: trap returned truish for defining non-configurable property '{key}' which is either non-existent or configurable in the proxy target"
+    )
+}
+
+pub(crate) fn proxy_define_incompatible(key: &str) -> String {
+    format!(
+        "'defineProperty' on proxy: trap returned truish for adding property '{key}'  that is incompatible with the existing property in the proxy target"
+    )
+}
+
+pub(crate) fn proxy_has_nonconfigurable(key: &str) -> String {
+    format!(
+        "'has' on proxy: trap returned falsish for property '{key}' which exists in the proxy target as non-configurable"
+    )
+}
+
+pub(crate) fn proxy_has_nonextensible(key: &str) -> String {
+    format!(
+        "'has' on proxy: trap returned falsish for property '{key}' but the proxy target is not extensible"
+    )
+}
+
+pub(crate) fn proxy_get_data(key: &str, want: &str, got: &str) -> String {
+    format!(
+        "'get' on proxy: property '{key}' is a read-only and non-configurable data property on the proxy target but the proxy did not return its actual value (expected '{want}' but got '{got}')"
+    )
+}
+
+pub(crate) fn proxy_get_accessor(key: &str, got: &str) -> String {
+    format!(
+        "'get' on proxy: property '{key}' is a non-configurable accessor property on the proxy target and does not have a getter function, but the trap did not return 'undefined' (got '{got}')"
+    )
+}
+
+pub(crate) fn proxy_set_data(key: &str) -> String {
+    format!(
+        "'set' on proxy: trap returned truish for property '{key}' which exists in the proxy target as a non-configurable and non-writable data property with a different value"
+    )
+}
+
+pub(crate) fn proxy_set_accessor(key: &str) -> String {
+    format!(
+        "'set' on proxy: trap returned truish for property '{key}' which exists in the proxy target as a non-configurable and non-writable accessor property without a setter"
+    )
+}
+
+pub(crate) fn proxy_delete_nonconfigurable(key: &str) -> String {
+    format!(
+        "'deleteProperty' on proxy: trap returned truish for property '{key}' which is non-configurable in the proxy target"
+    )
+}
+
+pub(crate) fn proxy_delete_nonextensible(key: &str) -> String {
+    format!(
+        "'deleteProperty' on proxy: trap returned truish for property '{key}' but the proxy target is non-extensible"
+    )
+}
+
+pub(crate) fn proxy_own_keys_bad(what: &str) -> String {
+    format!("{what} is not a valid property name")
+}
+
+pub(crate) fn proxy_own_keys_missing(key: &str) -> String {
+    format!("'ownKeys' on proxy: trap result did not include '{key}'")
+}
+
+pub(crate) fn proxy_own_keys_missing_nonextensible(key: &str) -> String {
+    format!("'ownKeys' on proxy: trap result did not include '{key}'")
+}
+
 pub(crate) const SUPER_DELETE: &str = "Unsupported reference to 'super'";
 pub(crate) const SUPER_TWICE: &str = "Super constructor may only be called once";
 

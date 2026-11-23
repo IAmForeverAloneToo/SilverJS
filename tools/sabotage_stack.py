@@ -38,7 +38,7 @@ cases = [
     (ST, '            if entry.native && skip_native {\n                skip_native = false;\n                continue;\n            }\n', ''),
     (ST, '            if entry.native && !self.native_shown(entry.callee) {\n                continue;\n            }\n', ''),
     (ST, 'Some(if n <= 0.0 { 0 } else { n.min(1e6) as usize })', 'Some(if n <= 0.0 { 0 } else { n.min(1e6) as usize + 1 })'),
-    (ST, '            Got::Getter(_) => None,\n        }\n    }', '            Got::Getter(_) => Some(10),\n        }\n    }'),
+    (ST, '            Got::Getter(_) | Got::Proxy(_) => None,\n        }\n    }', '            Got::Getter(_) | Got::Proxy(_) => Some(10),\n        }\n    }'),
     (ST, '                if entry.callee == until {', '                if false {'),
     # What a frame says.
     (ST, 'Some(format!("new {}", name.as_deref().unwrap_or("<anonymous>")))', 'name.clone()'),

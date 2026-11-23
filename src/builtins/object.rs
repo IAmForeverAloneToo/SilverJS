@@ -164,7 +164,7 @@ impl Agent {
             "set",
         ] {
             let key = self.name_key(Name::Str(name));
-            if !self.has_property(v, key) {
+            if !self.has_property(v, key)? {
                 continue;
             }
             let x = self.get_value(v, key)?;
@@ -196,16 +196,25 @@ impl Agent {
     }
 
     /// The own keys of `o`, strings or symbols.
-    pub(crate) fn own_property_keys(&self, o: Value) -> Vec<PropertyKey> {
-        o.as_object()
-            .map(|i| self.heap.own_keys(i))
-            .unwrap_or_default()
+    pub(crate) fn own_property_keys(&mut self, o: Value) -> Res<Vec<PropertyKey>> {
+        match o.as_object() {
+            Some(i) => self.o_own_keys(i),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// `[[GetOwnProperty]]` of `v`, if it is an object.
+    pub(crate) fn own_property(&mut self, v: Value, key: PropertyKey) -> Res<Option<OwnProperty>> {
+        match v.as_object() {
+            Some(i) => self.o_get_own_property(i, key),
+            None => Ok(None),
+        }
     }
 
     /// EnumerableOwnProperties (section 7.3.24): keys, values or
     /// entries, as an array.
     fn enumerable_own(&mut self, o: Value, what: u8) -> Res<Value> {
-        let keys = self.own_property_keys(o);
+        let keys = self.own_property_keys(o)?;
         let out = self.array_of(&[])?;
         self.vm.temps.push(out);
         let result = (|| {
@@ -214,10 +223,7 @@ impl Agent {
                 if matches!(key, PropertyKey::Symbol(_)) {
                     continue;
                 }
-                let Some(p) = o
-                    .as_object()
-                    .and_then(|i| self.heap.get_own_property(i, key))
-                else {
+                let Some(p) = self.own_property(o, key)? else {
                     continue;
                 };
                 let enumerable = match p {
@@ -259,11 +265,11 @@ impl Agent {
         let Some(i) = o.as_object() else {
             return Ok(true);
         };
-        if !self.heap.prevent_extensions(i) {
+        if !self.o_prevent_extensions(i)? {
             return Ok(false);
         }
-        for key in self.heap.own_keys(i) {
-            let d = match self.heap.get_own_property(i, key) {
+        for key in self.o_own_keys(i)? {
+            let d = match self.o_get_own_property(i, key)? {
                 Some(OwnProperty::Data { .. }) if frozen => Descriptor {
                     configurable: Some(false),
                     writable: Some(false),
@@ -281,17 +287,15 @@ impl Agent {
     }
 
     /// TestIntegrityLevel (section 7.3.17).
-    fn test_integrity(&self, o: Value, frozen: bool) -> bool {
+    fn test_integrity(&mut self, o: Value, frozen: bool) -> Res<bool> {
         let Some(i) = o.as_object() else {
-            return true;
+            return Ok(true);
         };
-        if self.heap.is_extensible(i) {
-            return false;
+        if self.o_is_extensible(i)? {
+            return Ok(false);
         }
-        self.heap
-            .own_keys(i)
-            .into_iter()
-            .all(|key| match self.heap.get_own_property(i, key) {
+        for key in self.o_own_keys(i)? {
+            let sealed = match self.o_get_own_property(i, key)? {
                 Some(OwnProperty::Data {
                     configurable,
                     writable,
@@ -299,7 +303,12 @@ impl Agent {
                 }) => !configurable && !(frozen && writable),
                 Some(OwnProperty::Accessor { configurable, .. }) => !configurable,
                 None => true,
-            })
+            };
+            if !sealed {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// ObjectDefineProperties (section 20.1.2.3.1).
@@ -308,14 +317,11 @@ impl Agent {
         self.vm.temps.push(props);
         let result = (|| {
             let mut descs = Vec::new();
-            for key in self.own_property_keys(props) {
-                let enumerable = props
-                    .as_object()
-                    .and_then(|i| self.heap.get_own_property(i, key))
-                    .is_some_and(|p| match p {
-                        OwnProperty::Data { enumerable, .. }
-                        | OwnProperty::Accessor { enumerable, .. } => enumerable,
-                    });
+            for key in self.own_property_keys(props)? {
+                let enumerable = self.own_property(props, key)?.is_some_and(|p| match p {
+                    OwnProperty::Data { enumerable, .. }
+                    | OwnProperty::Accessor { enumerable, .. } => enumerable,
+                });
                 if enumerable {
                     let v = self.get_value(props, key)?;
                     let d = self.descriptor_of(v)?;
@@ -347,8 +353,10 @@ impl Agent {
 
     /// The `[[Class]]`-like tag `Object.prototype.toString` begins from.
     fn builtin_tag(&self, o: Value) -> &'static str {
+        if self.is_array_through(o) {
+            return "Array";
+        }
         match self.kind_of(o) {
-            Some(ObjectKind::Array) => "Array",
             Some(ObjectKind::Arguments) => "Arguments",
             Some(ObjectKind::Error) => "Error",
             Some(ObjectKind::Boolean) => "Boolean",
@@ -372,14 +380,11 @@ fn assign(agent: &mut Agent, c: Call) -> Res<Value> {
             let from = agent.object_of(from)?;
             agent.vm.temps.push(from);
             let r = (|| {
-                for key in agent.own_property_keys(from) {
-                    let enumerable = from
-                        .as_object()
-                        .and_then(|o| agent.heap.get_own_property(o, key))
-                        .is_some_and(|p| match p {
-                            OwnProperty::Data { enumerable, .. }
-                            | OwnProperty::Accessor { enumerable, .. } => enumerable,
-                        });
+                for key in agent.own_property_keys(from)? {
+                    let enumerable = agent.own_property(from, key)?.is_some_and(|p| match p {
+                        OwnProperty::Data { enumerable, .. }
+                        | OwnProperty::Accessor { enumerable, .. } => enumerable,
+                    });
                     if enumerable {
                         let v = agent.get_value(from, key)?;
                         agent.put(to, key, v)?;
@@ -402,10 +407,7 @@ fn get_own_property_descriptor(agent: &mut Agent, c: Call) -> Res<Value> {
     let key = agent.property_key(agent.arg(c, 1));
     agent.vm.temps.pop();
     let key = key?;
-    match o
-        .as_object()
-        .and_then(|i| agent.heap.get_own_property(i, key))
-    {
+    match agent.own_property(o, key)? {
         Some(p) => agent.descriptor_object(p),
         None => Ok(Value::UNDEFINED),
     }
@@ -418,11 +420,8 @@ fn get_own_property_descriptors(agent: &mut Agent, c: Call) -> Res<Value> {
         let out = agent.plain_object()?;
         agent.vm.temps.push(out);
         let r = (|| {
-            for key in agent.own_property_keys(o) {
-                if let Some(p) = o
-                    .as_object()
-                    .and_then(|i| agent.heap.get_own_property(i, key))
-                {
+            for key in agent.own_property_keys(o)? {
+                if let Some(p) = agent.own_property(o, key)? {
                     let d = agent.descriptor_object(p)?;
                     agent.create_data_property(out, key, d);
                 }
@@ -441,7 +440,7 @@ fn own_keys_of(agent: &mut Agent, v: Value, symbols: bool) -> Res<Value> {
     let o = agent.object_of(v)?;
     agent.vm.temps.push(o);
     let keys: Vec<PropertyKey> = agent
-        .own_property_keys(o)
+        .own_property_keys(o)?
         .into_iter()
         .filter(|k| matches!(k, PropertyKey::Symbol(_)) == symbols)
         .collect();
@@ -480,7 +479,8 @@ fn has_own(agent: &mut Agent, c: Call) -> Res<Value> {
     agent.vm.temps.push(o);
     let key = agent.property_key(agent.arg(c, 1));
     agent.vm.temps.pop();
-    Ok(Value::bool(agent.has_own(o, key?)))
+    let key = key?;
+    Ok(Value::bool(agent.own_property(o, key)?.is_some()))
 }
 
 fn is(agent: &mut Agent, c: Call) -> Res<Value> {
@@ -493,8 +493,15 @@ fn is(agent: &mut Agent, c: Call) -> Res<Value> {
 
 fn prevent_extensions(agent: &mut Agent, c: Call) -> Res<Value> {
     let o = agent.arg(c, 0);
-    if let Some(i) = o.as_object() {
-        agent.heap.prevent_extensions(i);
+    if let Some(i) = o.as_object()
+        && !agent.o_prevent_extensions(i)?
+    {
+        let text = if agent.is_proxy(i) {
+            messages::PROXY_PREVENT_FALSE
+        } else {
+            messages::CANNOT_PREVENT_EXTENSIONS
+        };
+        return Err(agent.type_error(text));
     }
     Ok(o)
 }
@@ -556,8 +563,10 @@ fn define_property(agent: &mut Agent, c: Call) -> Res<Value> {
 
 fn get_prototype_of(agent: &mut Agent, c: Call) -> Res<Value> {
     let o = agent.object_of(agent.arg(c, 0))?;
-    Ok(o.as_object()
-        .map_or(Value::NULL, |i| agent.heap.get_prototype_of(i)))
+    match o.as_object() {
+        Some(i) => agent.o_get_prototype_of(i),
+        None => Ok(Value::NULL),
+    }
 }
 
 fn set_prototype_of(agent: &mut Agent, c: Call) -> Res<Value> {
@@ -573,8 +582,11 @@ fn set_prototype_of(agent: &mut Agent, c: Call) -> Res<Value> {
         )));
     }
     if let Some(i) = o.as_object()
-        && !agent.heap.set_prototype_of(i, proto)
+        && !agent.o_set_prototype_of(i, proto)?
     {
+        if agent.is_proxy(i) {
+            return Err(agent.type_error(messages::PROXY_SET_PROTO_FALSE));
+        }
         if agent.heap.is_extensible(i) {
             return Err(agent.type_error("Cyclic __proto__ value"));
         }
@@ -586,17 +598,20 @@ fn set_prototype_of(agent: &mut Agent, c: Call) -> Res<Value> {
 
 fn is_extensible(agent: &mut Agent, c: Call) -> Res<Value> {
     let o = agent.arg(c, 0);
-    Ok(Value::bool(
-        o.as_object().is_some_and(|i| agent.heap.is_extensible(i)),
-    ))
+    match o.as_object() {
+        Some(i) => agent.o_is_extensible(i).map(Value::bool),
+        None => Ok(Value::FALSE),
+    }
 }
 
 fn is_frozen(agent: &mut Agent, c: Call) -> Res<Value> {
-    Ok(Value::bool(agent.test_integrity(agent.arg(c, 0), true)))
+    agent.test_integrity(agent.arg(c, 0), true).map(Value::bool)
 }
 
 fn is_sealed(agent: &mut Agent, c: Call) -> Res<Value> {
-    Ok(Value::bool(agent.test_integrity(agent.arg(c, 0), false)))
+    agent
+        .test_integrity(agent.arg(c, 0), false)
+        .map(Value::bool)
 }
 
 fn keys(agent: &mut Agent, c: Call) -> Res<Value> {
@@ -668,12 +683,12 @@ fn lookup_accessor(agent: &mut Agent, c: Call, getter: bool) -> Res<Value> {
     let key = key?;
     let mut at = o.as_object();
     while let Some(i) = at {
-        match agent.heap.get_own_property(i, key) {
+        match agent.o_get_own_property(i, key)? {
             Some(OwnProperty::Accessor { get, set, .. }) => {
                 return Ok(if getter { get } else { set });
             }
             Some(OwnProperty::Data { .. }) => return Ok(Value::UNDEFINED),
-            None => at = agent.heap.get_prototype_of(i).as_object(),
+            None => at = agent.o_get_prototype_of(i)?.as_object(),
         }
     }
     Ok(Value::UNDEFINED)
@@ -690,7 +705,7 @@ fn lookup_setter(agent: &mut Agent, c: Call) -> Res<Value> {
 fn has_own_property(agent: &mut Agent, c: Call) -> Res<Value> {
     let key = agent.property_key(agent.arg(c, 0))?;
     let o = agent.object_of(c.this)?;
-    Ok(Value::bool(agent.has_own(o, key)))
+    Ok(Value::bool(agent.own_property(o, key)?.is_some()))
 }
 
 fn is_prototype_of(agent: &mut Agent, c: Call) -> Res<Value> {
@@ -700,7 +715,7 @@ fn is_prototype_of(agent: &mut Agent, c: Call) -> Res<Value> {
     };
     let o = agent.object_of(c.this)?;
     loop {
-        let p = agent.heap.get_prototype_of(at);
+        let p = agent.o_get_prototype_of(at)?;
         if p.is_null() || p.as_object().is_none() {
             return Ok(Value::FALSE);
         }
@@ -717,9 +732,7 @@ fn is_prototype_of(agent: &mut Agent, c: Call) -> Res<Value> {
 fn property_is_enumerable(agent: &mut Agent, c: Call) -> Res<Value> {
     let key = agent.property_key(agent.arg(c, 0))?;
     let o = agent.object_of(c.this)?;
-    let p = o
-        .as_object()
-        .and_then(|i| agent.heap.get_own_property(i, key));
+    let p = agent.own_property(o, key)?;
     Ok(Value::bool(p.is_some_and(|p| match p {
         OwnProperty::Data { enumerable, .. } | OwnProperty::Accessor { enumerable, .. } => {
             enumerable
@@ -763,8 +776,10 @@ fn to_locale_string(agent: &mut Agent, c: Call) -> Res<Value> {
 
 fn get_proto(agent: &mut Agent, c: Call) -> Res<Value> {
     let o = agent.object_of(c.this)?;
-    Ok(o.as_object()
-        .map_or(Value::NULL, |i| agent.heap.get_prototype_of(i)))
+    match o.as_object() {
+        Some(i) => agent.o_get_prototype_of(i),
+        None => Ok(Value::NULL),
+    }
 }
 
 fn set_proto(agent: &mut Agent, c: Call) -> Res<Value> {
@@ -778,7 +793,7 @@ fn set_proto(agent: &mut Agent, c: Call) -> Res<Value> {
     let Some(i) = c.this.as_object() else {
         return Ok(Value::UNDEFINED);
     };
-    if !agent.heap.set_prototype_of(i, proto) {
+    if !agent.o_set_prototype_of(i, proto)? {
         if agent.heap.is_extensible(i) {
             return Err(agent.type_error("Cyclic __proto__ value"));
         }

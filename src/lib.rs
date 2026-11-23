@@ -60,6 +60,8 @@ mod object_tests;
 #[cfg(test)]
 mod parser_tests;
 #[cfg(test)]
+mod proxy_tests;
+#[cfg(test)]
 mod realm_tests;
 #[cfg(test)]
 mod stack_tests;

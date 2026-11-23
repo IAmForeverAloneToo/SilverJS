@@ -50,7 +50,7 @@ cases = [
     (P, "if still {", "if true {"),
     (P, "let mut result = self.finish_function(f, length, &name, kind == FunctionKind::Normal);",
         "let mut result = self.finish_function(f, length, &name, false);"),
-    (P, 'messages::read_only(&k, "#<Object>")', 'messages::read_only(&k, "object")'),
+    (P, '                        .throw_error(ErrorType::TypeError, messages::read_only(&k, "#<Object>")))', '                        .throw_error(ErrorType::TypeError, messages::read_only(&k, "object")))'),
     # The realm's natives.
     (R, "agent.put_index(o, len + i as f64, v)?;", "agent.put_index(o, len, v)?;"),
     # The object model and the heap.

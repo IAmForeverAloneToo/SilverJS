@@ -106,7 +106,7 @@ fn construct(agent: &mut Agent, c: Call, t: ErrorType) -> Res<Value> {
         }
         let options = agent.arg(c, 1);
         let cause = agent.name_key(Name::Str("cause"));
-        if options.as_object().is_some() && agent.has_property(options, cause) {
+        if options.as_object().is_some() && agent.has_property(options, cause)? {
             let v = agent.get_value(options, cause)?;
             if let Some(i) = o.as_object() {
                 agent.heap.define_own_property(i, cause, hidden(v));

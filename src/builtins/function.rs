@@ -285,7 +285,7 @@ impl Agent {
                 };
                 format!("function {name}() {{ [native code] }}")
             }
-            Callable::Bound => "function () { [native code] }".to_owned(),
+            Callable::Bound | Callable::Proxy => "function () { [native code] }".to_owned(),
         })
     }
 }
@@ -363,7 +363,7 @@ impl Agent {
             )));
         }
         loop {
-            let p = self.heap.get_prototype_of(at);
+            let p = self.o_get_prototype_of(at)?;
             if p == proto {
                 return Ok(true);
             }

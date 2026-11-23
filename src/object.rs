@@ -70,6 +70,8 @@ pub(crate) enum Callable {
     /// A bound function (section 10.4.1): its target, `this` and leading
     /// arguments are the object's internal slots.
     Bound,
+    /// A proxy of a callable target (section 10.5.12).
+    Proxy,
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +139,8 @@ pub(crate) enum ObjectKind {
     /// An async function's driver: its promise and, suspended at an
     /// `await`, its frame (as a generator keeps its own).
     AsyncDriver,
+    /// A proxy: its target and handler (null once revoked).
+    Proxy,
     /// A promise: its state, result, handled flag and reactions
     /// ([`crate::builtins`]'s promise module).
     Promise,
@@ -171,7 +175,7 @@ pub enum OwnProperty {
 }
 
 impl OwnProperty {
-    fn enumerable(&self) -> bool {
+    pub(crate) fn enumerable(&self) -> bool {
         match *self {
             OwnProperty::Data { enumerable, .. } | OwnProperty::Accessor { enumerable, .. } => {
                 enumerable
@@ -179,7 +183,7 @@ impl OwnProperty {
         }
     }
 
-    fn configurable(&self) -> bool {
+    pub(crate) fn configurable(&self) -> bool {
         match *self {
             OwnProperty::Data { configurable, .. } | OwnProperty::Accessor { configurable, .. } => {
                 configurable
@@ -232,6 +236,8 @@ pub enum Got {
     /// An accessor: call this getter (undefined: the result is
     /// undefined) with the receiver.
     Getter(Value),
+    /// The chain reached this proxy: its `[[Get]]` goes on.
+    Proxy(u32),
 }
 
 /// What `[[Set]]` did.
@@ -241,6 +247,11 @@ pub enum SetOutcome {
     Done(bool),
     /// An accessor: call this setter with the receiver and the value.
     Setter(Value),
+    /// The chain reached this proxy: its `[[Set]]` goes on.
+    Proxy(u32),
+    /// The property is to be made on the receiver, a proxy: through its
+    /// `[[GetOwnProperty]]` and `[[DefineOwnProperty]]`.
+    Receiver(u32),
 }
 
 impl ObjectCell {
@@ -303,6 +314,11 @@ impl ObjectCell {
     /// What calling the object runs, if it is a function.
     pub(crate) fn callable(&self) -> Option<Callable> {
         self.extra.as_ref()?.function
+    }
+
+    /// Makes the object callable (a proxy of a callable target).
+    pub(crate) fn set_callable(&mut self, c: Callable) {
+        self.extra_mut().function = Some(c);
     }
 
     fn extra_mut(&mut self) -> &mut Extra {
@@ -1151,6 +1167,9 @@ impl Heap {
     pub(crate) fn get(&self, o: u32, key: PropertyKey) -> Got {
         let mut at = Some(o);
         while let Some(o) = at {
+            if self.object(o).is_some_and(|c| c.kind == ObjectKind::Proxy) {
+                return Got::Proxy(o);
+            }
             match self.get_own_property(o, key) {
                 Some(OwnProperty::Data { value, .. }) => return Got::Value(value),
                 Some(OwnProperty::Accessor { get, .. }) => return Got::Getter(get),
@@ -1182,6 +1201,9 @@ impl Heap {
         let mut at = Some(o);
         let mut found = None;
         while let Some(o) = at {
+            if self.object(o).is_some_and(|c| c.kind == ObjectKind::Proxy) {
+                return SetOutcome::Proxy(o);
+            }
             if let Some(p) = self.get_own_property(o, key) {
                 found = Some(p);
                 break;
@@ -1203,6 +1225,9 @@ impl Heap {
                 let Some(r) = receiver.as_object() else {
                     return SetOutcome::Done(false);
                 };
+                if self.object(r).is_some_and(|c| c.kind == ObjectKind::Proxy) {
+                    return SetOutcome::Receiver(r);
+                }
                 let done = match self.get_own_property(r, key) {
                     Some(OwnProperty::Accessor { .. }) => false,
                     Some(OwnProperty::Data {
