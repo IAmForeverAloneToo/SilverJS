@@ -185,6 +185,8 @@ pub(crate) struct Vm {
     /// The agent's jobs, run when the embedder asks and after each
     /// script.
     pub(crate) jobs: crate::builtins::promise::Jobs,
+    /// `Atomics.waitAsync`'s waiters, first come first.
+    pub(crate) waiters: Vec<crate::builtins::atomics::Waiter>,
 }
 
 impl Default for Vm {
@@ -212,6 +214,7 @@ impl Default for Vm {
             kept_alive: Vec::new(),
             hosts: Vec::new(),
             jobs: crate::builtins::promise::Jobs::new(),
+            waiters: Vec::new(),
         }
     }
 }
@@ -223,6 +226,9 @@ impl Vm {
         out.extend_from_slice(&self.stack);
         for job in &self.jobs {
             out.extend(job.values());
+        }
+        for w in &self.waiters {
+            out.extend([w.buffer, w.promise]);
         }
         for f in &self.frames {
             out.extend([

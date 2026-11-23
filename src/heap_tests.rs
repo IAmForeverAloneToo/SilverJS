@@ -180,6 +180,7 @@ fn a_released_handle_panics() {
 fn the_heap_limit_holds_and_garbage_makes_room() {
     let mut agent = Agent::new(AgentOptions {
         heap_limit: 2 << 20,
+        ..AgentOptions::default()
     });
     agent.scope(|scope| {
         // Garbage only: collections keep making room.
@@ -298,6 +299,7 @@ fn heap_stats_read_in_constant_time() {
     small.set_stress(false);
     let mut large = Agent::new(AgentOptions {
         heap_limit: 1 << 30,
+        ..AgentOptions::default()
     });
     large.set_stress(false);
     let _kept = large.scope(|scope| {

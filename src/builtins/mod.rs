@@ -13,6 +13,9 @@
 //! order is data, not an accident of the code.
 
 mod array;
+pub(crate) mod atomics;
+mod base64;
+mod binary;
 mod collection;
 mod error;
 mod function;
@@ -199,6 +202,13 @@ const TABLES: &[&[Entry]] = &[
     typed::TYPED_ARRAY_PROTO,
     typed::TYPED_CTOR,
     typed::TYPED_PROTO,
+    binary::SHARED_ARRAY_BUFFER,
+    binary::SHARED_ARRAY_BUFFER_PROTO,
+    binary::DATA_VIEW_PROTO,
+    atomics::ATOMICS,
+    base64::UINT8_ARRAY,
+    base64::UINT8_ARRAY_PROTO,
+    global::SHARED_GLOBAL,
 ];
 
 /// The tables' indices.
@@ -256,6 +266,13 @@ pub(crate) mod table {
     pub const TYPED_ARRAY_PROTO: u32 = 50;
     pub const TYPED_CTOR: u32 = 51;
     pub const TYPED_PROTO: u32 = 52;
+    pub const SHARED_ARRAY_BUFFER: u32 = 53;
+    pub const SHARED_ARRAY_BUFFER_PROTO: u32 = 54;
+    pub const DATA_VIEW_PROTO: u32 = 55;
+    pub const ATOMICS: u32 = 56;
+    pub const UINT8_ARRAY: u32 = 57;
+    pub const UINT8_ARRAY_PROTO: u32 = 58;
+    pub const SHARED_GLOBAL: u32 = 59;
 }
 
 /// How native `id` resumes a generator, if it is `%GeneratorPrototype%`'s
@@ -359,6 +376,10 @@ impl Agent {
 
     pub(crate) fn range_error(&mut self, message: impl AsRef<str>) -> Abrupt {
         self.throw_error(ErrorType::RangeError, message)
+    }
+
+    pub(crate) fn syntax_error(&mut self, message: impl AsRef<str>) -> Abrupt {
+        self.throw_error(ErrorType::SyntaxError, message)
     }
 
     // Making natives and intrinsics.

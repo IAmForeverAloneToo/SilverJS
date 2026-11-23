@@ -52,6 +52,7 @@ const STRIDES: [u32; 4] = [1, 2, 8, 64];
 fn run(source: &str, stride: u32) -> String {
     let mut agent = Agent::new(AgentOptions {
         heap_limit: 16 << 20,
+        ..AgentOptions::default()
     });
     agent.set_stress_every(stride);
     agent.set_random_seed(0x5eed);

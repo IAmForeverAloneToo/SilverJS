@@ -141,6 +141,11 @@ pub(crate) struct Intrinsics {
     /// [`crate::buffer::Elem`].
     pub typed: [Value; 10],
     pub typed_prototypes: [Value; 10],
+    pub shared_array_buffer: Value,
+    pub shared_array_buffer_prototype: Value,
+    pub data_view: Value,
+    pub data_view_prototype: Value,
+    pub atomics: Value,
 }
 
 impl Intrinsics {
@@ -199,6 +204,11 @@ impl Intrinsics {
         typed_array_prototype: Value::UNDEFINED,
         typed: [Value::UNDEFINED; 10],
         typed_prototypes: [Value::UNDEFINED; 10],
+        shared_array_buffer: Value::UNDEFINED,
+        shared_array_buffer_prototype: Value::UNDEFINED,
+        data_view: Value::UNDEFINED,
+        data_view_prototype: Value::UNDEFINED,
+        atomics: Value::UNDEFINED,
     };
 
     /// The typed array constructor of `elem`.
@@ -270,6 +280,11 @@ impl Intrinsics {
             self.array_buffer_prototype,
             self.typed_array,
             self.typed_array_prototype,
+            self.shared_array_buffer,
+            self.shared_array_buffer_prototype,
+            self.data_view,
+            self.data_view_prototype,
+            self.atomics,
         ]);
         out.extend_from_slice(&self.typed);
         out.extend_from_slice(&self.typed_prototypes);
@@ -330,6 +345,12 @@ pub(crate) const CTORS: &[Entry] = &[
     ctor("Float32Array", 3, super::typed::construct_float32),
     ctor("Float64Array", 3, super::typed::construct_float64),
     ctor("Float16Array", 3, super::typed::construct_float16),
+    ctor(
+        "SharedArrayBuffer",
+        1,
+        super::binary::construct_shared_array_buffer,
+    ),
+    ctor("DataView", 1, super::binary::construct_data_view),
     method("FunctionPrototype", 0, super::function::function_prototype),
     method("ThrowTypeError", 0, super::function::throw_type_error),
     method("parseInt", 2, parse_int),
@@ -367,6 +388,7 @@ pub(crate) const GLOBAL: &[Entry] = &[
     intrinsic("globalThis"),
     intrinsic("Math"),
     intrinsic("ArrayBuffer"),
+    intrinsic("Atomics"),
     intrinsic("Uint8Array"),
     intrinsic("Int8Array"),
     intrinsic("Uint16Array"),
@@ -377,6 +399,7 @@ pub(crate) const GLOBAL: &[Entry] = &[
     intrinsic("Float32Array"),
     intrinsic("Float64Array"),
     intrinsic("Float16Array"),
+    intrinsic("DataView"),
     intrinsic("Map"),
     intrinsic("Set"),
     intrinsic("WeakMap"),
@@ -395,6 +418,10 @@ pub(crate) const GLOBAL: &[Entry] = &[
     method("isFinite", 1, is_finite),
     method("isNaN", 1, is_nan),
 ];
+
+/// What a cross-origin isolated page's global object has past the
+/// rest: `SharedArrayBuffer`, when the agent's options share memory.
+pub(crate) const SHARED_GLOBAL: &[Entry] = &[intrinsic("SharedArrayBuffer")];
 
 impl Agent {
     /// The intrinsic the global object's table names.
@@ -423,6 +450,9 @@ impl Agent {
             "parseFloat" => i.parse_float,
             "globalThis" => r.global,
             "ArrayBuffer" => i.array_buffer,
+            "SharedArrayBuffer" => i.shared_array_buffer,
+            "DataView" => i.data_view,
+            "Atomics" => i.atomics,
             _ if name.ends_with("Array") => crate::buffer::Elem::ALL
                 .iter()
                 .position(|e| e.name() == name)
@@ -678,6 +708,17 @@ impl Agent {
                 self.heap.set_prototype_of(o, ta);
             }
         }
+        // SharedArrayBuffer and DataView.
+        let sabp = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.shared_array_buffer_prototype = sabp);
+        let sab = self.make_ctor("SharedArrayBuffer", sabp)?;
+        self.set_intrinsics(|i| i.shared_array_buffer = sab);
+        let dvp = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.data_view_prototype = dvp);
+        let dv = self.make_ctor("DataView", dvp)?;
+        self.set_intrinsics(|i| i.data_view = dv);
+        let atomics = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.atomics = atomics);
         let ip = self.realm().intrinsics.iterator_prototype;
         let mip = self.alloc_object(ObjectCell::new(ip, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.map_iterator_prototype = mip);
@@ -829,7 +870,30 @@ impl Agent {
             );
             self.install_table(c, table::TYPED_CTOR, Value::UNDEFINED, &[size])?;
             self.install_table(p, table::TYPED_PROTO, c, &[size])?;
+            if *e == crate::buffer::Elem::Uint8 {
+                self.install_table(c, table::UINT8_ARRAY, Value::UNDEFINED, &[])?;
+                self.install_table(p, table::UINT8_ARRAY_PROTO, c, &[])?;
+            }
         }
+        self.install_table(
+            i.shared_array_buffer,
+            table::SHARED_ARRAY_BUFFER,
+            Value::UNDEFINED,
+            &[],
+        )?;
+        self.install_table(
+            i.shared_array_buffer_prototype,
+            table::SHARED_ARRAY_BUFFER_PROTO,
+            i.shared_array_buffer,
+            &[],
+        )?;
+        self.install_table(
+            i.data_view_prototype,
+            table::DATA_VIEW_PROTO,
+            i.data_view,
+            &[],
+        )?;
+        self.install_table(i.atomics, table::ATOMICS, Value::UNDEFINED, &[])?;
         self.install_table(i.promise, table::PROMISE, Value::UNDEFINED, &[])?;
         self.install_table(
             i.promise_prototype,
@@ -867,6 +931,9 @@ impl Agent {
         }
         let g = self.realm().global;
         self.install_table(g, table::GLOBAL, Value::UNDEFINED, &[])?;
+        if self.shared_memory {
+            self.install_table(g, table::SHARED_GLOBAL, Value::UNDEFINED, &[])?;
+        }
         let key = self.name_key(Name::Str("eval"));
         let eval = match g.as_object().map(|o| self.heap.get(o, key)) {
             Some(crate::object::Got::Value(v)) => v,

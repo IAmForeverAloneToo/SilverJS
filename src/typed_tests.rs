@@ -127,6 +127,95 @@ fn numeric_keys_are_the_elements_and_no_others() {
     );
 }
 
+fn shared_agent() -> Agent {
+    Agent::new(AgentOptions {
+        shared_memory: true,
+        ..AgentOptions::default()
+    })
+}
+
+#[test]
+fn data_views_read_and_write_in_either_byte_order() {
+    assert_eq!(
+        run(
+            "var b = new ArrayBuffer(12); var d = new DataView(b, 2); var u = new Uint8Array(b); \
+             d.setInt16(0, -2); d.setInt16(2, -2, true); d.setUint32(4, 0x01020304); \
+             var e = new DataView(new ArrayBuffer(8)); e.setFloat64(0, Math.PI); \
+             [u.join(), d.getUint16(0), d.getUint16(0, true), d.getInt32(4, true), d.byteLength, \
+              e.getFloat64(0) === Math.PI, e.getFloat64(0, true) === Math.PI, e.getUint8(0), \
+              ArrayBuffer.isView(d), new DataView(b, 12).byteLength, \
+              (function () { var r = new ArrayBuffer(4, { maxByteLength: 8 }); var t = new DataView(r); r.transfer(); \
+                try { return t.byteLength; } catch (x) { return x.name; } })()].join('|')"
+        ),
+        "0,0,255,254,254,255,1,2,3,4,0,0|65534|65279|67305985|10|true|false|64|true|0|TypeError"
+    );
+}
+
+#[test]
+fn atomics_wrap_as_their_element_type_does() {
+    assert_eq!(
+        run(
+            "var i8 = new Int8Array([127, -1]); var u16 = new Uint16Array(1); var i32 = new Int32Array([6]); \
+             [Atomics.add(i8, 0, 1), i8[0], Atomics.sub(u16, 0, 1), u16[0], Atomics.xor(i32, 0, 3), \
+              Atomics.and(i32, 0, -1), Atomics.or(i32, 0, 8), i32[0], \
+              Atomics.compareExchange(i8, 1, 255, 5), i8[1], Atomics.compareExchange(i8, 1, 4, 9), i8[1], \
+              Atomics.exchange(u16, 0, -2), u16[0], Atomics.store(i8, 0, Infinity), i8[0], \
+              (function () { var r = new ArrayBuffer(8, { maxByteLength: 8 }); var t = new Int32Array(r, 0, 2); \
+                try { return Atomics.store(t, 0, { valueOf: function () { r.resize(4); return 1; } }); } catch (x) { return x.name; } })()].join()"
+        ),
+        "127,-128,0,65535,6,5,5,13,-1,5,5,5,65535,65534,Infinity,0,TypeError"
+    );
+}
+
+#[test]
+fn shared_buffers_grow_and_notify_wakes_waiters_in_order() {
+    let mut agent = shared_agent();
+    agent.set_stress(true);
+    assert_eq!(
+        run_in(
+            &mut agent,
+            "var log = []; var s = new SharedArrayBuffer(2, { maxByteLength: 8 }); var v = new Uint16Array(s); \
+             s.grow(8); var a = new Int32Array(s); \
+             Atomics.waitAsync(a, 0, 0).value.then(function (r) { log.push('first ' + r); }); \
+             Atomics.waitAsync(a, 0, 0).value.then(function (r) { log.push('second ' + r); }); \
+             Atomics.waitAsync(a, 1, 0).value.then(function (r) { log.push('other ' + r); }); \
+             [v.length, s.byteLength, s.growable].join()"
+        ),
+        "4,8,true"
+    );
+    // The waiters' promises are held by the agent alone while they wait.
+    assert_eq!(
+        run_in(
+            &mut agent,
+            "log.push(Atomics.notify(a, 0, 1), Atomics.notify(a, 1), Atomics.notify(a, 0), Atomics.notify(a, 0)); \
+             log.join()"
+        ),
+        "1,1,1,0"
+    );
+    assert_eq!(
+        run_in(&mut agent, "log.join()"),
+        "1,1,1,0,first ok,other ok,second ok"
+    );
+}
+
+#[test]
+fn base64_and_hex_decode_as_far_as_the_array_goes() {
+    assert_eq!(
+        run(
+            "var a = new Uint8Array(4); var r = a.setFromBase64('AQIDBAUG'); \
+             var c = new Uint8Array(6); var e; try { c.setFromBase64('AQIDBA*'); } catch (x) { e = x.name; } \
+             var h = new Uint8Array(3); var hr = h.setFromHex('0aFf'); \
+             var bytes = new Uint8Array([0, 1, 2, 253, 254, 255]); var url = bytes.toBase64({ alphabet: 'base64url' }); \
+             [r.read, r.written, a.join(), e, c.join(), hr.read, hr.written, h.join(), bytes.toBase64(), url, \
+              Uint8Array.fromBase64(url, { alphabet: 'base64url' }).join(), bytes.toHex(), \
+              Uint8Array.fromBase64('AQ=\\n=').join(), Uint8Array.fromBase64('AQI', { lastChunkHandling: 'stop-before-partial' }).length, \
+              new Uint8Array(0).setFromBase64('AQID').read, \
+              Uint8Array.fromBase64('-w', { alphabet: 'base64url' }).join()].join('|')"
+        ),
+        "4|3|1,2,3,0|SyntaxError|1,2,3,0,0,0|4|2|10,255,0|AAEC/f7/|AAEC_f7_|0,1,2,253,254,255|000102fdfeff|1|0|0|251"
+    );
+}
+
 /// The binary data probe's keys, as the reference browser gave them
 /// (J4.2a's groups).
 const PROBE_KEYS: &str = r#"function keys(o) {
@@ -393,5 +482,370 @@ sort comparator: TypeError: The comparison function must be either a function or
 with index: RangeError: Invalid typed array index
 incompatible display: TypeError: Method Map.prototype.get called on incompatible receiver [object Int8Array]
 incompatible buffer display: TypeError: Method Map.prototype.get called on incompatible receiver #<ArrayBuffer>"#
+    );
+}
+
+/// The binary data probe's `DataView`, `Atomics` and base64 and hex
+/// (J4.2b's), on a page without shared memory.
+const PROBE_VIEWS: &str = r#"function keys(o) {
+  return Reflect.ownKeys(o).map(function (k) {
+    var d = Object.getOwnPropertyDescriptor(o, k);
+    var kind = 'get' in d ? 'accessor' : typeof d.value;
+    var flags = (d.writable ? 'w' : '-') + (d.enumerable ? 'e' : '-') + (d.configurable ? 'c' : '-');
+    var f = typeof d.value === 'function' ? d.value : d.get;
+    var extra = typeof f === 'function' ? ' len=' + f.length + ' name=' + f.name : '';
+    if (d.set) extra += ' set=' + d.set.name;
+    return String(k) + ' [' + kind + ' ' + flags + extra + ']';
+  });
+}
+if (typeof JSON === 'undefined') var JSON = { stringify: function (o) { return '{' + Object.keys(o).filter(function (k) { return o[k] !== undefined; }).map(function (k) { return '"' + k + '":' + String(o[k]); }).join(',') + '}'; } };
+function show(v) { return Object.is(v, -0) ? '-0' : String(v); }
+function list(ta) { return Array.prototype.map.call(ta, show).join(); }
+var out = { keys: {}, facts: [], errors: [] }; var f = out.facts;
+out.keys['Uint8Array'] = keys(Uint8Array);
+out.keys['Uint8Array.prototype'] = keys(Uint8Array.prototype);
+out.keys['DataView'] = keys(DataView);
+out.keys['DataView.prototype'] = keys(DataView.prototype);
+out.keys['Atomics'] = keys(Atomics);
+out.keys.SharedArrayBuffer = typeof SharedArrayBuffer;
+f.push('dv ' + (function () { var d = new DataView(new ArrayBuffer(8)); d.setUint16(0, 0x1234); d.setFloat32(4, 1.5, true); return [d.getUint8(0), d.getUint16(0, true), d.getFloat32(4, true), d.getInt8(1), d.byteLength, d.getFloat16 ? d.getFloat16(4, true) : 'none'].join(); })());
+f.push('b64 ' + new Uint8Array([0xfb, 0xff, 0x01]).toBase64() + ' ' + new Uint8Array([0xfb, 0xff, 0x01]).toBase64({ alphabet: 'base64url', omitPadding: true }) + ' ' + new Uint8Array([0xab, 0x0c]).toHex() + ' ' + list(Uint8Array.fromBase64('+/8B')) + ' ' + list(Uint8Array.fromHex('ab0C')) + ' ' + list(Uint8Array.fromBase64('ab c', { lastChunkHandling: 'loose' })));
+f.push('setFrom ' + JSON.stringify(new Uint8Array(2).setFromBase64('AQID')) + ' ' + JSON.stringify(new Uint8Array(4).setFromHex('0102')));
+f.push('atomics ' + (function () { var a = new Int32Array(2); return [Atomics.add(a, 0, 5), Atomics.load(a, 0), Atomics.compareExchange(a, 0, 5, 7), a[0], Atomics.isLockFree(4), Atomics.notify(a, 0, 1)].join(); })());
+function err(label, fn) {
+  try { var v = fn(); out.errors.push(label + ': no throw ' + String(v)); }
+  catch (e) { out.errors.push(label + ': ' + e.constructor.name + ': ' + e.message); }
+}
+var det = new ArrayBuffer(8); var detv = new Uint8Array(det); det.transfer();
+err('DataView()', function () { DataView(new ArrayBuffer(1)); });
+err('new DataView(1)', function () { new DataView(1); });
+err('DataView offset', function () { new DataView(new ArrayBuffer(4), 5); });
+err('DataView length', function () { new DataView(new ArrayBuffer(4), 1, 4); });
+err('DataView detached', function () { new DataView(det); });
+err('getInt8 range', function () { new DataView(new ArrayBuffer(4)).getInt8(4); });
+err('getInt32 range', function () { new DataView(new ArrayBuffer(4)).getInt32(1); });
+err('getInt8 negative', function () { new DataView(new ArrayBuffer(4)).getInt8(-1); });
+err('getInt8 receiver', function () { DataView.prototype.getInt8.call({}, 0); });
+err('dv detached get', function () { var b = new ArrayBuffer(4); var d = new DataView(b); b.transfer(); d.getInt8(0); });
+err('dv byteLength detached', function () { var b = new ArrayBuffer(4); var d = new DataView(b); b.transfer(); return d.byteLength; });
+err('fromBase64 bad', function () { Uint8Array.fromBase64('*'); });
+err('fromBase64 partial', function () { Uint8Array.fromBase64('AQ'); });
+err('fromBase64 strict', function () { Uint8Array.fromBase64('AR==', { lastChunkHandling: 'strict' }); });
+err('fromBase64 option', function () { Uint8Array.fromBase64('AQ==', { alphabet: 'x' }); });
+err('fromBase64 not string', function () { Uint8Array.fromBase64(1); });
+err('fromHex odd', function () { Uint8Array.fromHex('abc'); });
+err('fromHex bad', function () { Uint8Array.fromHex('zz'); });
+err('toBase64 receiver', function () { Uint8Array.prototype.toBase64.call(new Int8Array(1)); });
+err('toHex detached', function () { var b = new ArrayBuffer(1); var a = new Uint8Array(b); b.transfer(); a.toHex(); });
+err('Atomics non-integer', function () { Atomics.add(new Float64Array(1), 0, 1); });
+err('Atomics index', function () { Atomics.load(new Int32Array(1), 5); });
+err('Atomics wait', function () { Atomics.wait(new Int32Array(1), 0, 0, 0); });
+err('Atomics not ta', function () { Atomics.load([1], 0); });
+var lines = [];
+Object.keys(out.keys).forEach(function (k) { var v = out.keys[k]; lines.push(k + ': ' + (typeof v === 'string' ? v : v.join(', '))); });
+lines.concat(out.facts, out.errors).join('\n')"#;
+
+/// The shared memory probe: a cross-origin isolated page's
+/// `SharedArrayBuffer` and `Atomics`, and the messages the first probe
+/// did not reach.
+const PROBE_SHARED: &str = r#"if (typeof JSON === 'undefined') var JSON = { stringify: function (o) { return '{' + Object.keys(o).filter(function (k) { return o[k] !== undefined; }).map(function (k) { return '"' + k + '":' + String(o[k]); }).join(',') + '}'; } };
+
+// SilverJS's J4.2b probe: SharedArrayBuffer and Atomics as Chrome shows
+// them on a cross-origin isolated page (served with
+// Cross-Origin-Opener-Policy: same-origin and
+// Cross-Origin-Embedder-Policy: require-corp), plus DataView's and
+// base64's messages the first probe did not reach.
+function keys(o) {
+  return Reflect.ownKeys(o).map(function (k) {
+    var d = Object.getOwnPropertyDescriptor(o, k);
+    var kind = 'get' in d ? 'accessor' : typeof d.value;
+    var flags = (d.writable ? 'w' : '-') + (d.enumerable ? 'e' : '-') + (d.configurable ? 'c' : '-');
+    var f = typeof d.value === 'function' ? d.value : d.get;
+    var extra = typeof f === 'function' ? ' len=' + f.length + ' name=' + f.name : '';
+    if (d.set) extra += ' set=' + d.set.name;
+    return String(k) + ' [' + kind + ' ' + flags + extra + ']';
+  });
+}
+var out = { isolated: true, keys: {}, facts: [], errors: [] };
+out.order = Object.getOwnPropertyNames(globalThis).filter(function (k) { return ['Math', 'Intl', 'ArrayBuffer', 'SharedArrayBuffer', 'Atomics', 'Uint8Array', 'Float16Array', 'DataView', 'Map'].indexOf(k) >= 0; }).join();
+function fact(label, fn) {
+  try { out.facts.push(label + ' ' + String(fn())); }
+  catch (e) { out.facts.push(label + ' threw ' + e.constructor.name + ': ' + e.message); }
+}
+function err(label, fn) {
+  try { var v = fn(); out.errors.push(label + ': no throw ' + String(v)); }
+  catch (e) { out.errors.push(label + ': ' + e.constructor.name + ': ' + e.message); }
+}
+var S = typeof SharedArrayBuffer === 'function' ? SharedArrayBuffer : null;
+if (S) {
+  out.keys.SharedArrayBuffer = keys(S);
+  out.keys['SharedArrayBuffer.prototype'] = keys(S.prototype);
+  var gsab = new S(4, { maxByteLength: 8 });
+  fact('sab', function () { var s = new S(4); return [s.byteLength, s.growable, s.maxByteLength, Object.prototype.toString.call(s), S.length, S.name, ArrayBuffer.isView(new Int8Array(s))]; });
+  fact('sab growable', function () { return [gsab.byteLength, gsab.growable, gsab.maxByteLength, (gsab.grow(6), gsab.byteLength), new Uint8Array(gsab).length]; });
+  fact('sab slice', function () { var s = new S(4); new Uint8Array(s).set([1, 2, 3, 4]); var t = s.slice(1, 3); return [t instanceof S, t.byteLength, new Uint8Array(t).join()]; });
+  fact('sab species', function () { return Object.getOwnPropertyDescriptor(S, Symbol.species).get.name; });
+  fact('sab transfer', function () { return typeof S.prototype.transfer + ' ' + typeof S.prototype.resize + ' ' + typeof S.prototype.detached; });
+  fact('dv over sab', function () { var d = new DataView(new S(4)); d.setInt16(0, -2); return [d.getInt16(0), d.buffer instanceof S]; });
+  fact('ta over sab', function () { var a = new Int32Array(new S(8)); a[1] = 7; return [a.length, a[1], a.buffer instanceof S]; });
+  fact('atomics shared', function () { var a = new Int32Array(new S(8)); return [Atomics.store(a, 0, -0), Object.is(Atomics.store(a, 0, -0), 0), Atomics.store(a, 0, 3.7), Atomics.add(a, 0, 2), Atomics.sub(a, 0, 1), Atomics.and(a, 0, 6), Atomics.or(a, 0, 1), Atomics.xor(a, 0, 3), Atomics.exchange(a, 0, 9), Atomics.load(a, 0), Atomics.notify(a, 0), Atomics.notify(a, 0, 0)]; });
+  fact('atomics wrap', function () { var a = new Uint8Array(new S(2)); return [Atomics.add(a, 0, 300), a[0], Atomics.sub(a, 0, 50), a[0], Atomics.store(a, 1, 1e10), a[1], Atomics.compareExchange(a, 1, 1e10, 5), a[1]]; });
+  fact('waitAsync not-equal', function () { var r = Atomics.waitAsync(new Int32Array(new S(4)), 0, 1); return [r.async, r.value, Object.keys(r).join('/')]; });
+  fact('waitAsync timed-out', function () { var r = Atomics.waitAsync(new Int32Array(new S(4)), 0, 0, 0); return [r.async, r.value]; });
+  fact('waitAsync promise', function () { var a = new Int32Array(new S(4)); var r = Atomics.waitAsync(a, 0, 0); var n = Atomics.notify(a, 0); return [r.async, r.value instanceof Promise, n, Object.getPrototypeOf(r) === Object.prototype]; });
+  fact('waitAsync timeout NaN', function () { var r = Atomics.waitAsync(new Int32Array(new S(4)), 0, 0, NaN); return [r.async, typeof r.value]; });
+  err('sab()', function () { S(1); });
+  err('new sab(-1)', function () { new S(-1); });
+  err('sab max', function () { new S(8, { maxByteLength: 4 }); });
+  err('sab grow shrink', function () { new S(4, { maxByteLength: 8 }).grow(2); });
+  err('sab grow past max', function () { new S(4, { maxByteLength: 8 }).grow(9); });
+  err('sab grow fixed', function () { new S(4).grow(4); });
+  err('sab byteLength on ab', function () { Object.getOwnPropertyDescriptor(S.prototype, 'byteLength').get.call(new ArrayBuffer(1)); });
+  err('ab byteLength on sab', function () { Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get.call(new S(1)); });
+  err('ab slice on sab', function () { ArrayBuffer.prototype.slice.call(new S(1)); });
+  err('sab slice species', function () { var s = new S(4); s.constructor = {}; s.constructor[Symbol.species] = function () { return s; }; s.slice(); });
+  err('sab slice species ab', function () { var s = new S(4); s.constructor = {}; s.constructor[Symbol.species] = function (n) { return new ArrayBuffer(n); }; s.slice(); });
+  err('sab slice short', function () { var s = new S(4); s.constructor = {}; s.constructor[Symbol.species] = function () { return new S(1); }; s.slice(); });
+  err('wait main thread', function () { Atomics.wait(new Int32Array(new S(4)), 0, 0, 0); });
+  err('wait not-equal main', function () { return Atomics.wait(new Int32Array(new S(4)), 0, 1, 0); });
+  err('wait Int8', function () { Atomics.wait(new Int8Array(new S(4)), 0, 0, 0); });
+  err('wait Uint32', function () { Atomics.wait(new Uint32Array(new S(4)), 0, 0, 0); });
+  err('waitAsync Int8', function () { Atomics.waitAsync(new Int8Array(new S(4)), 0, 0); });
+  err('waitAsync index', function () { Atomics.waitAsync(new Int32Array(new S(4)), 2, 0); });
+  err('notify Int8', function () { Atomics.notify(new Int8Array(new S(4)), 0); });
+  err('notify float', function () { Atomics.notify(new Float64Array(new S(8)), 0); });
+  err('notify count', function () { return Atomics.notify(new Int32Array(new S(4)), 0, -5); });
+  err('dv sab detached?', function () { var d = new DataView(new S(4)); return d.byteLength; });
+}
+fact('isLockFree', function () { return [0, 1, 2, 3, 4, 5, 8, 16].map(function (n) { return Atomics.isLockFree(n); }); });
+fact('pause', function () { return [Atomics.pause(), Atomics.pause(5), Atomics.pause(-0), Atomics.pause.length]; });
+fact('atomics plain', function () { var a = new Uint16Array(2); return [Atomics.store(a, 0, 70000), a[0], Atomics.exchange(a, 0, -1), a[0], Atomics.compareExchange(a, 0, -1, 2), a[0], Atomics.notify(a, 0), Atomics.notify(new Int32Array(1), 0, 5)]; });
+fact('atomics tag', function () { return [Object.prototype.toString.call(Atomics), typeof Atomics]; });
+fact('waitAsync plain', function () { try { Atomics.waitAsync(new Int32Array(1), 0, 0); return 'no throw'; } catch (e) { return e.message; } });
+fact('dv tag', function () { return [DataView.name, DataView.length, Object.prototype.toString.call(new DataView(new ArrayBuffer(1)))]; });
+fact('dv float16', function () { var d = new DataView(new ArrayBuffer(8)); d.setFloat16(0, 1e5); d.setFloat16(2, 65519, true); d.setFloat16(4, 5.960464477539063e-8); return [d.getFloat16(0), d.getFloat16(2, true), d.getFloat16(4), d.getUint16(0), d.getUint16(4)]; });
+fact('dv tracking', function () { var b = new ArrayBuffer(4, { maxByteLength: 8 }); var d = new DataView(b, 1); var e = new DataView(b, 1, 2); b.resize(8); var r = [d.byteLength, e.byteLength]; b.resize(2); r.push(d.byteLength); try { e.byteLength; } catch (x) { r.push(x.message); } b.resize(0); try { d.byteOffset; } catch (x) { r.push(x.message); } return r; });
+fact('dv conversions', function () { var d = new DataView(new ArrayBuffer(8)); d.setUint8(0, 257); d.setInt8(1, 200); d.setUint32(4, -1); return [d.getUint8(0), d.getInt8(1), d.getUint32(4), d.getInt32(4), d.getUint16(undefined), d.setUint8(0, 1), d.getUint8('0x0')]; });
+fact('dv set order', function () { var b = new ArrayBuffer(4); var d = new DataView(b); var log = []; try { d.setUint8({ valueOf: function () { log.push('i'); return 9; } }, { valueOf: function () { log.push('v'); return 1; } }); } catch (e) { log.push(e.constructor.name); } return log.join(); });
+fact('dv set detached in value', function () { var b = new ArrayBuffer(4); var d = new DataView(b); try { d.setUint8(0, { valueOf: function () { b.transfer(); return 1; } }); return 'no throw'; } catch (e) { return e.constructor.name + ': ' + e.message; } });
+fact('b64 options', function () { var a = new Uint8Array([1, 2, 3, 4]); return [a.toBase64(), a.toBase64({ omitPadding: true }), a.toBase64({ alphabet: 'base64url' }), a.toBase64({ omitPadding: 0 }), Uint8Array.fromBase64(' A Q I D ').join(), Uint8Array.fromBase64('AQID', { lastChunkHandling: 'stop-before-partial' }).join(), Uint8Array.fromBase64('AQIDBA', { lastChunkHandling: 'stop-before-partial' }).join(), Uint8Array.fromBase64('AR', { lastChunkHandling: 'loose' }).join()]; });
+fact('setFromBase64', function () { var a = new Uint8Array(4); var r = a.setFromBase64('AQIDBAUG'); var b = new Uint8Array(2); var s = b.setFromBase64('AQ==AQ', { lastChunkHandling: 'loose' }); return [JSON.stringify(r), a.join(), JSON.stringify(s), b.join()]; });
+fact('setFromHex', function () { var a = new Uint8Array(1); var r = a.setFromHex('0102'); return [JSON.stringify(r), a.join()]; });
+fact('b64 keys order', function () { return Object.keys(new Uint8Array(2).setFromBase64('AQ==')).join(); });
+err('setInt8 range', function () { new DataView(new ArrayBuffer(4)).setInt8(4, 0); });
+err('setFloat64 range', function () { new DataView(new ArrayBuffer(4)).setFloat64(0, 0); });
+err('dv getIndex huge', function () { new DataView(new ArrayBuffer(4)).getInt8(2 ** 53); });
+err('dv detached set', function () { var b = new ArrayBuffer(4); var d = new DataView(b); b.transfer(); d.setInt8(0, 0); });
+err('dv byteOffset detached', function () { var b = new ArrayBuffer(4); var d = new DataView(b); b.transfer(); return d.byteOffset; });
+err('dv buffer receiver', function () { Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer').get.call({}); });
+err('dv byteLength receiver', function () { Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength').get.call(new Int8Array(1)); });
+err('dv byteOffset receiver', function () { Object.getOwnPropertyDescriptor(DataView.prototype, 'byteOffset').get.call(1); });
+err('setFloat16 receiver', function () { DataView.prototype.setFloat16.call({}, 0, 0); });
+err('DataView ta', function () { new DataView(new Int8Array(1)); });
+err('DataView offset neg', function () { new DataView(new ArrayBuffer(4), -1); });
+err('DataView length neg', function () { new DataView(new ArrayBuffer(4), 0, -1); });
+err('DataView resizable past', function () { new DataView(new ArrayBuffer(4, { maxByteLength: 8 }), 5); });
+err('DataView detached in proto', function () { var b = new ArrayBuffer(4); var nt = function () {}.bind(); Object.defineProperty(nt, 'prototype', { get: function () { b.transfer(); return DataView.prototype; } }); Reflect.construct(DataView, [b], nt); });
+err('DataView shrunk in proto', function () { var b = new ArrayBuffer(4, { maxByteLength: 8 }); var nt = function () {}.bind(); Object.defineProperty(nt, 'prototype', { get: function () { b.resize(1); return DataView.prototype; } }); Reflect.construct(DataView, [b, 2], nt); });
+err('DataView shrunk len in proto', function () { var b = new ArrayBuffer(4, { maxByteLength: 8 }); var nt = function () {}.bind(); Object.defineProperty(nt, 'prototype', { get: function () { b.resize(2); return DataView.prototype; } }); Reflect.construct(DataView, [b, 0, 3], nt); });
+err('toBase64 alphabet', function () { new Uint8Array(1).toBase64({ alphabet: 'x' }); });
+err('toBase64 options type', function () { new Uint8Array(1).toBase64(1); });
+err('fromBase64 handling', function () { Uint8Array.fromBase64('AQ==', { lastChunkHandling: 'x' }); });
+err('fromBase64 partial strict', function () { Uint8Array.fromBase64('AQ', { lastChunkHandling: 'strict' }); });
+err('fromBase64 extra pad', function () { Uint8Array.fromBase64('AQ===' ); });
+err('fromBase64 pad middle', function () { Uint8Array.fromBase64('AQ==AQID'); });
+err('fromBase64 single', function () { Uint8Array.fromBase64('A'); });
+err('fromBase64 url char', function () { Uint8Array.fromBase64('-_8B'); });
+err('fromBase64 std char in url', function () { Uint8Array.fromBase64('+/8B', { alphabet: 'base64url' }); });
+err('setFromBase64 receiver', function () { Uint8Array.prototype.setFromBase64.call(new Int8Array(1), 'AQ=='); });
+err('setFromBase64 not string', function () { new Uint8Array(1).setFromBase64(1); });
+err('setFromBase64 detached', function () { var b = new ArrayBuffer(1); var a = new Uint8Array(b); b.transfer(); a.setFromBase64('AQ=='); });
+err('setFromBase64 bad', function () { new Uint8Array(4).setFromBase64('AQ*D'); });
+err('setFromHex receiver', function () { Uint8Array.prototype.setFromHex.call([], '01'); });
+err('setFromHex bad', function () { new Uint8Array(4).setFromHex('01zz'); });
+err('setFromHex odd', function () { new Uint8Array(4).setFromHex('012'); });
+err('setFromHex not string', function () { new Uint8Array(4).setFromHex(1); });
+err('fromHex not string', function () { Uint8Array.fromHex(1); });
+err('toHex receiver', function () { Uint8Array.prototype.toHex.call(new Uint16Array(1)); });
+err('toBase64 detached', function () { var b = new ArrayBuffer(1); var a = new Uint8Array(b); b.transfer(); a.toBase64(); });
+err('toBase64 detached in option', function () { var b = new ArrayBuffer(1); var a = new Uint8Array(b); a.toBase64({ get alphabet() { b.transfer(); return 'base64'; } }); });
+err('Atomics number', function () { Atomics.load(1, 0); });
+err('Atomics string', function () { Atomics.load('ab', 0); });
+err('Atomics object', function () { Atomics.load({}, 0); });
+err('Atomics dv', function () { Atomics.load(new DataView(new ArrayBuffer(4)), 0); });
+err('Atomics subclass', function () { class I extends Float32Array {} Atomics.load(new I(1), 0); });
+err('Atomics store float',function () { Atomics.store(new Float32Array(1), 0, 1); });
+err('Atomics clamped', function () { Atomics.load(new Uint8ClampedArray(1), 0); });
+err('Atomics index neg', function () { Atomics.load(new Int32Array(1), -1); });
+err('Atomics index huge', function () { Atomics.load(new Int32Array(1), 2 ** 53); });
+err('Atomics detached', function () { var b = new ArrayBuffer(4); var a = new Int32Array(b); b.transfer(); Atomics.load(a, 0); });
+err('Atomics detached in value', function () { var b = new ArrayBuffer(4); var a = new Int32Array(b); return Atomics.store(a, 0, { valueOf: function () { b.transfer(); return 1; } }); });
+err('Atomics shrunk in value', function () { var b = new ArrayBuffer(8, { maxByteLength: 8 }); var a = new Int32Array(b); return Atomics.add(a, 1, { valueOf: function () { b.resize(4); return 1; } }); });
+err('Atomics.wait index', function () { Atomics.wait(new Int32Array(1), 5, 0, 0); });
+err('Atomics.notify index', function () { Atomics.notify(new Int32Array(1), 5); });
+err('Atomics.pause float', function () { Atomics.pause(1.5); });
+err('Atomics.pause string', function () { Atomics.pause('1'); });
+err('Atomics.pause NaN', function () { Atomics.pause(NaN); });
+err('Atomics.pause Infinity', function () { Atomics.pause(Infinity); });
+err('Atomics.pause big', function () { return Atomics.pause(2 ** 60); });
+
+var lines = ['order ' + out.order];
+Object.keys(out.keys).forEach(function (k) { lines.push(k + ': ' + out.keys[k].join(', ')); });
+lines.concat(out.facts, out.errors).join('\n')"#;
+
+#[test]
+fn views_atomics_and_base64_read_as_the_reference_browser_gives_them() {
+    assert_eq!(
+        run(PROBE_VIEWS),
+        r#"Uint8Array: length [number --c], name [string --c], prototype [object ---], BYTES_PER_ELEMENT [number ---], fromBase64 [function w-c len=1 name=fromBase64], fromHex [function w-c len=1 name=fromHex]
+Uint8Array.prototype: constructor [function w-c len=3 name=Uint8Array], BYTES_PER_ELEMENT [number ---], toBase64 [function w-c len=0 name=toBase64], setFromBase64 [function w-c len=1 name=setFromBase64], toHex [function w-c len=0 name=toHex], setFromHex [function w-c len=1 name=setFromHex]
+DataView: length [number --c], name [string --c], prototype [object ---]
+DataView.prototype: constructor [function w-c len=1 name=DataView], buffer [accessor --c len=0 name=get buffer], byteLength [accessor --c len=0 name=get byteLength], byteOffset [accessor --c len=0 name=get byteOffset], getInt8 [function w-c len=1 name=getInt8], setInt8 [function w-c len=2 name=setInt8], getUint8 [function w-c len=1 name=getUint8], setUint8 [function w-c len=2 name=setUint8], getInt16 [function w-c len=1 name=getInt16], setInt16 [function w-c len=2 name=setInt16], getUint16 [function w-c len=1 name=getUint16], setUint16 [function w-c len=2 name=setUint16], getInt32 [function w-c len=1 name=getInt32], setInt32 [function w-c len=2 name=setInt32], getUint32 [function w-c len=1 name=getUint32], setUint32 [function w-c len=2 name=setUint32], getFloat16 [function w-c len=1 name=getFloat16], setFloat16 [function w-c len=2 name=setFloat16], getFloat32 [function w-c len=1 name=getFloat32], setFloat32 [function w-c len=2 name=setFloat32], getFloat64 [function w-c len=1 name=getFloat64], setFloat64 [function w-c len=2 name=setFloat64], Symbol(Symbol.toStringTag) [string --c]
+Atomics: load [function w-c len=2 name=load], store [function w-c len=3 name=store], add [function w-c len=3 name=add], sub [function w-c len=3 name=sub], and [function w-c len=3 name=and], or [function w-c len=3 name=or], xor [function w-c len=3 name=xor], exchange [function w-c len=3 name=exchange], compareExchange [function w-c len=4 name=compareExchange], isLockFree [function w-c len=1 name=isLockFree], wait [function w-c len=4 name=wait], waitAsync [function w-c len=4 name=waitAsync], notify [function w-c len=3 name=notify], pause [function w-c len=0 name=pause], Symbol(Symbol.toStringTag) [string --c]
+SharedArrayBuffer: undefined
+dv 18,13330,1.5,52,8,0
+b64 +/8B -_8B ab0c 251,255,1 171,12 105,183
+setFrom {"read":0,"written":0} {"read":4,"written":2}
+atomics 0,5,5,7,true,0
+DataView(): TypeError: Constructor DataView requires 'new'
+new DataView(1): TypeError: First argument to DataView constructor must be an ArrayBuffer
+DataView offset: RangeError: Start offset 5 is outside the bounds of the buffer
+DataView length: RangeError: Invalid DataView length 4
+DataView detached: TypeError: Cannot perform DataView constructor on a detached ArrayBuffer
+getInt8 range: RangeError: Offset is outside the bounds of the DataView
+getInt32 range: RangeError: Offset is outside the bounds of the DataView
+getInt8 negative: RangeError: Offset is outside the bounds of the DataView
+getInt8 receiver: TypeError: Method DataView.prototype.getInt8 called on incompatible receiver #<Object>
+dv detached get: TypeError: Cannot perform DataView.prototype.getInt8 on a detached or out-of-bounds ArrayBuffer
+dv byteLength detached: TypeError: Cannot perform get DataView.prototype.byteLength on a detached or out-of-bounds ArrayBuffer
+fromBase64 bad: SyntaxError: Found a character that cannot be part of a valid base64 string.
+fromBase64 partial: no throw undefined
+fromBase64 strict: SyntaxError: The base64 input terminates with non-zero padding bits.
+fromBase64 option: TypeError: invalid option x
+fromBase64 not string: TypeError: input argument must be a string
+fromHex odd: SyntaxError: Input string must contain hex characters in even length
+fromHex bad: SyntaxError: Input string must contain hex characters in even length
+toBase64 receiver: TypeError: Method Uint8Array.prototype.toBase64 called on incompatible receiver undefined
+toHex detached: TypeError: Cannot perform Uint8Array.prototype.toHex on a detached or out-of-bounds ArrayBuffer
+Atomics non-integer: TypeError: [object Float64Array] is not an integer typed array.
+Atomics index: RangeError: Invalid atomic access index
+Atomics wait: TypeError: [object Int32Array] is not a shared typed array.
+Atomics not ta: TypeError: [object Array] is not an integer typed array."#
+    );
+    let mut shared = Agent::new(AgentOptions {
+        shared_memory: true,
+        ..AgentOptions::default()
+    });
+    assert_eq!(
+        run_in(&mut shared, PROBE_SHARED),
+        r#"order Math,ArrayBuffer,Atomics,Uint8Array,Float16Array,DataView,Map,SharedArrayBuffer
+SharedArrayBuffer: length [number --c], name [string --c], prototype [object ---], Symbol(Symbol.species) [accessor --c len=0 name=get [Symbol.species]]
+SharedArrayBuffer.prototype: constructor [function w-c len=1 name=SharedArrayBuffer], byteLength [accessor --c len=0 name=get byteLength], slice [function w-c len=2 name=slice], maxByteLength [accessor --c len=0 name=get maxByteLength], growable [accessor --c len=0 name=get growable], grow [function w-c len=1 name=grow], Symbol(Symbol.toStringTag) [string --c]
+sab 4,false,4,[object SharedArrayBuffer],1,SharedArrayBuffer,true
+sab growable 4,true,8,6,6
+sab slice true,2,2,3
+sab species get [Symbol.species]
+sab transfer undefined undefined undefined
+dv over sab -2,true
+ta over sab 2,7,true
+atomics shared 0,true,3,3,5,4,4,5,6,9,0,0
+atomics wrap 0,44,44,250,10000000000,0,0,5
+waitAsync not-equal false,not-equal,async/value
+waitAsync timed-out false,timed-out
+waitAsync promise true,true,1,true
+waitAsync timeout NaN true,object
+isLockFree false,true,true,false,true,false,true,false
+pause ,,,0
+atomics plain threw TypeError: [object Uint16Array] is not an int32 or BigInt64 typed array.
+atomics tag [object Atomics],object
+waitAsync plain [object Int32Array] is not a shared typed array.
+dv tag DataView,1,[object DataView]
+dv float16 Infinity,65504,5.960464477539063e-8,31744,1
+dv tracking 7,2,1,Cannot perform get DataView.prototype.byteLength on a detached or out-of-bounds ArrayBuffer,Cannot perform get DataView.prototype.byteOffset on a detached or out-of-bounds ArrayBuffer
+dv conversions 1,-56,4294967295,-1,456,,1
+dv set order i,v,RangeError
+dv set detached in value TypeError: Cannot perform DataView.prototype.setUint8 on a detached or out-of-bounds ArrayBuffer
+b64 options AQIDBA==,AQIDBA,AQIDBA==,AQIDBA==,1,2,3,1,2,3,1,2,3,1
+setFromBase64 threw SyntaxError: Found a character that cannot be part of a valid base64 string.
+setFromHex {"read":2,"written":1},1
+b64 keys order read,written
+sab(): TypeError: Constructor SharedArrayBuffer requires 'new'
+new sab(-1): RangeError: Invalid array buffer length
+sab max: RangeError: Invalid array buffer max length
+sab grow shrink: RangeError: SharedArrayBuffer.prototype.grow: Invalid length parameter
+sab grow past max: RangeError: SharedArrayBuffer.prototype.grow: Invalid length parameter
+sab grow fixed: TypeError: Method SharedArrayBuffer.prototype.grow called on incompatible receiver #<SharedArrayBuffer>
+sab byteLength on ab: TypeError: Method get SharedArrayBuffer.prototype.byteLength called on incompatible receiver #<ArrayBuffer>
+ab byteLength on sab: TypeError: Method get ArrayBuffer.prototype.byteLength called on incompatible receiver #<SharedArrayBuffer>
+ab slice on sab: TypeError: Method ArrayBuffer.prototype.slice called on incompatible receiver #<SharedArrayBuffer>
+sab slice species: TypeError: SharedArrayBuffer subclass returned this from species constructor
+sab slice species ab: TypeError: Method SharedArrayBuffer.prototype.slice called on incompatible receiver #<ArrayBuffer>
+sab slice short: TypeError: Derived SharedArrayBuffer constructor created a buffer which was too small
+wait main thread: TypeError: Atomics.wait cannot be called in this context
+wait not-equal main: TypeError: Atomics.wait cannot be called in this context
+wait Int8: TypeError: [object Int8Array] is not an int32 or BigInt64 typed array.
+wait Uint32: TypeError: [object Uint32Array] is not an int32 or BigInt64 typed array.
+waitAsync Int8: TypeError: [object Int8Array] is not an int32 or BigInt64 typed array.
+waitAsync index: RangeError: Invalid atomic access index
+notify Int8: TypeError: [object Int8Array] is not an int32 or BigInt64 typed array.
+notify float: TypeError: [object Float64Array] is not an int32 or BigInt64 typed array.
+notify count: no throw 0
+dv sab detached?: no throw 4
+setInt8 range: RangeError: Offset is outside the bounds of the DataView
+setFloat64 range: RangeError: Offset is outside the bounds of the DataView
+dv getIndex huge: RangeError: Offset is outside the bounds of the DataView
+dv detached set: TypeError: Cannot perform DataView.prototype.setInt8 on a detached or out-of-bounds ArrayBuffer
+dv byteOffset detached: TypeError: Cannot perform get DataView.prototype.byteOffset on a detached or out-of-bounds ArrayBuffer
+dv buffer receiver: TypeError: Method get DataView.prototype.buffer called on incompatible receiver #<Object>
+dv byteLength receiver: TypeError: Method get DataView.prototype.byteLength called on incompatible receiver [object Int8Array]
+dv byteOffset receiver: TypeError: Method get DataView.prototype.byteOffset called on incompatible receiver 1
+setFloat16 receiver: TypeError: Method DataView.prototype.setFloat16 called on incompatible receiver #<Object>
+DataView ta: TypeError: First argument to DataView constructor must be an ArrayBuffer
+DataView offset neg: RangeError: Start offset -1 is outside the bounds of the buffer
+DataView length neg: RangeError: Invalid DataView length -1
+DataView resizable past: RangeError: Start offset 5 is outside the bounds of the buffer
+DataView detached in proto: TypeError: Cannot perform DataView constructor on a detached ArrayBuffer
+DataView shrunk in proto: RangeError: Start offset 2 is outside the bounds of the buffer
+DataView shrunk len in proto: RangeError: Invalid DataView length undefined
+toBase64 alphabet: TypeError: invalid option x
+toBase64 options type: TypeError: invalid_argument
+fromBase64 handling: TypeError: invalid option x
+fromBase64 partial strict: SyntaxError: The base64 input terminates with a single character, excluding padding (=).
+fromBase64 extra pad: SyntaxError: Found a character that cannot be part of a valid base64 string.
+fromBase64 pad middle: SyntaxError: Found a character that cannot be part of a valid base64 string.
+fromBase64 single: SyntaxError: The base64 input terminates with a single character, excluding padding (=).
+fromBase64 url char: SyntaxError: Found a character that cannot be part of a valid base64 string.
+fromBase64 std char in url: SyntaxError: Found a character that cannot be part of a valid base64 string.
+setFromBase64 receiver: TypeError: Method Uint8Array.prototype.setFromBase64 called on incompatible receiver undefined
+setFromBase64 not string: TypeError: input argument must be a string
+setFromBase64 detached: TypeError: Cannot perform Uint8Array.prototype.setFromBase64 on a detached or out-of-bounds ArrayBuffer
+setFromBase64 bad: SyntaxError: Found a character that cannot be part of a valid base64 string.
+setFromHex receiver: TypeError: this is not a typed array.
+setFromHex bad: SyntaxError: Input string must contain hex characters in even length
+setFromHex odd: SyntaxError: Input string must contain hex characters in even length
+setFromHex not string: TypeError: input argument must be a string
+fromHex not string: TypeError: input argument must be a string
+toHex receiver: TypeError: Method Uint8Array.prototype.toHex called on incompatible receiver undefined
+toBase64 detached: TypeError: Cannot perform Uint8Array.prototype.toBase64 on a detached or out-of-bounds ArrayBuffer
+toBase64 detached in option: TypeError: Cannot perform Uint8Array.prototype.toBase64 on a detached or out-of-bounds ArrayBuffer
+Atomics number: TypeError: 1 is not an integer typed array.
+Atomics string: TypeError: ab is not an integer typed array.
+Atomics object: TypeError: #<Object> is not an integer typed array.
+Atomics dv: TypeError: #<DataView> is not an integer typed array.
+Atomics subclass: TypeError: [object Float32Array] is not an integer typed array.
+Atomics store float: TypeError: [object Float32Array] is not an integer typed array.
+Atomics clamped: TypeError: [object Uint8ClampedArray] is not an integer typed array.
+Atomics index neg: RangeError: Invalid atomic access index
+Atomics index huge: RangeError: Invalid atomic access index
+Atomics detached: TypeError: Cannot perform Atomics.load on a detached or out-of-bounds ArrayBuffer
+Atomics detached in value: TypeError: Cannot perform Atomics.store on a detached or out-of-bounds ArrayBuffer
+Atomics shrunk in value: TypeError: Cannot perform Atomics.add on a detached or out-of-bounds ArrayBuffer
+Atomics.wait index: TypeError: [object Int32Array] is not a shared typed array.
+Atomics.notify index: RangeError: Invalid atomic access index
+Atomics.pause float: TypeError: Atomics.pause argument must be undefined or an integer
+Atomics.pause string: TypeError: Atomics.pause argument must be undefined or an integer
+Atomics.pause NaN: TypeError: Atomics.pause argument must be undefined or an integer
+Atomics.pause Infinity: TypeError: Atomics.pause argument must be undefined or an integer
+Atomics.pause big: no throw undefined"#
     );
 }

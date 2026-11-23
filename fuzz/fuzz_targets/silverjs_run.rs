@@ -46,6 +46,7 @@ fuzz_target!(|data: &[u8]| {
     let source = String::from_utf8_lossy(data);
     let mut agent = Agent::new(AgentOptions {
         heap_limit: HEAP_LIMIT,
+        ..AgentOptions::default()
     });
     let calls = Rc::new(Cell::new(0u32));
     let hook = Rc::clone(&calls);

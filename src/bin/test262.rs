@@ -56,12 +56,11 @@ const REVISION: &str = "2e58f87d8350ad51224617a041c6e041d52f8444";
 const ROOTS: &[&str] = &["test/language", "test/built-ins", "test/annexB"];
 
 /// Features the reference browser does not ship: their tests are not
-/// applicable, neither passes nor failures.
+/// applicable, neither passes nor failures. `SharedArrayBuffer` is a
+/// cross-origin isolated page's alone, which Silver does not make
+/// (design section 1.7); `Atomics` every page has.
 const NOT_APPLICABLE: &[&str] = &[
     "SharedArrayBuffer",
-    "Atomics",
-    "Atomics.waitAsync",
-    "Atomics.pause",
     "decorators",
     "import-defer",
     "source-phase-imports",
@@ -83,12 +82,20 @@ const NOT_RUN: &[&str] = &["tail-call-optimization", "error-stack-accessor"];
 /// Tests that fail because SilverJS shows what the reference browser
 /// shows where ECMA-262 says otherwise (docs/chrome-surface.md): its own
 /// `caller` and `arguments` accessors on `Function.prototype`, not
-/// `%ThrowTypeError%`.
+/// `%ThrowTypeError%`; a `DataView`'s `byteLength` and `byteOffset`
+/// throwing once it is detached or out of bounds, where these tests
+/// want 0.
 const CHROME_CHOICES: &[&str] = &[
     "test/built-ins/Function/prototype/arguments/prop-desc.js",
     "test/built-ins/Function/prototype/caller-arguments/accessor-properties.js",
     "test/built-ins/Function/prototype/caller/prop-desc.js",
     "test/built-ins/ThrowTypeError/unique-per-realm-function-proto.js",
+    "test/built-ins/DataView/prototype/byteLength/detached-buffer.js",
+    "test/built-ins/DataView/prototype/byteLength/resizable-array-buffer-auto.js",
+    "test/built-ins/DataView/prototype/byteLength/resizable-array-buffer-fixed.js",
+    "test/built-ins/DataView/prototype/byteOffset/detached-buffer.js",
+    "test/built-ins/DataView/prototype/byteOffset/resizable-array-buffer-auto.js",
+    "test/built-ins/DataView/prototype/byteOffset/resizable-array-buffer-fixed.js",
 ];
 
 /// How long one test may take before it is reported as a failure

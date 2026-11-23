@@ -479,9 +479,12 @@ object of one realm passed to another is the same object. The API
 gives the embedder the current realm and lets it run code in any realm
 of the agent, which is all G90's WindowProxy, entry settings and
 lending need. An agent is `!Send`: it lives on one thread, and a worker
-has an agent of its own on its own. `SharedArrayBuffer` stays absent,
-as it is now (`install` removes it); the backing-store design admits
-an `Arc`ed shared store when cross-origin isolation is taken up.
+has an agent of its own on its own. `SharedArrayBuffer` stays absent
+from Silver's pages: SilverJS has it (J4.2b) but puts it on a global
+object only when the agent's options ask, as a cross-origin isolated
+page has it, and Silver does not ask; its bytes are an agent's own
+until the backing-store design's `Arc`ed shared store is taken up with
+cross-origin isolation. `Atomics` every page has.
 
 **WebAssembly: zero-copy by construction.** An `ArrayBuffer`'s bytes
 are either SilverJS's own or an **external store** given by the
@@ -601,12 +604,13 @@ which natives use far less than `Local`s; J6's benches report it.
     `silverjs_gen` is written, and with them the check that every
     handle resolves in its own agent and a stale one panics rather
     than resolves;
-  - `silverjs_buffers`: the bytes made a script of views over
-    resizable and fixed buffers whose methods run while values'
+  - `silverjs_buffers`: the bytes made a script of typed arrays and
+    data views over resizable, fixed and shared buffers whose
+    methods, `Atomics` and the base64 decoders run while values'
     `valueOf`, getters and callbacks resize, detach and grow the
-    buffers; no panic, only the spec's TypeErrors and RangeErrors, a
-    detached view empty, no view past its buffer (J4.2, the lead's
-    condition);
+    buffers; no panic, only the spec's TypeErrors and RangeErrors (and
+    a decoder's SyntaxErrors), a detached view empty, no view past
+    its buffer (J4.2, the lead's condition);
   - `silverjs_bytecode`: any bytes to the compiled-unit reader, which
     must refuse what it did not write (a checksum and a structural
     validation), never panic, never run it.
@@ -682,8 +686,10 @@ memoization already removes the security reason for one.
 - the measured set is `test/language`, `test/built-ins` and
   `test/annexB`, minus `intl402` (ECMA-402 is Silver's, section 1.10),
   `staging`, and features the reference browser does not ship
-  (`SharedArrayBuffer`, `Atomics.wait`, unshipped proposals), which
-  are counted as not applicable, not as passes;
+  (`SharedArrayBuffer`, which a page has only when cross-origin
+  isolated, and with it `Atomics.wait`; unshipped proposals), which
+  are counted as not applicable, not as passes. `Atomics` itself every
+  page has, and its tests count (J4.2b);
 - a QuickJS-ng adapter in `js` (a test binary there, since QuickJS is
   Silver's side) runs the same set through the same front-matter
   reader (exported by SilverJS under its `test262` feature), so

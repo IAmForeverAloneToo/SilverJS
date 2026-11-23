@@ -90,6 +90,17 @@ ECMA-262 has `%ThrowTypeError%` as both accessors; Test262's three tests
 of that identity, which QuickJS-ng passes, are recorded failures for
 this reason.
 
+## DataView and Atomics out of bounds
+
+| Observed (Chrome 157, the binary data probes) | Step | Test |
+|---|---|---|
+| A `DataView`'s `byteLength` and `byteOffset` throw `Cannot perform get DataView.prototype.byteLength on a detached or out-of-bounds ArrayBuffer` once its buffer is detached or shrunk past it | J4.2b | `typed_tests::views_atomics_and_base64_read_as_the_reference_browser_gives_them` |
+| An `Atomics` operation whose element a conversion shrank away throws `Cannot perform Atomics.add on a detached or out-of-bounds ArrayBuffer` (a TypeError), even where its view is still in bounds | J4.2b | `typed_tests::views_atomics_and_base64_read_as_the_reference_browser_gives_them` |
+
+Test262's six tests that want 0 from a detached or out-of-bounds
+`DataView`'s accessors are recorded failures for this reason; ECMA-262
+has a RangeError where the `Atomics` row has a TypeError.
+
 ## Own-key order of built-ins
 
 | Observed | Step | Test |

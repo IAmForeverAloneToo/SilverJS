@@ -161,9 +161,15 @@ pub(crate) enum ObjectKind {
     /// An `ArrayBuffer` (section 25.1): its data block, an internal cell
     /// ([`crate::buffer`]), in its first internal slot.
     ArrayBuffer,
+    /// A `SharedArrayBuffer` (section 25.2): as an `ArrayBuffer`, never
+    /// detached.
+    SharedArrayBuffer,
     /// A typed array (section 10.4.5): its buffer, element type, byte
     /// offset and length ([`crate::buffer::View`]).
     TypedArray,
+    /// A `DataView` (section 25.3): its buffer, byte offset and byte
+    /// length (undefined when it tracks a resizable buffer's).
+    DataView,
 }
 
 /// An object cell.

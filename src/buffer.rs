@@ -435,3 +435,79 @@ impl Heap {
         }
     }
 }
+
+/// A `DataView`'s record: its buffer, byte offset and byte length (none
+/// when it tracks a resizable buffer's).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DataView {
+    pub buffer: u32,
+    pub offset: usize,
+    pub length: Option<usize>,
+}
+
+impl Heap {
+    /// Whether `o` is an `ArrayBuffer` or a `SharedArrayBuffer`.
+    pub(crate) fn is_buffer(&self, o: u32) -> bool {
+        self.objects.get(o).is_some_and(|c| {
+            matches!(
+                c.kind(),
+                ObjectKind::ArrayBuffer | ObjectKind::SharedArrayBuffer
+            )
+        })
+    }
+
+    /// Whether `o` is a `SharedArrayBuffer`.
+    pub(crate) fn is_shared(&self, o: u32) -> bool {
+        self.objects
+            .get(o)
+            .is_some_and(|c| c.kind() == ObjectKind::SharedArrayBuffer)
+    }
+
+    /// The `DataView` `o`'s record.
+    pub(crate) fn data_view(&self, o: u32) -> Option<DataView> {
+        let cell = self.objects.get(o)?;
+        if cell.kind() != ObjectKind::DataView {
+            return None;
+        }
+        let s = cell.internal();
+        Some(DataView {
+            buffer: s.first()?.as_object()?,
+            offset: s.get(1)?.as_number()? as usize,
+            length: s.get(2)?.as_number().map(|n| n as usize),
+        })
+    }
+
+    /// GetViewByteLength of `DataView` `o` (section 25.3.1.3), `None`
+    /// when it is out of bounds (IsViewOutOfBounds, section 25.3.1.4).
+    pub(crate) fn data_view_length(&self, o: u32) -> Option<usize> {
+        let v = self.data_view(o)?;
+        let buf = self.buffer(v.buffer)?;
+        if buf.detached {
+            return None;
+        }
+        let size = buf.bytes.len();
+        let end = match v.length {
+            Some(n) => v.offset.checked_add(n)?,
+            None => size,
+        };
+        (v.offset <= size && end <= size).then(|| end - v.offset)
+    }
+
+    /// `n` bytes of buffer object `b` from `at`, copied out.
+    pub(crate) fn buffer_bytes(&self, b: u32, at: usize, n: usize) -> Option<Vec<u8>> {
+        let bytes = self.buffer(b)?.bytes.get(at..at.checked_add(n)?)?;
+        Some(bytes.to_vec())
+    }
+
+    /// Writes `bytes` over buffer object `b`'s from `at`, if they fit.
+    pub(crate) fn store_buffer_bytes(&mut self, b: u32, at: usize, bytes: &[u8]) {
+        let Some(end) = at.checked_add(bytes.len()) else {
+            return;
+        };
+        if let Some(buf) = self.buffer_mut(b)
+            && let Some(dst) = buf.bytes.get_mut(at..end)
+        {
+            dst.copy_from_slice(bytes);
+        }
+    }
+}

@@ -36,12 +36,16 @@ pub struct AgentOptions {
     /// The bytes the heap may hold; an allocation past it collects first,
     /// and fails with [`OutOfMemory`] if that does not make room.
     pub heap_limit: usize,
+    /// Whether its realms' global objects have `SharedArrayBuffer`, as a
+    /// cross-origin isolated page's has; off, as on any other page.
+    pub shared_memory: bool,
 }
 
 impl Default for AgentOptions {
     fn default() -> AgentOptions {
         AgentOptions {
             heap_limit: 256 << 20,
+            shared_memory: false,
         }
     }
 }
@@ -84,6 +88,8 @@ pub struct Agent {
     stress_count: u32,
     /// The interpreter's state: its frames, registers and realm.
     pub(crate) vm: crate::interp::Vm,
+    /// [`AgentOptions::shared_memory`].
+    pub(crate) shared_memory: bool,
 }
 
 impl Agent {
@@ -99,6 +105,7 @@ impl Agent {
             stress: u32::from(cfg!(feature = "gc-stress")),
             stress_count: 0,
             vm: crate::interp::Vm::default(),
+            shared_memory: options.shared_memory,
         }
     }
 

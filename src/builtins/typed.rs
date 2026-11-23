@@ -20,8 +20,8 @@ use crate::value::{RefKind, Value};
 /// The largest buffer made: past it a length is refused outright. The
 /// reference browser refuses 10^12 bytes as a length and attempts 2^34
 /// (failing for want of memory); this bound lies between.
-const MAX_BYTES: usize = 1 << 35;
-const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
+pub(super) const MAX_BYTES: usize = 1 << 35;
+pub(super) const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
 
 /// `ArrayBuffer`.
 pub(crate) const ARRAY_BUFFER: &[Entry] = &[
@@ -131,7 +131,7 @@ impl Agent {
     }
 
     /// ToIndex (section 7.1.22): `None` when out of range.
-    fn index_value(&mut self, v: Value) -> Res<Option<usize>> {
+    pub(super) fn index_value(&mut self, v: Value) -> Res<Option<usize>> {
         let n = self.integer(v)?;
         Ok((0.0..=MAX_SAFE).contains(&n).then_some(n as usize))
     }
@@ -143,6 +143,17 @@ impl Agent {
         proto: Value,
         len: usize,
         max: Option<usize>,
+    ) -> Res<Value> {
+        self.new_buffer_of(proto, len, max, ObjectKind::ArrayBuffer)
+    }
+
+    /// An `ArrayBuffer` or, by `kind`, a `SharedArrayBuffer`.
+    pub(super) fn new_buffer_of(
+        &mut self,
+        proto: Value,
+        len: usize,
+        max: Option<usize>,
+        kind: ObjectKind,
     ) -> Res<Value> {
         if len > MAX_BYTES {
             return Err(self.range_error("Invalid array buffer length"));
@@ -160,11 +171,7 @@ impl Agent {
         })));
         let made = cell.and_then(|cell| {
             self.vm.temps.push(cell);
-            let o = self.alloc_object(ObjectCell::with_internal(
-                proto,
-                ObjectKind::ArrayBuffer,
-                vec![cell],
-            ));
+            let o = self.alloc_object(ObjectCell::with_internal(proto, kind, vec![cell]));
             self.vm.temps.pop();
             o
         });
@@ -187,22 +194,22 @@ impl Agent {
         }
     }
 
-    fn incompatible(&mut self, method: &str, this: Value) -> Abrupt {
+    pub(super) fn incompatible(&mut self, method: &str, this: Value) -> Abrupt {
         let text = self.display(this);
         self.type_error(format!(
             "Method {method} called on incompatible receiver {text}"
         ))
     }
 
-    fn is_detached(&self, b: u32) -> bool {
+    pub(super) fn is_detached(&self, b: u32) -> bool {
         self.heap.buffer(b).is_none_or(|b| b.detached)
     }
 
-    fn detached_error(&mut self, method: &str) -> Abrupt {
+    pub(super) fn detached_error(&mut self, method: &str) -> Abrupt {
         self.type_error(format!("Cannot perform {method} on a detached ArrayBuffer"))
     }
 
-    fn out_of_bounds(&mut self, method: &str) -> Abrupt {
+    pub(super) fn out_of_bounds(&mut self, method: &str) -> Abrupt {
         self.type_error(format!(
             "Cannot perform {method} on a detached or out-of-bounds ArrayBuffer"
         ))
@@ -232,7 +239,7 @@ impl Agent {
 
     /// AllocateTypedArray with a length (section 23.2.5.1.1): a new
     /// buffer of its own.
-    fn view_with_length(&mut self, proto: Value, elem: Elem, len: usize) -> Res<Value> {
+    pub(super) fn view_with_length(&mut self, proto: Value, elem: Elem, len: usize) -> Res<Value> {
         let Some(bytes) = len.checked_mul(elem.size()).filter(|&b| b <= MAX_BYTES) else {
             return Err(self.range_error(format!("Invalid typed array length: {len}")));
         };
@@ -260,7 +267,7 @@ impl Agent {
 
     /// ValidateTypedArray (section 23.2.4.4): `this` as a typed array in
     /// bounds and its length, or the TypeError `method` throws.
-    fn this_view(&mut self, this: Value, method: &str) -> Res<(u32, usize)> {
+    pub(super) fn this_view(&mut self, this: Value, method: &str) -> Res<(u32, usize)> {
         let Some(o) = this.as_object().filter(|&o| self.heap.view(o).is_some()) else {
             return Err(self.type_error("this is not a typed array."));
         };
@@ -271,7 +278,7 @@ impl Agent {
     }
 
     /// `this` as a typed array, in bounds or not.
-    fn any_view(&mut self, this: Value, method: &str) -> Res<u32> {
+    pub(super) fn any_view(&mut self, this: Value, method: &str) -> Res<u32> {
         match this.as_object().filter(|&o| self.heap.view(o).is_some()) {
             Some(o) => Ok(o),
             None => Err(self.incompatible(method, this)),
@@ -364,12 +371,7 @@ impl Agent {
             if self.heap.view(source).is_some() {
                 return self.view_from_view(proto, elem, source);
             }
-            let is_buffer = self
-                .heap
-                .objects
-                .get(source)
-                .is_some_and(|c| c.kind() == ObjectKind::ArrayBuffer);
-            if is_buffer {
+            if self.heap.is_buffer(source) {
                 return self.view_from_buffer(c, proto, elem, source);
             }
             self.view_from_object(proto, elem, first)
@@ -627,6 +629,14 @@ pub(crate) fn construct_array_buffer(agent: &mut Agent, c: Call) -> Res<Value> {
     if c.new_target.is_undefined() {
         return Err(agent.type_error("Constructor ArrayBuffer requires 'new'"));
     }
+    let (len, max) = buffer_length_and_max(agent, c)?;
+    let proto = agent.prototype_from(c.new_target, |r| r.intrinsics.array_buffer_prototype)?;
+    agent.new_buffer(proto, len, max)
+}
+
+/// A buffer constructor's length and its options' `maxByteLength`
+/// (sections 25.1.4.1 and 25.2.3.1).
+pub(super) fn buffer_length_and_max(agent: &mut Agent, c: Call) -> Res<(usize, Option<usize>)> {
     let Some(len) = agent.index_value(agent.arg(c, 0))? else {
         return Err(agent.range_error("Invalid array buffer length"));
     };
@@ -642,8 +652,7 @@ pub(crate) fn construct_array_buffer(agent: &mut Agent, c: Call) -> Res<Value> {
             }
         }
     }
-    let proto = agent.prototype_from(c.new_target, |r| r.intrinsics.array_buffer_prototype)?;
-    agent.new_buffer(proto, len, max)
+    Ok((len, max))
 }
 
 pub(crate) fn construct_abstract(agent: &mut Agent, _: Call) -> Res<Value> {
@@ -680,7 +689,7 @@ fn is_view(agent: &mut Agent, c: Call) -> Res<Value> {
     let is = v
         .as_object()
         .and_then(|o| agent.heap.objects.get(o))
-        .is_some_and(|c| c.kind() == ObjectKind::TypedArray);
+        .is_some_and(|c| matches!(c.kind(), ObjectKind::TypedArray | ObjectKind::DataView));
     Ok(Value::bool(is))
 }
 
