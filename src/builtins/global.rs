@@ -146,6 +146,7 @@ pub(crate) struct Intrinsics {
     pub data_view: Value,
     pub data_view_prototype: Value,
     pub atomics: Value,
+    pub json: Value,
 }
 
 impl Intrinsics {
@@ -209,6 +210,7 @@ impl Intrinsics {
         data_view: Value::UNDEFINED,
         data_view_prototype: Value::UNDEFINED,
         atomics: Value::UNDEFINED,
+        json: Value::UNDEFINED,
     };
 
     /// The typed array constructor of `elem`.
@@ -285,6 +287,7 @@ impl Intrinsics {
             self.data_view,
             self.data_view_prototype,
             self.atomics,
+            self.json,
         ]);
         out.extend_from_slice(&self.typed);
         out.extend_from_slice(&self.typed_prototypes);
@@ -386,6 +389,7 @@ pub(crate) const GLOBAL: &[Entry] = &[
     intrinsic("TypeError"),
     intrinsic("URIError"),
     intrinsic("globalThis"),
+    intrinsic("JSON"),
     intrinsic("Math"),
     intrinsic("ArrayBuffer"),
     intrinsic("Atomics"),
@@ -453,6 +457,7 @@ impl Agent {
             "SharedArrayBuffer" => i.shared_array_buffer,
             "DataView" => i.data_view,
             "Atomics" => i.atomics,
+            "JSON" => i.json,
             _ if name.ends_with("Array") => crate::buffer::Elem::ALL
                 .iter()
                 .position(|e| e.name() == name)
@@ -719,6 +724,8 @@ impl Agent {
         self.set_intrinsics(|i| i.data_view = dv);
         let atomics = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.atomics = atomics);
+        let json = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.json = json);
         let ip = self.realm().intrinsics.iterator_prototype;
         let mip = self.alloc_object(ObjectCell::new(ip, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.map_iterator_prototype = mip);
@@ -894,6 +901,7 @@ impl Agent {
             &[],
         )?;
         self.install_table(i.atomics, table::ATOMICS, Value::UNDEFINED, &[])?;
+        self.install_table(i.json, table::JSON, Value::UNDEFINED, &[])?;
         self.install_table(i.promise, table::PROMISE, Value::UNDEFINED, &[])?;
         self.install_table(
             i.promise_prototype,

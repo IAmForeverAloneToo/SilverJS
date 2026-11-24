@@ -22,6 +22,7 @@ mod function;
 mod generator;
 mod global;
 mod iterator;
+mod json;
 mod math;
 mod number;
 mod object;
@@ -209,6 +210,7 @@ const TABLES: &[&[Entry]] = &[
     base64::UINT8_ARRAY,
     base64::UINT8_ARRAY_PROTO,
     global::SHARED_GLOBAL,
+    json::JSON,
 ];
 
 /// The tables' indices.
@@ -273,6 +275,7 @@ pub(crate) mod table {
     pub const UINT8_ARRAY: u32 = 57;
     pub const UINT8_ARRAY_PROTO: u32 = 58;
     pub const SHARED_GLOBAL: u32 = 59;
+    pub const JSON: u32 = 60;
 }
 
 /// How native `id` resumes a generator, if it is `%GeneratorPrototype%`'s

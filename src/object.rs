@@ -170,6 +170,8 @@ pub(crate) enum ObjectKind {
     /// A `DataView` (section 25.3): its buffer, byte offset and byte
     /// length (undefined when it tracks a resizable buffer's).
     DataView,
+    /// What `JSON.rawJSON` makes (section 25.5.3): its [[IsRawJSON]].
+    RawJson,
 }
 
 /// An object cell.

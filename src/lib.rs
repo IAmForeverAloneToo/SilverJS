@@ -56,6 +56,8 @@ mod interp_tests;
 #[cfg(test)]
 mod iteration_tests;
 #[cfg(test)]
+mod json_tests;
+#[cfg(test)]
 mod language_tests;
 #[cfg(test)]
 mod lexer_tests;

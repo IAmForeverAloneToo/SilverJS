@@ -409,7 +409,7 @@ fn own_keys_are_in_the_reference_browsers_order() {
             "SQRT2",
             "Symbol(Symbol.toStringTag)",
         ],
-        &["sumPrecise"],
+        &[],
     );
     keys_as_chrome(
         "Reflect",

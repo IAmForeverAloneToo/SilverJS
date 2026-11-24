@@ -1,5 +1,6 @@
-//! `Math` (ECMA-262 section 21.3). `Math.sumPrecise` takes an iterable,
-//! and comes with J3's iterators.
+//! `Math` (ECMA-262 section 21.3). `Math.sumPrecise` adds its numbers
+//! exactly, in a fixed-point accumulator wide enough for any finite
+//! double's bits, and rounds once at the end.
 
 use super::{CONFIGURABLE, Call, Entry, Name, What, Wk, constant, entry, method};
 use crate::agent::Agent;
@@ -40,6 +41,7 @@ pub(crate) const MATH: &[Entry] = &[
     method("sin", 1, sin),
     method("sinh", 1, sinh),
     method("sqrt", 1, sqrt),
+    method("sumPrecise", 1, sum_precise),
     method("tan", 1, tan),
     method("tanh", 1, tanh),
     method("trunc", 1, trunc),
@@ -247,4 +249,191 @@ fn random(agent: &mut Agent, _: Call) -> Res<Value> {
     *state = (s0, s1);
     let bits = (s0.wrapping_add(s1)) >> 11;
     Ok(Value::number(bits as f64 / (1u64 << 53) as f64))
+}
+
+/// The bits of a sum of doubles, in units of 2^-1074 (the smallest
+/// subnormal): 32 of them a limb, each limb allowed to run over until
+/// the next normalization. 70 limbs hold 2^1024 times 2^53 numbers.
+struct ExactSum {
+    limbs: [i64; 70],
+    adds: u32,
+}
+
+impl ExactSum {
+    fn new() -> ExactSum {
+        ExactSum {
+            limbs: [0; 70],
+            adds: 0,
+        }
+    }
+
+    /// Adds finite `x` exactly.
+    fn add(&mut self, x: f64) {
+        let bits = x.to_bits();
+        let negative = bits >> 63 == 1;
+        let field = ((bits >> 52) & 0x7ff) as u32;
+        let fraction = bits & ((1 << 52) - 1);
+        let (m, shift) = if field == 0 {
+            (fraction, 0)
+        } else {
+            (fraction | 1 << 52, field - 1)
+        };
+        let mut wide = u128::from(m) << (shift % 32);
+        let mut k = (shift / 32) as usize;
+        while wide != 0 {
+            let piece = (wide & 0xffff_ffff) as i64;
+            if let Some(l) = self.limbs.get_mut(k) {
+                *l += if negative { -piece } else { piece };
+            }
+            wide >>= 32;
+            k += 1;
+        }
+        self.adds += 1;
+        if self.adds >= 1 << 20 {
+            self.normalize();
+        }
+    }
+
+    /// Every limb but the last in 0..2^32, the last holding the sign.
+    fn normalize(&mut self) {
+        let mut carry = 0i64;
+        let top = self.limbs.len() - 1;
+        for (k, l) in self.limbs.iter_mut().enumerate() {
+            let v = *l + carry;
+            if k == top {
+                *l = v;
+            } else {
+                *l = v & 0xffff_ffff;
+                carry = v >> 32;
+            }
+        }
+        self.adds = 0;
+    }
+
+    /// The sum rounded to the nearest double, ties to even; +0 for zero.
+    fn round(&mut self) -> f64 {
+        self.normalize();
+        let negative = self.limbs.last().is_some_and(|&l| l < 0);
+        if negative {
+            self.limbs.iter_mut().for_each(|l| *l = -*l);
+            self.normalize();
+        }
+        let bit = |i: usize| {
+            self.limbs
+                .get(i / 32)
+                .is_some_and(|&l| (l >> (i % 32)) & 1 == 1)
+        };
+        let Some(high) = (0..self.limbs.len() * 32).rev().find(|&i| bit(i)) else {
+            return 0.0;
+        };
+        // The 53 bits from the highest, and the rounding bit and the
+        // sticky bits below them; fewer for a subnormal, which is exact.
+        let shift = high.saturating_sub(52);
+        let mut mantissa = (shift..=high)
+            .rev()
+            .fold(0u64, |m, i| m << 1 | u64::from(bit(i)));
+        let mut shift = shift as u64;
+        if shift > 0 {
+            let half = bit(shift as usize - 1);
+            let sticky = (0..shift as usize - 1).any(bit);
+            if half && (sticky || mantissa & 1 == 1) {
+                mantissa += 1;
+                if mantissa == 1 << 53 {
+                    mantissa >>= 1;
+                    shift += 1;
+                }
+            }
+        }
+        let magnitude = if mantissa < 1 << 52 {
+            f64::from_bits(mantissa)
+        } else {
+            let field = shift + 1;
+            if field >= 2047 {
+                f64::INFINITY
+            } else {
+                f64::from_bits(field << 52 | (mantissa - (1 << 52)))
+            }
+        };
+        if negative { -magnitude } else { magnitude }
+    }
+}
+
+/// `Math.sumPrecise` (section 21.3.2.34).
+fn sum_precise(agent: &mut Agent, c: Call) -> Res<Value> {
+    #[derive(PartialEq)]
+    enum State {
+        MinusZero,
+        Finite,
+        PlusInfinity,
+        MinusInfinity,
+        NotANumber,
+    }
+    let items = agent.arg(c, 0);
+    let text = if items.as_object().is_some() || items.is_nullish() {
+        agent.display(items)
+    } else {
+        let kind = match items.as_reference() {
+            Some((crate::value::RefKind::Symbol, _)) => "Symbol",
+            Some((crate::value::RefKind::BigInt, _)) => "BigInt",
+            _ if items.as_bool().is_some() => "Boolean",
+            _ => "Number",
+        };
+        format!("[object {kind}]")
+    };
+    let (it, next) = agent.get_iterator(items, &text)?;
+    agent.vm.temps.extend([it, next]);
+    let r = (|| {
+        let mut state = State::MinusZero;
+        let mut sum = ExactSum::new();
+        let mut count = 0.0;
+        while let Some(v) = agent.iterator_step(it, next)? {
+            count += 1.0;
+            if count >= 9_007_199_254_740_992.0 {
+                let e = agent.range_error("Too many values to sum precisely");
+                agent.iterator_close_quiet(it)?;
+                return Err(e);
+            }
+            let Some(n) = v.as_number() else {
+                let t = agent.type_of(v);
+                let found = agent.display(t);
+                let e = agent.type_error(format!(
+                    "Type of 'Iterator value' must be 'number', found '{found}'"
+                ));
+                agent.iterator_close_quiet(it)?;
+                return Err(e);
+            };
+            if state == State::NotANumber {
+                continue;
+            }
+            if n.is_nan() {
+                state = State::NotANumber;
+            } else if n == f64::INFINITY {
+                state = if state == State::MinusInfinity {
+                    State::NotANumber
+                } else {
+                    State::PlusInfinity
+                };
+            } else if n == f64::NEG_INFINITY {
+                state = if state == State::PlusInfinity {
+                    State::NotANumber
+                } else {
+                    State::MinusInfinity
+                };
+            } else if !(n == 0.0 && n.is_sign_negative())
+                && matches!(state, State::MinusZero | State::Finite)
+            {
+                state = State::Finite;
+                sum.add(n);
+            }
+        }
+        Ok(Value::number(match state {
+            State::NotANumber => f64::NAN,
+            State::PlusInfinity => f64::INFINITY,
+            State::MinusInfinity => f64::NEG_INFINITY,
+            State::MinusZero => -0.0,
+            State::Finite => sum.round(),
+        }))
+    })();
+    agent.vm.temps.truncate(agent.vm.temps.len() - 2);
+    r
 }
