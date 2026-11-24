@@ -49,7 +49,7 @@ impl Agent {
                 }
                 Some(if n <= 0.0 { 0 } else { n.min(1e6) as usize })
             }
-            Got::Getter(_) | Got::Proxy(_) => None,
+            Got::Getter(_) | Got::Proxy(_) | Got::Element(..) => None,
         }
     }
 

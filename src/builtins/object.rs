@@ -114,7 +114,20 @@ pub(crate) fn construct(agent: &mut Agent, c: Call) -> Res<Value> {
 impl Agent {
     /// FromPropertyDescriptor (section 6.2.6.4).
     pub(crate) fn descriptor_object(&mut self, p: OwnProperty) -> Res<Value> {
-        let o = self.plain_object()?;
+        // The property's values rooted until the object holds them: a
+        // BigInt element's value is new, held by nothing else.
+        let base = self.vm.temps.len();
+        match p {
+            OwnProperty::Data { value, .. } => self.vm.temps.push(value),
+            OwnProperty::Accessor { get, set, .. } => self.vm.temps.extend([get, set]),
+        }
+        let o = match self.plain_object() {
+            Ok(o) => o,
+            Err(e) => {
+                self.vm.temps.truncate(base);
+                return Err(e);
+            }
+        };
         self.vm.temps.push(o);
         let fields: Vec<(&str, Value)> = match p {
             OwnProperty::Data {
@@ -144,7 +157,7 @@ impl Agent {
             let key = self.name_key(Name::Str(name));
             self.create_data_property(o, key, v);
         }
-        self.vm.temps.pop();
+        self.vm.temps.truncate(base);
         Ok(o)
     }
 

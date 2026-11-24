@@ -268,6 +268,9 @@ pub enum Got {
     Getter(Value),
     /// The chain reached this proxy: its `[[Get]]` goes on.
     Proxy(u32),
+    /// Element `i` of this BigInt typed array: a BigInt for the agent
+    /// to make.
+    Element(u32, usize),
 }
 
 /// What `[[Set]]` did.
@@ -1225,8 +1228,11 @@ impl Heap {
             if kind == Some(ObjectKind::TypedArray)
                 && let Some(i) = self.numeric_key(key)
             {
-                let v = i.and_then(|i| self.view_get(o, i));
-                return Got::Value(v.map_or(Value::UNDEFINED, Value::number));
+                return match i.and_then(|i| Some((i, self.view_get(o, i)?))) {
+                    Some((_, crate::buffer::Elt::Num(n))) => Got::Value(Value::number(n)),
+                    Some((i, crate::buffer::Elt::Big(_))) => Got::Element(o, i),
+                    None => Got::Value(Value::UNDEFINED),
+                };
             }
             match self.get_own_property(o, key) {
                 Some(OwnProperty::Data { value, .. }) => return Got::Value(value),
@@ -1268,7 +1274,7 @@ impl Heap {
             {
                 // TypedArray [[Set]] (section 10.4.5.5).
                 if receiver.as_object() == Some(o) {
-                    let Some(n) = self.plain_number(value) else {
+                    let Some(n) = self.plain_elt(o, value) else {
                         return SetOutcome::Typed(o);
                     };
                     if let Some(i) = i {
@@ -1307,7 +1313,7 @@ impl Heap {
                 // whose conversion may run script: the agent's to finish.
                 let kind = self.object(r).map(|c| c.kind);
                 if kind == Some(ObjectKind::Proxy)
-                    || (kind == Some(ObjectKind::TypedArray) && self.plain_number(value).is_none())
+                    || (kind == Some(ObjectKind::TypedArray) && self.plain_elt(r, value).is_none())
                 {
                     return SetOutcome::Receiver(r);
                 }
@@ -1423,7 +1429,7 @@ impl Heap {
             return false;
         }
         if let Some(v) = desc.value {
-            let Some(n) = self.plain_number(v) else {
+            let Some(n) = self.plain_elt(o, v) else {
                 return false;
             };
             if let Some(i) = i {

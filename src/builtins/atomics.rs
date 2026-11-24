@@ -1,4 +1,5 @@
-//! `Atomics` (ECMA-262 section 25.4) over the integer typed arrays. An
+//! `Atomics` (ECMA-262 section 25.4) over the integer typed arrays,
+//! `BigInt64Array` and `BigUint64Array` among them. An
 //! agent runs alone (no other agent shares its memory yet), so every
 //! operation is a plain read and write. `Atomics.wait` cannot block: as
 //! on the reference browser's main thread, it throws once its arguments
@@ -8,7 +9,7 @@
 
 use super::{CONFIGURABLE, Call, Entry, Name, What, Wk, entry, method};
 use crate::agent::Agent;
-use crate::buffer::Elem;
+use crate::buffer::{Elem, Elt};
 use crate::interp::Res;
 use crate::interp::ops::to_int32;
 use crate::value::Value;
@@ -35,6 +36,41 @@ pub(crate) const ATOMICS: &[Entry] = &[
         CONFIGURABLE,
     ),
 ];
+
+/// A read-modify-write operator (section 25.4.3.17's `op`).
+#[derive(Debug, Clone, Copy)]
+enum Rmw {
+    Add,
+    Sub,
+    And,
+    Or,
+    Xor,
+    Exchange,
+}
+
+impl Rmw {
+    /// The new bits from the old and the operand's: an element's width
+    /// of them is what is written.
+    fn apply(self, a: u64, b: u64) -> u64 {
+        match self {
+            Rmw::Add => a.wrapping_add(b),
+            Rmw::Sub => a.wrapping_sub(b),
+            Rmw::And => a & b,
+            Rmw::Or => a | b,
+            Rmw::Xor => a ^ b,
+            Rmw::Exchange => b,
+        }
+    }
+}
+
+/// An element value's bits as the operators take them: a Number
+/// element's ToInt32 (its width is what is written), a BigInt's 64.
+fn bits(x: Elt) -> u64 {
+    match x {
+        Elt::Num(n) => u64::from(to_int32(n) as u32),
+        Elt::Big(b) => b,
+    }
+}
 
 /// One `Atomics.waitAsync` waiting: the shared buffer, the byte index in
 /// it, and the promise `notify` resolves.
@@ -65,11 +101,18 @@ impl Agent {
         };
         let elem = self.heap.view(o).map_or(Elem::Float64, |v| v.elem);
         let fits = if waitable {
-            elem == Elem::Int32
+            matches!(elem, Elem::Int32 | Elem::BigInt64)
         } else {
             matches!(
                 elem,
-                Elem::Int8 | Elem::Uint8 | Elem::Int16 | Elem::Uint16 | Elem::Int32 | Elem::Uint32
+                Elem::Int8
+                    | Elem::Uint8
+                    | Elem::Int16
+                    | Elem::Uint16
+                    | Elem::Int32
+                    | Elem::Uint32
+                    | Elem::BigInt64
+                    | Elem::BigUint64
             )
         };
         if !fits {
@@ -109,7 +152,7 @@ impl Agent {
         }
     }
 
-    fn atomic_read(&self, buffer: u32, elem: Elem, at: usize) -> (Vec<u8>, f64) {
+    fn atomic_read(&self, buffer: u32, elem: Elem, at: usize) -> (Vec<u8>, Elt) {
         let bytes = self
             .heap
             .buffer_bytes(buffer, at, elem.size())
@@ -118,36 +161,60 @@ impl Agent {
         (bytes, n)
     }
 
-    fn atomic_write(&mut self, buffer: u32, elem: Elem, at: usize, n: f64) {
+    fn atomic_write(&mut self, buffer: u32, elem: Elem, at: usize, n: Elt) {
         let mut bytes = vec![0; elem.size()];
         elem.write(&mut bytes, n);
         self.heap.store_buffer_bytes(buffer, at, &bytes);
     }
 
+    /// A value converted for an element of type `elem`: ToBigInt for a
+    /// BigInt element, ToIntegerOrInfinity for the others; the element
+    /// value and the converted value itself.
+    fn atomic_value(&mut self, elem: Elem, v: Value) -> Res<(Elt, Value)> {
+        if !elem.is_bigint() {
+            let n = self.integer(v)?;
+            return Ok((Elt::Num(n), Value::number(n)));
+        }
+        if let Some(b) = self.bigint_of(v) {
+            return Ok((Elt::Big(b.low_u64()), v));
+        }
+        let b = self.bigint_from(v)?;
+        let bits = b.low_u64();
+        Ok((Elt::Big(bits), self.alloc_bigint(b)?))
+    }
+
     /// ValidateAtomicAccessOnIntegerTypedArray, the value converted, and
-    /// the access revalidated: the buffer, element type, byte index and
-    /// value.
-    fn atomic_operands(&mut self, c: Call, method: &str) -> Res<(u32, Elem, usize, f64)> {
+    /// the access revalidated: the buffer, element type, byte index,
+    /// element value and converted value.
+    fn atomic_operands(&mut self, c: Call, method: &str) -> Res<(u32, Elem, usize, Elt, Value)> {
         let (o, len) = self.integer_view(c, false, method)?;
         let at = self.atomic_index(c, o, len)?;
-        let v = self.integer(self.arg(c, 2))?;
-        let (buffer, elem) = self.revalidate(o, at, method)?;
-        Ok((buffer, elem, at, v))
+        let (x, v) = self.atomic_value(self.elem_of(o), self.arg(c, 2))?;
+        self.vm.temps.push(v);
+        let r = self.revalidate(o, at, method);
+        self.vm.temps.pop();
+        let (buffer, elem) = r?;
+        Ok((buffer, elem, at, x, v))
     }
 
     /// AtomicReadModifyWrite (section 25.4.3.17): the old value.
-    fn modify(&mut self, c: Call, method: &str, op: fn(u32, u32) -> u32) -> Res<Value> {
-        let (buffer, elem, at, v) = self.atomic_operands(c, method)?;
+    fn modify(&mut self, c: Call, method: &str, op: Rmw) -> Res<Value> {
+        let (buffer, elem, at, v, _) = self.atomic_operands(c, method)?;
         let (_, old) = self.atomic_read(buffer, elem, at);
-        let new = op(to_int32(old) as u32, to_int32(v) as u32);
-        self.atomic_write(buffer, elem, at, f64::from(new));
-        Ok(Value::number(old))
+        let new = op.apply(bits(old), bits(v));
+        let new = if elem.is_bigint() {
+            Elt::Big(new)
+        } else {
+            Elt::Num(f64::from(new as u32))
+        };
+        self.atomic_write(buffer, elem, at, new);
+        self.elt_value(elem, old)
     }
 
-    /// The `Int32Array` and byte index `Atomics.wait` and `waitAsync`
-    /// wait on, their value and timeout (DoWait's first steps, section
-    /// 25.4.3.14).
-    fn wait_operands(&mut self, c: Call, method: &str) -> Res<(u32, usize, i32, f64)> {
+    /// The buffer, byte index and element type `Atomics.wait` and
+    /// `waitAsync` wait on (an `Int32Array`'s or a `BigInt64Array`'s),
+    /// their value and timeout (DoWait's first steps, section 25.4.3.14).
+    fn wait_operands(&mut self, c: Call, method: &str) -> Res<(u32, usize, Elem, Elt, f64)> {
         let (o, len) = self.integer_view(c, true, method)?;
         let buffer = self.heap.view(o).map_or(0, |v| v.buffer);
         if !self.heap.is_shared(buffer) {
@@ -155,14 +222,19 @@ impl Agent {
             return Err(self.type_error(format!("{text} is not a shared typed array.")));
         }
         let at = self.atomic_index(c, o, len)?;
-        let v = to_int32(self.number(self.arg(c, 2))?);
+        let elem = self.elem_of(o);
+        let v = if elem.is_bigint() {
+            Elt::Big(self.bigint_from(self.arg(c, 2))?.low_u64())
+        } else {
+            Elt::Num(f64::from(to_int32(self.number(self.arg(c, 2))?)))
+        };
         let q = self.number(self.arg(c, 3))?;
         let t = if q.is_nan() {
             f64::INFINITY
         } else {
             q.max(0.0)
         };
-        Ok((buffer, at, v, t))
+        Ok((buffer, at, elem, v, t))
     }
 
     /// `{ async, value }`, a waitAsync result.
@@ -186,37 +258,38 @@ fn load(agent: &mut Agent, c: Call) -> Res<Value> {
     let (o, len) = agent.integer_view(c, false, M)?;
     let at = agent.atomic_index(c, o, len)?;
     let (buffer, elem) = agent.revalidate(o, at, M)?;
-    Ok(Value::number(agent.atomic_read(buffer, elem, at).1))
+    let x = agent.atomic_read(buffer, elem, at).1;
+    agent.elt_value(elem, x)
 }
 
 fn store(agent: &mut Agent, c: Call) -> Res<Value> {
-    let (buffer, elem, at, v) = agent.atomic_operands(c, "Atomics.store")?;
-    agent.atomic_write(buffer, elem, at, v);
-    Ok(Value::number(v))
+    let (buffer, elem, at, x, v) = agent.atomic_operands(c, "Atomics.store")?;
+    agent.atomic_write(buffer, elem, at, x);
+    Ok(v)
 }
 
 fn add(agent: &mut Agent, c: Call) -> Res<Value> {
-    agent.modify(c, "Atomics.add", u32::wrapping_add)
+    agent.modify(c, "Atomics.add", Rmw::Add)
 }
 
 fn sub(agent: &mut Agent, c: Call) -> Res<Value> {
-    agent.modify(c, "Atomics.sub", u32::wrapping_sub)
+    agent.modify(c, "Atomics.sub", Rmw::Sub)
 }
 
 fn and(agent: &mut Agent, c: Call) -> Res<Value> {
-    agent.modify(c, "Atomics.and", |a, b| a & b)
+    agent.modify(c, "Atomics.and", Rmw::And)
 }
 
 fn or(agent: &mut Agent, c: Call) -> Res<Value> {
-    agent.modify(c, "Atomics.or", |a, b| a | b)
+    agent.modify(c, "Atomics.or", Rmw::Or)
 }
 
 fn xor(agent: &mut Agent, c: Call) -> Res<Value> {
-    agent.modify(c, "Atomics.xor", |a, b| a ^ b)
+    agent.modify(c, "Atomics.xor", Rmw::Xor)
 }
 
 fn exchange(agent: &mut Agent, c: Call) -> Res<Value> {
-    agent.modify(c, "Atomics.exchange", |_, b| b)
+    agent.modify(c, "Atomics.exchange", Rmw::Exchange)
 }
 
 /// `Atomics.compareExchange` (section 25.4.6): the replacement written
@@ -225,8 +298,9 @@ fn compare_exchange(agent: &mut Agent, c: Call) -> Res<Value> {
     const M: &str = "Atomics.compareExchange";
     let (o, len) = agent.integer_view(c, false, M)?;
     let at = agent.atomic_index(c, o, len)?;
-    let expected = agent.integer(agent.arg(c, 2))?;
-    let replacement = agent.integer(agent.arg(c, 3))?;
+    let elem = agent.elem_of(o);
+    let (expected, _) = agent.atomic_value(elem, agent.arg(c, 2))?;
+    let (replacement, _) = agent.atomic_value(elem, agent.arg(c, 3))?;
     let (buffer, elem) = agent.revalidate(o, at, M)?;
     let (bytes, old) = agent.atomic_read(buffer, elem, at);
     let mut want = vec![0; elem.size()];
@@ -234,7 +308,7 @@ fn compare_exchange(agent: &mut Agent, c: Call) -> Res<Value> {
     if bytes == want {
         agent.atomic_write(buffer, elem, at, replacement);
     }
-    Ok(Value::number(old))
+    agent.elt_value(elem, old)
 }
 
 /// `Atomics.isLockFree` (section 25.4.10): every size the reference
@@ -252,9 +326,9 @@ fn wait(agent: &mut Agent, c: Call) -> Res<Value> {
 
 /// `Atomics.waitAsync` (section 25.4.14).
 fn wait_async(agent: &mut Agent, c: Call) -> Res<Value> {
-    let (buffer, at, v, t) = agent.wait_operands(c, "Atomics.waitAsync")?;
-    let (_, w) = agent.atomic_read(buffer, Elem::Int32, at);
-    if f64::from(v) != w {
+    let (buffer, at, elem, v, t) = agent.wait_operands(c, "Atomics.waitAsync")?;
+    let (_, w) = agent.atomic_read(buffer, elem, at);
+    if v != w {
         let s = agent.new_string("not-equal")?;
         return agent.wait_result(false, s);
     }

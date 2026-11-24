@@ -238,7 +238,15 @@ impl Agent {
         key: PropertyKey,
     ) -> Res<Option<OwnProperty>> {
         if !self.is_proxy(o) {
-            return Ok(self.heap.get_own_property(o, key));
+            let mut p = self.heap.get_own_property(o, key);
+            // A BigInt element's value, which the heap leaves to the agent.
+            if let Some(OwnProperty::Data { value, .. }) = &mut p
+                && let Some(Some(i)) = self.heap.typed_key(o, key)
+                && self.elem_of(o).is_bigint()
+            {
+                *value = self.element(o, i)?;
+            }
+            return Ok(p);
         }
         let (target, handler, trap) = self.proxy_trap(o, "getOwnPropertyDescriptor")?;
         let t = target.as_object().unwrap_or(0);
@@ -302,8 +310,8 @@ impl Agent {
     ) -> Res<bool> {
         if !self.is_proxy(o) {
             if let Some(v) = desc.value
-                && self.heap.plain_number(v).is_none()
                 && let Some(i) = self.heap.typed_key(o, key)
+                && self.heap.plain_elt(o, v).is_none()
             {
                 // The value converted once the key and descriptor are
                 // found good (section 10.4.5.3).
@@ -314,7 +322,7 @@ impl Agent {
                 if !self.heap.define_own_property(o, key, check) {
                     return Ok(false);
                 }
-                let n = self.number(v)?;
+                let n = self.elt_from(self.elem_of(o), v)?;
                 if let Some(i) = i {
                     self.heap.view_set(o, i, n);
                 }
@@ -426,6 +434,7 @@ impl Agent {
                 self.call_value(g, receiver, &[])
             }
             Got::Proxy(p) => self.proxy_get(p, key, receiver),
+            Got::Element(o, i) => self.element(o, i),
         }
     }
 

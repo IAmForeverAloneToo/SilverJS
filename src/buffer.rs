@@ -33,20 +33,32 @@ pub(crate) enum Elem {
     Int16,
     Uint32,
     Int32,
+    BigUint64,
+    BigInt64,
     Uint8Clamped,
     Float32,
     Float64,
     Float16,
 }
 
+/// An element's value: a Number, or a BigInt element's 64 bits (its
+/// two's complement, as the element type reads it).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Elt {
+    Num(f64),
+    Big(u64),
+}
+
 impl Elem {
-    pub(crate) const ALL: [Elem; 10] = [
+    pub(crate) const ALL: [Elem; 12] = [
         Elem::Uint8,
         Elem::Int8,
         Elem::Uint16,
         Elem::Int16,
         Elem::Uint32,
         Elem::Int32,
+        Elem::BigUint64,
+        Elem::BigInt64,
         Elem::Uint8Clamped,
         Elem::Float32,
         Elem::Float64,
@@ -62,8 +74,13 @@ impl Elem {
             Elem::Uint8 | Elem::Int8 | Elem::Uint8Clamped => 1,
             Elem::Uint16 | Elem::Int16 | Elem::Float16 => 2,
             Elem::Uint32 | Elem::Int32 | Elem::Float32 => 4,
-            Elem::Float64 => 8,
+            Elem::Float64 | Elem::BigUint64 | Elem::BigInt64 => 8,
         }
+    }
+
+    /// Whether its content type is BigInt.
+    pub(crate) fn is_bigint(self) -> bool {
+        matches!(self, Elem::BigUint64 | Elem::BigInt64)
     }
 
     /// Its constructor's name.
@@ -75,6 +92,8 @@ impl Elem {
             Elem::Int16 => "Int16Array",
             Elem::Uint32 => "Uint32Array",
             Elem::Int32 => "Int32Array",
+            Elem::BigUint64 => "BigUint64Array",
+            Elem::BigInt64 => "BigInt64Array",
             Elem::Uint8Clamped => "Uint8ClampedArray",
             Elem::Float32 => "Float32Array",
             Elem::Float64 => "Float64Array",
@@ -83,7 +102,16 @@ impl Elem {
     }
 
     /// RawBytesToNumeric (section 25.1.3.16), little-endian.
-    pub(crate) fn read(self, b: &[u8]) -> f64 {
+    pub(crate) fn read(self, b: &[u8]) -> Elt {
+        let at = |i: usize| b.get(i).copied().unwrap_or(0);
+        let eight = || [at(0), at(1), at(2), at(3), at(4), at(5), at(6), at(7)];
+        if self.is_bigint() {
+            return Elt::Big(u64::from_le_bytes(eight()));
+        }
+        Elt::Num(self.read_number(b))
+    }
+
+    fn read_number(self, b: &[u8]) -> f64 {
         let at = |i: usize| b.get(i).copied().unwrap_or(0);
         let two = || [at(0), at(1)];
         let four = || [at(0), at(1), at(2), at(3)];
@@ -99,15 +127,28 @@ impl Elem {
                 f64::from_le_bytes([at(0), at(1), at(2), at(3), at(4), at(5), at(6), at(7)])
             }
             Elem::Float16 => f16_to_f64(u16::from_le_bytes(two())),
+            // Read as BigInts above.
+            Elem::BigUint64 | Elem::BigInt64 => 0.0,
         }
     }
 
     /// NumericToRawBytes (section 25.1.3.18), little-endian, into `b`.
-    pub(crate) fn write(self, b: &mut [u8], n: f64) {
+    /// The value is of the element's content type (its writers convert
+    /// it so): a BigInt element given a Number, or the other way about,
+    /// takes it as its integer.
+    pub(crate) fn write(self, b: &mut [u8], x: Elt) {
         let mut put = |bytes: &[u8]| {
             for (d, s) in b.iter_mut().zip(bytes) {
                 *d = *s;
             }
+        };
+        let n = match x {
+            Elt::Num(n) if self.is_bigint() => {
+                return put(&(n as i64).to_le_bytes());
+            }
+            Elt::Big(bits) if self.is_bigint() => return put(&bits.to_le_bytes()),
+            Elt::Big(bits) => bits as i64 as f64,
+            Elt::Num(n) => n,
         };
         let int = crate::interp::ops::to_int32(n);
         match self {
@@ -118,6 +159,7 @@ impl Elem {
             Elem::Float32 => put(&(n as f32).to_le_bytes()),
             Elem::Float64 => put(&n.to_le_bytes()),
             Elem::Float16 => put(&f64_to_f16(n).to_le_bytes()),
+            Elem::BigUint64 | Elem::BigInt64 => {}
         }
     }
 }
@@ -281,7 +323,7 @@ impl Heap {
 
     /// The element `i` of typed array `o`, if it is a valid integer index
     /// (TypedArrayGetElement, section 10.4.5.15).
-    pub(crate) fn view_get(&self, o: u32, i: usize) -> Option<f64> {
+    pub(crate) fn view_get(&self, o: u32, i: usize) -> Option<Elt> {
         let len = self.view_length(o)?;
         if i >= len {
             return None;
@@ -294,7 +336,7 @@ impl Heap {
 
     /// Writes `n` to element `i` of typed array `o` if it is a valid
     /// integer index (TypedArraySetElement's last steps).
-    pub(crate) fn view_set(&mut self, o: u32, i: usize, n: f64) {
+    pub(crate) fn view_set(&mut self, o: u32, i: usize, n: Elt) {
         let Some(len) = self.view_length(o) else {
             return;
         };
@@ -323,6 +365,20 @@ impl Heap {
         }
     }
 
+    /// A value written to an element of typed array `o` converted
+    /// without script: ToNumber of a primitive, or a BigInt's low 64 bits
+    /// for a BigInt element; `None` for what is the agent's to convert
+    /// (or to refuse).
+    pub(crate) fn plain_elt(&self, o: u32, v: Value) -> Option<Elt> {
+        if self.view(o).is_some_and(|w| w.elem.is_bigint()) {
+            let (RefKind::BigInt, i) = v.as_reference()? else {
+                return None;
+            };
+            return Some(Elt::Big(self.bigints.get(i)?.low_u64()));
+        }
+        self.plain_number(v).map(Elt::Num)
+    }
+
     /// ToNumber of a primitive, which runs no script; `None` for a
     /// symbol or an object, whose conversion is the agent's.
     pub(crate) fn plain_number(&self, v: Value) -> Option<f64> {
@@ -343,10 +399,15 @@ impl Heap {
     }
 
     /// The element `i` of typed array `o` as a property, if it is valid.
+    /// A BigInt element's value is a BigInt the heap cannot make here:
+    /// undefined, which the agent's `[[GetOwnProperty]]` replaces.
     pub(crate) fn view_own(&self, o: u32, i: Option<usize>) -> Option<crate::object::OwnProperty> {
-        let n = self.view_get(o, i?)?;
+        let value = match self.view_get(o, i?)? {
+            Elt::Num(n) => Value::number(n),
+            Elt::Big(_) => Value::UNDEFINED,
+        };
         Some(crate::object::OwnProperty::Data {
-            value: Value::number(n),
+            value,
             writable: true,
             enumerable: true,
             configurable: true,

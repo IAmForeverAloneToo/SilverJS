@@ -58,6 +58,55 @@ fn bigints_survive_collection() {
 }
 
 #[test]
+fn bigint_elements_survive_collection() {
+    // Every element read makes a BigInt: the kept ones of filter, the
+    // pair a comparator is given, reduce's accumulator and map's results
+    // must stay rooted while the next is made (reduce's first element,
+    // with no initial value, among them), and an element's value while
+    // its descriptor object is made.
+    let mut agent = Agent::new(AgentOptions::default());
+    agent.set_stress(true);
+    let got = agent.scope(|scope| {
+        match scope.run_script(
+            "var a = new BigInt64Array(64); for (var i = 0; i < 64; i++) a[i] = BigInt(i) * 3n - 90n; \
+             var f = a.filter(function (x) { return x % 2n === 0n; }); \
+             var s = a.toSorted(function (x, y) { var d = y - x; return d > 0n ? 1 : d < 0n ? -1 : 0; }); \
+             var r = a.reduce(function (acc, x) { return acc + x * x; }, 0n); \
+             var r2 = a.reduce(function (acc, x) { return acc + x; }); \
+             var m = a.map(function (x) { return -x; }); \
+             var u = new BigUint64Array(a.buffer); \
+             var d = Object.getOwnPropertyDescriptor(a, '5').value; \
+             [f.length, f[0], s[0], s[63], r, r2, d, m[0], u[0], Atomics.add(a, 0, 1n), a.join().length].join()",
+        ) {
+            Ok(Outcome::Value(v)) => scope.to_text(v).unwrap_or_default(),
+            _ => "failed".into(),
+        }
+    });
+    assert_eq!(
+        got,
+        "32,-90,99,-90,197856,288,-75,90,18446744073709551526,-90,214"
+    );
+}
+
+#[test]
+fn bigint_typed_arrays_keep_their_content_type() {
+    // A species of the other content type is refused (section
+    // 23.2.4.1); a BigInt element's descriptor and [[Get]] give BigInts;
+    // a BigUint64Array finds only what is in its range.
+    assert_eq!(
+        run(
+            "class S extends BigInt64Array { static get [Symbol.species]() { return Int8Array; } } \
+             var e; try { new S(2).slice(0); } catch (x) { e = x.constructor.name; } \
+             var u = BigUint64Array.of(2n ** 64n - 1n, 0n); \
+             [e, Object.getOwnPropertyDescriptor(BigInt64Array.of(5n), '0').value, \
+              u.includes(-1n), u.indexOf(2n ** 64n - 1n), u.lastIndexOf(0n), \
+              Reflect.get(BigInt64Array.of(-7n), 0)].join()"
+        ),
+        "TypeError,5,false,0,1,-7"
+    );
+}
+
+#[test]
 fn the_interrupt_hook_stops_long_bigint_work() {
     use std::cell::Cell;
     use std::rc::Rc;
@@ -90,6 +139,17 @@ fn the_interrupt_hook_stops_long_bigint_work() {
             calls.get()
         );
     }
+}
+
+/// The bigtyped probe and the numbers probe's typed parts (J4.3c's).
+const TYPED_PROBE: &str = "function keys(o) {\n  return Reflect.ownKeys(o).map(function (k) {\n    var d = Object.getOwnPropertyDescriptor(o, k);\n    var kind = 'get' in d ? 'accessor' : typeof d.value;\n    var flags = (d.writable ? 'w' : '-') + (d.enumerable ? 'e' : '-') + (d.configurable ? 'c' : '-');\n    var f = typeof d.value === 'function' ? d.value : d.get;\n    var extra = typeof f === 'function' ? ' len=' + f.length + ' name=' + f.name : '';\n    return String(k) + ' [' + kind + ' ' + flags + extra + ']';\n  });\n}\nvar out = { keys: {}, facts: [], errors: [] };\nfunction fact(label, fn) {\n  try { out.facts.push(label + ' ' + String(fn())); }\n  catch (e) { out.facts.push(label + ' threw ' + e.constructor.name + ': ' + e.message); }\n}\nfunction err(label, fn) {\n  try { out.errors.push(label + ' no error: ' + String(fn())); }\n  catch (e) { out.errors.push(label + ': ' + e.constructor.name + ': ' + e.message); }\n}\nout.keys.BigUint64Array = keys(BigUint64Array);\nout.keys['BigUint64Array.prototype'] = keys(BigUint64Array.prototype);\nout.keys.DataViewBig = keys(DataView.prototype).filter(function (k) { return String(k).indexOf('Big') >= 0; });\nfact('wrap', function () { var a = new BigInt64Array(2); a[0] = 2n ** 64n + 5n; a[1] = -(2n ** 63n) - 1n; var u = new BigUint64Array(1); u[0] = -1n; return [a.join(), u.join(), a[5], typeof a[0]].join(); });\nfact('convert', function () { var a = new BigInt64Array(3); a[0] = true; a[1] = '0x10'; a[2] = { valueOf: function () { return 7n; } }; return a.join(); });\nfact('sort', function () { var u = BigUint64Array.of(2n ** 64n - 1n, 0n, 5n, 2n ** 63n); var s = BigInt64Array.of(-1n, 3n, -(2n ** 63n), 0n); return [u.sort().join(), s.sort().join(), s.toSorted(function (x, y) { return x < y ? 1 : -1; }).join()].join(' | '); });\nfact('search', function () { var a = BigInt64Array.of(0n, 1n, -1n); return [a.includes(0n), a.includes(0), a.indexOf(1n), a.indexOf(1), a.lastIndexOf(-1n), a.at(-1), a.findLast(function (x) { return x > 0n; })].join(); });\nfact('methods', function () { var a = BigInt64Array.of(1n, 2n, 3n); return [a.map(function (x) { return x * 2n; }).join(), a.filter(function (x) { return x & 1n; }).join(), a.reduce(function (s, x) { return s + x; }), a.slice(1).join(), a.subarray(1).join(), a.fill(9n, 2).join(), a.with(0, 4n).join(), a.toReversed().join(), Array.from(a.entries()).join(';'), a.toString(), a.toLocaleString()].join(' | '); });\nfact('copy', function () { var a = BigInt64Array.of(-1n, 2n); var b = new BigInt64Array(a); var u = new BigUint64Array(a); var c = new BigInt64Array(4); c.set(u, 1); return [b.join(), u.join(), c.join(), BigUint64Array.from([1n, 2n]).join(), BigInt64Array.from({ length: 2, 0: 5n, 1: '6' }).join()].join(' | '); });\nfact('dataview', function () { var d = new DataView(new ArrayBuffer(16)); d.setBigUint64(0, 2n ** 64n - 2n); d.setBigInt64(8, -3n, true); return [d.getBigInt64(0), d.getBigUint64(0, true), d.getBigInt64(8, true), d.getBigUint64(8), d.getUint8(0), d.getUint8(8), d.setBigInt64(0, 1n), DataView.prototype.getBigInt64.length, DataView.prototype.setBigUint64.length].join(); });\nfact('atomics', function () { var a = new BigInt64Array(new ArrayBuffer(16)); var u = new BigUint64Array(a.buffer); return [Atomics.store(a, 0, 5n), Atomics.add(a, 0, 2n), Atomics.sub(a, 0, 10n), a[0], Atomics.and(u, 0, 0xffn), Atomics.or(a, 1, 6n), Atomics.xor(a, 1, 3n), Atomics.exchange(a, 1, -1n), Atomics.compareExchange(u, 1, 2n ** 64n - 1n, 9n), Atomics.compareExchange(a, 1, -1n, 8n), Atomics.load(a, 1), Atomics.store(u, 0, -1n), u[0], Atomics.isLockFree(8)].join(); });\nfact('json', function () { try { return JSON.stringify(BigInt64Array.of(1n)); } catch (e) { return e.message; } });\nerr('ctor from Int8Array', function () { new BigInt64Array(new Int8Array(1)); });\nerr('ctor Int8Array from BigInt64Array', function () { new Int8Array(new BigInt64Array(1)); });\nerr('ctor from number array', function () { new BigUint64Array([1n, 2]); });\nerr('ctor from string', function () { new BigInt64Array(['x']); });\nerr('ctor from symbol', function () { new BigInt64Array([Symbol('s')]); });\nerr('from mapped number', function () { BigInt64Array.from([1n], function () { return 1; }); });\nerr('fill number', function () { new BigInt64Array(1).fill(1); });\nerr('fill undefined', function () { new BigInt64Array(1).fill(); });\nerr('set from array', function () { new BigInt64Array(1).set([1]); });\nerr('set number from bigint array', function () { new Float64Array(1).set(new BigUint64Array(1)); });\nerr('with number', function () { new BigInt64Array(1).with(0, 1); });\nerr('map returns number', function () { BigInt64Array.of(1n).map(function () { return 1; }); });\nerr('define number', function () { Object.defineProperty(new BigInt64Array(1), '0', { value: 1 }); });\nerr('setBigUint64 string', function () { new DataView(new ArrayBuffer(8)).setBigUint64(0, 'x'); });\nerr('getBigInt64 range', function () { new DataView(new ArrayBuffer(4)).getBigInt64(0); });\nerr('setBigInt64 range', function () { new DataView(new ArrayBuffer(4)).setBigInt64(0, 1n); });\nerr('getBigInt64 receiver', function () { DataView.prototype.getBigInt64.call({}, 0); });\nerr('atomics number value', function () { Atomics.store(new BigInt64Array(1), 0, 1); });\nerr('atomics bigint on Int32Array', function () { Atomics.store(new Int32Array(1), 0, 1n); });\nerr('atomics wait bigint non-shared', function () { Atomics.wait(new BigInt64Array(1), 0, 0n); });\nerr('atomics wait number on bigint', function () { Atomics.wait(new BigInt64Array(new SharedArrayBuffer(8)), 0, 0); });\nerr('atomics on BigUint64Array wait', function () { Atomics.wait(new BigUint64Array(new SharedArrayBuffer(8)), 0, 0n); });\nerr('sort comparator number result', function () { return BigInt64Array.of(2n, 1n).sort(function (a, b) { return a - b; }).join(); });\nerr('unary plus element', function () { return +new BigInt64Array(1)[0]; });\nerr('length too large', function () { new BigInt64Array(2 ** 32); });\nerr('offset misaligned', function () { new BigInt64Array(new ArrayBuffer(16), 4); });\nerr('length misaligned', function () { new BigUint64Array(new ArrayBuffer(12)); });\nfact('bigint typed', function () { var a = new BigInt64Array([1n, -1n]); var u = new BigUint64Array(a.buffer); var d = new DataView(a.buffer); return [a.join(), u.join(), d.getBigInt64(8, true), d.getBigUint64(0), (d.setBigInt64(0, -2n), a[0]), BigInt64Array.BYTES_PER_ELEMENT, Atomics.add(a, 0, 3n), a[0]].join(); });\nerr('typed set number', function () { new BigInt64Array(1)[0] = 1; });\nerr('typed from numbers', function () { new BigInt64Array([1]); });\nerr('typed set bigint into number array', function () { new Int8Array(1)[0] = 1n; });\nerr('typed set mixed', function () { new Int8Array(1).set(new BigInt64Array(1)); });\nerr('dv setBigInt64 number', function () { new DataView(new ArrayBuffer(8)).setBigInt64(0, 1); });\n[out.keys['BigUint64Array'].join(', '), out.keys['BigUint64Array.prototype'].join(', '), out.keys['DataViewBig'].join(', ')].concat(out.facts, out.errors).join('\\n')";
+
+#[test]
+fn bigint_typed_arrays_read_as_the_reference_browser_gives_them() {
+    assert_eq!(
+        run(TYPED_PROBE),
+        "length [number --c], name [string --c], prototype [object ---], BYTES_PER_ELEMENT [number ---]\nconstructor [function w-c len=3 name=BigUint64Array], BYTES_PER_ELEMENT [number ---]\ngetBigInt64 [function w-c len=1 name=getBigInt64], setBigInt64 [function w-c len=2 name=setBigInt64], getBigUint64 [function w-c len=1 name=getBigUint64], setBigUint64 [function w-c len=2 name=setBigUint64]\nwrap 5,9223372036854775807,18446744073709551615,,bigint\nconvert 1,16,7\nsort 0,5,9223372036854775808,18446744073709551615 | -9223372036854775808,-1,0,3 | 3,0,-1,-9223372036854775808\nsearch true,false,1,-1,2,-1,1\nmethods 2,4,6 | 1,3 | 6 | 2,3 | 2,3 | 1,2,9 | 4,2,9 | 9,2,1 | 0,1;1,2;2,9 | 1,2,9 | 1,2,9\ncopy -1,2 | 18446744073709551615,2 | 0,-1,2,0 | 1,2 | 5,6\ndataview -2,18374686479671623679,-3,18302628885633695743,255,253,,1,2\natomics 5,5,7,-3,18446744073709551613,0,6,5,18446744073709551615,9,9,-1,18446744073709551615,true\njson Do not know how to serialize a BigInt\nbigint typed 1,-1,1,18446744073709551615,-1,72057594037927936,-72057594037927937,8,-72057594037927937,-72057594037927934\nctor from Int8Array: TypeError: Cannot mix BigInt and other types, use explicit conversions\nctor Int8Array from BigInt64Array: TypeError: Cannot mix BigInt and other types, use explicit conversions\nctor from number array: TypeError: Cannot convert 2 to a BigInt\nctor from string: SyntaxError: Cannot convert x to a BigInt\nctor from symbol: TypeError: Cannot convert Symbol(s) to a BigInt\nfrom mapped number: TypeError: Cannot convert 1 to a BigInt\nfill number: TypeError: Cannot convert 1 to a BigInt\nfill undefined: TypeError: Cannot convert undefined to a BigInt\nset from array: TypeError: Cannot convert 1 to a BigInt\nset number from bigint array: TypeError: Cannot mix BigInt and other types, use explicit conversions\nwith number: TypeError: Cannot convert 1 to a BigInt\nmap returns number: TypeError: Cannot convert 1 to a BigInt\ndefine number: TypeError: Cannot convert 1 to a BigInt\nsetBigUint64 string: SyntaxError: Cannot convert x to a BigInt\ngetBigInt64 range: RangeError: Offset is outside the bounds of the DataView\nsetBigInt64 range: RangeError: Offset is outside the bounds of the DataView\ngetBigInt64 receiver: TypeError: Method DataView.prototype.getBigInt64 called on incompatible receiver #<Object>\natomics number value: TypeError: Cannot convert 1 to a BigInt\natomics bigint on Int32Array: TypeError: Cannot convert a BigInt value to a number\natomics wait bigint non-shared: TypeError: [object BigInt64Array] is not a shared typed array.\natomics wait number on bigint: ReferenceError: SharedArrayBuffer is not defined\natomics on BigUint64Array wait: ReferenceError: SharedArrayBuffer is not defined\nsort comparator number result: TypeError: Cannot convert a BigInt value to a number\nunary plus element: TypeError: Cannot convert a BigInt value to a number\nlength too large: RangeError: Invalid typed array length: 4294967296\noffset misaligned: RangeError: start offset of BigInt64Array should be a multiple of 8\nlength misaligned: RangeError: byte length of BigUint64Array should be a multiple of 8\ntyped set number: TypeError: Cannot convert 1 to a BigInt\ntyped from numbers: TypeError: Cannot convert 1 to a BigInt\ntyped set bigint into number array: TypeError: Cannot convert a BigInt value to a number\ntyped set mixed: TypeError: Cannot mix BigInt and other types, use explicit conversions\ndv setBigInt64 number: TypeError: Cannot convert 1 to a BigInt"
+    );
 }
 
 /// The numbers probe's BigInt parts (J4.3b's).

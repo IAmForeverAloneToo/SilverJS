@@ -778,6 +778,7 @@ impl Agent {
             Got::Getter(g) if g.is_undefined() => Ok(Value::UNDEFINED),
             Got::Getter(g) => self.call_value(g, receiver, &[]),
             Got::Proxy(p) => self.proxy_get(p, key, receiver),
+            Got::Element(o, i) => self.element(o, i),
         }
     }
 

@@ -8,7 +8,8 @@
 use super::iterator::ArrayIterKind;
 use super::{CONFIGURABLE, Call, Entry, FIXED, HIDDEN, Name, What, Wk, entry, getter, method};
 use crate::agent::Agent;
-use crate::buffer::{Buffer, Elem};
+use crate::bigint::BigInt;
+use crate::buffer::{Buffer, Elem, Elt};
 use crate::heap::{InternalCell, ObjectCell};
 use crate::interp::messages;
 use crate::interp::realm::Realm;
@@ -115,15 +116,16 @@ fn object(o: u32) -> Value {
     Value::reference(RefKind::Object, o)
 }
 
-fn number(n: Option<f64>) -> Value {
-    n.map_or(Value::UNDEFINED, Value::number)
-}
+/// The TypeError of a typed array made from, set from or
+/// species-created for one of the other content type (BigInt or
+/// Number): the reference browser's (the bigtyped probe).
+use super::bigint::MIXED as CONTENT_MISMATCH;
 
 impl Agent {
     /// A typed array's element written with a value whose conversion may
     /// run script (TypedArraySetElement, section 10.4.5.16).
     pub(crate) fn typed_set(&mut self, t: u32, key: PropertyKey, value: Value) -> Res<()> {
-        let n = self.number(value)?;
+        let n = self.elt_from(self.elem_of(t), value)?;
         if let Some(Some(i)) = self.heap.typed_key(t, key) {
             self.heap.view_set(t, i, n);
         }
@@ -240,7 +242,9 @@ impl Agent {
     /// AllocateTypedArray with a length (section 23.2.5.1.1): a new
     /// buffer of its own.
     pub(super) fn view_with_length(&mut self, proto: Value, elem: Elem, len: usize) -> Res<Value> {
-        let Some(bytes) = len.checked_mul(elem.size()).filter(|&b| b <= MAX_BYTES) else {
+        // The reference browser attempts 2^34 bytes and refuses 2^35 as
+        // a length (the typed and bigtyped probes).
+        let Some(bytes) = len.checked_mul(elem.size()).filter(|&b| b < MAX_BYTES) else {
             return Err(self.range_error(format!("Invalid typed array length: {len}")));
         };
         let ab = self.realm().intrinsics.array_buffer_prototype;
@@ -332,21 +336,64 @@ impl Agent {
 
     /// TypedArraySpeciesCreate (section 23.2.4.1).
     fn species_view(&mut self, exemplar: u32, args: &[Value], method: &str) -> Res<u32> {
-        let elem = self.heap.view(exemplar).map_or(Elem::Uint8, |v| v.elem);
+        let elem = self.elem_of(exemplar);
         let default = self.realm().intrinsics.typed_ctor(elem);
         let c = self.species_constructor(object(exemplar), default)?;
-        self.view_create(c, args, method)
+        let o = self.view_create(c, args, method)?;
+        self.same_content(o, exemplar, CONTENT_MISMATCH)?;
+        Ok(o)
     }
 
     /// Element `k` written with `v` converted (Set on a typed array).
     fn view_put(&mut self, o: u32, k: usize, v: Value) -> Res<()> {
-        let n = self.number(v)?;
+        let n = self.elt_from(self.elem_of(o), v)?;
         self.heap.view_set(o, k, n);
         Ok(())
     }
 
-    fn element(&self, o: u32, k: usize) -> Value {
-        number(self.heap.view_get(o, k))
+    /// Typed array `o`'s element type.
+    pub(crate) fn elem_of(&self, o: u32) -> Elem {
+        self.heap.view(o).map_or(Elem::Uint8, |v| v.elem)
+    }
+
+    /// `v` converted for an element of type `elem`: ToNumber, or for a
+    /// BigInt element ToBigInt's low 64 bits (ToBigInt64 and
+    /// ToBigUint64 alike, sections 7.1.16 and 7.1.17).
+    pub(crate) fn elt_from(&mut self, elem: Elem, v: Value) -> Res<Elt> {
+        if elem.is_bigint() {
+            Ok(Elt::Big(self.bigint_from(v)?.low_u64()))
+        } else {
+            Ok(Elt::Num(self.number(v)?))
+        }
+    }
+
+    /// An element's value as a value: a BigInt element's made.
+    pub(crate) fn elt_value(&mut self, elem: Elem, x: Elt) -> Res<Value> {
+        match x {
+            Elt::Num(n) => Ok(Value::number(n)),
+            Elt::Big(bits) if elem == Elem::BigInt64 => {
+                self.alloc_bigint(BigInt::from_i64(bits as i64))
+            }
+            Elt::Big(bits) => self.alloc_bigint(BigInt::from_u64(bits)),
+        }
+    }
+
+    /// Element `k` of typed array `o`, undefined when it is not valid.
+    pub(crate) fn element(&mut self, o: u32, k: usize) -> Res<Value> {
+        match self.heap.view_get(o, k) {
+            Some(x) => self.elt_value(self.elem_of(o), x),
+            None => Ok(Value::UNDEFINED),
+        }
+    }
+
+    /// The TypeError of two typed arrays of different content types, if
+    /// they are.
+    fn same_content(&mut self, a: u32, b: u32, message: &str) -> Res<()> {
+        if self.elem_of(a).is_bigint() == self.elem_of(b).is_bigint() {
+            Ok(())
+        } else {
+            Err(self.type_error(message))
+        }
     }
 
     /// A typed array constructor (section 23.2.5.1).
@@ -391,6 +438,7 @@ impl Agent {
             let bytes = self.heap.view_bytes(src, 0, len);
             self.heap.store_view_bytes(o, 0, &bytes);
         } else {
+            self.same_content(src, o, CONTENT_MISMATCH)?;
             for k in 0..len {
                 if let Some(n) = self.heap.view_get(src, k) {
                     self.heap.view_set(o, k, n);
@@ -530,7 +578,7 @@ impl Agent {
         let f = self.view_callback(self.arg(c, 0))?;
         let this_arg = self.arg(c, 1);
         for k in 0..len {
-            let v = self.element(o, k);
+            let v = self.element(o, k)?;
             let r = self.call_value(f, this_arg, &[v, Value::number(k as f64), object(o)])?;
             if each(self, k, v, r)? {
                 break;
@@ -550,7 +598,7 @@ impl Agent {
 
     /// A stable merge sort of `values` by `f` (SortCompare of a typed
     /// array, section 23.2.4.7), whose calls may throw.
-    fn sort_numbers(&mut self, values: &mut Vec<f64>, f: Value) -> Res<()> {
+    fn sort_elements(&mut self, elem: Elem, values: &mut Vec<Elt>, f: Value) -> Res<()> {
         let n = values.len();
         let mut buf = values.clone();
         let mut width = 1;
@@ -561,9 +609,9 @@ impl Agent {
                 let hi = (i + 2 * width).min(n);
                 let (mut a, mut b, mut out) = (i, mid, i);
                 while a < mid && b < hi {
-                    let x = values.get(a).copied().unwrap_or(0.0);
-                    let y = values.get(b).copied().unwrap_or(0.0);
-                    let take_b = self.compare_numbers(f, x, y)?;
+                    let x = values.get(a).copied().unwrap_or(Elt::Num(0.0));
+                    let y = values.get(b).copied().unwrap_or(Elt::Num(0.0));
+                    let take_b = self.compare_elements(f, elem, x, y)?;
                     if let Some(slot) = buf.get_mut(out) {
                         *slot = if take_b { y } else { x };
                     }
@@ -589,20 +637,37 @@ impl Agent {
     }
 
     /// Whether `y` sorts before `x`.
-    fn compare_numbers(&mut self, f: Value, x: f64, y: f64) -> Res<bool> {
+    fn compare_elements(&mut self, f: Value, elem: Elem, x: Elt, y: Elt) -> Res<bool> {
         if f.is_undefined() {
-            return Ok(match (x.is_nan(), y.is_nan()) {
-                (true, _) => !y.is_nan(),
-                (false, true) => false,
-                _ => {
-                    x > y || (x == 0.0 && y == 0.0 && !x.is_sign_negative() && y.is_sign_negative())
-                }
+            return Ok(match (x, y) {
+                (Elt::Big(x), Elt::Big(y)) if elem == Elem::BigInt64 => x as i64 > y as i64,
+                (Elt::Big(x), Elt::Big(y)) => x > y,
+                (Elt::Num(x), Elt::Num(y)) => match (x.is_nan(), y.is_nan()) {
+                    (true, _) => !y.is_nan(),
+                    (false, true) => false,
+                    _ => {
+                        x > y
+                            || (x == 0.0
+                                && y == 0.0
+                                && !x.is_sign_negative()
+                                && y.is_sign_negative())
+                    }
+                },
+                _ => false,
             });
         }
         self.tick()?;
-        let r = self.call_value(f, Value::UNDEFINED, &[Value::number(x), Value::number(y)])?;
-        let n = self.number(r)?;
-        Ok(n > 0.0)
+        let base = self.vm.temps.len();
+        let r = (|| {
+            let a = self.elt_value(elem, x)?;
+            self.vm.temps.push(a);
+            let b = self.elt_value(elem, y)?;
+            self.vm.temps.push(b);
+            let r = self.call_value(f, Value::UNDEFINED, &[a, b])?;
+            self.number(r)
+        })();
+        self.vm.temps.truncate(base);
+        Ok(r? > 0.0)
     }
 
     fn comparator_of(&mut self, f: Value) -> Res<Value> {
@@ -676,6 +741,8 @@ typed_constructors!(
     construct_int16 = Int16,
     construct_uint32 = Uint32,
     construct_int32 = Int32,
+    construct_big_uint64 = BigUint64,
+    construct_big_int64 = BigInt64,
     construct_uint8_clamped = Uint8Clamped,
     construct_float32 = Float32,
     construct_float64 = Float64,
@@ -1014,7 +1081,7 @@ fn at(agent: &mut Agent, c: Call) -> Res<Value> {
     if k < 0.0 || k >= len as f64 {
         return Ok(Value::UNDEFINED);
     }
-    Ok(agent.element(o, k as usize))
+    agent.element(o, k as usize)
 }
 
 /// `%TypedArray%.prototype.copyWithin` (section 23.2.3.6).
@@ -1072,7 +1139,7 @@ fn for_each(agent: &mut Agent, c: Call) -> Res<Value> {
 fn fill(agent: &mut Agent, c: Call) -> Res<Value> {
     const M: &str = "%TypedArray%.prototype.fill";
     let (o, len) = agent.this_view(c.this, M)?;
-    let n = agent.number(agent.arg(c, 0))?;
+    let n = agent.elt_from(agent.elem_of(o), agent.arg(c, 0))?;
     let lenf = len as f64;
     let k = agent.relative(agent.arg(c, 1), lenf, 0.0)?;
     let end = agent.relative(agent.arg(c, 2), lenf, lenf)?;
@@ -1090,17 +1157,24 @@ fn filter(agent: &mut Agent, c: Call) -> Res<Value> {
     const M: &str = "%TypedArray%.prototype.filter";
     let (o, _) = agent.this_view(c.this, M)?;
     let mut kept = Vec::new();
-    agent.view_each(c, M, |agent, _, v, r| {
-        if agent.to_boolean(r) {
-            kept.push(v);
+    // The kept values, BigInts among them, rooted until they are copied.
+    let base = agent.vm.temps.len();
+    let r = (|| {
+        agent.view_each(c, M, |agent, _, v, r| {
+            if agent.to_boolean(r) {
+                agent.vm.temps.push(v);
+                kept.push(v);
+            }
+            Ok(false)
+        })?;
+        let a = agent.species_view(o, &[Value::number(kept.len() as f64)], M)?;
+        for (k, v) in kept.into_iter().enumerate() {
+            agent.view_put(a, k, v)?;
         }
-        Ok(false)
-    })?;
-    let a = agent.species_view(o, &[Value::number(kept.len() as f64)], M)?;
-    for (k, v) in kept.into_iter().enumerate() {
-        agent.view_put(a, k, v)?;
-    }
-    Ok(object(a))
+        Ok(object(a))
+    })();
+    agent.vm.temps.truncate(base);
+    r
 }
 
 fn find_via(agent: &mut Agent, c: Call, last: bool, method: &str) -> Res<(f64, Value)> {
@@ -1109,7 +1183,7 @@ fn find_via(agent: &mut Agent, c: Call, last: bool, method: &str) -> Res<(f64, V
     let this_arg = agent.arg(c, 1);
     for i in 0..len {
         let k = if last { len - 1 - i } else { i };
-        let v = agent.element(o, k);
+        let v = agent.element(o, k)?;
         let r = agent.call_value(f, this_arg, &[v, Value::number(k as f64), object(o)])?;
         if agent.to_boolean(r) {
             return Ok((k as f64, v));
@@ -1152,16 +1226,32 @@ fn search_start(agent: &mut Agent, c: Call, len: usize) -> Res<Option<usize>> {
     Ok((k < len as f64).then_some(k as usize))
 }
 
+/// The element value equal to `search` in a typed array of type `elem`,
+/// if one can be: a Number for a Number array, a BigInt in range for a
+/// BigInt one.
+fn search_elt(agent: &Agent, elem: Elem, search: Value) -> Option<Elt> {
+    if !elem.is_bigint() {
+        return search.as_number().map(Elt::Num);
+    }
+    let b = agent.bigint_of(search)?;
+    if elem == Elem::BigInt64 {
+        b.to_i64().map(|i| Elt::Big(i as u64))
+    } else {
+        b.to_u64().map(Elt::Big)
+    }
+}
+
 fn includes(agent: &mut Agent, c: Call) -> Res<Value> {
     let (o, len) = agent.this_view(c.this, "%TypedArray%.prototype.includes")?;
     let Some(start) = search_start(agent, c, len)? else {
         return Ok(Value::bool(false));
     };
     let search = agent.arg(c, 0);
-    let s = search.as_number();
+    let s = search_elt(agent, agent.elem_of(o), search);
     for k in start..len {
         let found = match (agent.heap.view_get(o, k), s) {
-            (Some(x), Some(s)) => x == s || (x.is_nan() && s.is_nan()),
+            (Some(Elt::Num(x)), Some(Elt::Num(s))) => x == s || (x.is_nan() && s.is_nan()),
+            (Some(x), Some(s)) => x == s,
             (None, _) => search.is_undefined(),
             _ => false,
         };
@@ -1177,7 +1267,7 @@ fn index_of(agent: &mut Agent, c: Call) -> Res<Value> {
     let Some(start) = search_start(agent, c, len)? else {
         return Ok(Value::int(-1));
     };
-    if let Some(s) = agent.arg(c, 0).as_number() {
+    if let Some(s) = search_elt(agent, agent.elem_of(o), agent.arg(c, 0)) {
         for k in start..len {
             if agent.heap.view_get(o, k) == Some(s) {
                 return Ok(Value::number(k as f64));
@@ -1208,7 +1298,7 @@ fn last_index_of(agent: &mut Agent, c: Call) -> Res<Value> {
     if k < 0.0 {
         return Ok(Value::int(-1));
     }
-    if let Some(s) = agent.arg(c, 0).as_number() {
+    if let Some(s) = search_elt(agent, agent.elem_of(o), agent.arg(c, 0)) {
         for k in (0..=k as usize).rev() {
             if agent.heap.view_get(o, k) == Some(s) {
                 return Ok(Value::number(k as f64));
@@ -1241,14 +1331,25 @@ fn join_with(agent: &mut Agent, c: Call, locale: bool) -> Res<Value> {
         let Some(x) = agent.heap.view_get(o, k) else {
             continue;
         };
+        let elem = agent.elem_of(o);
         if locale {
-            let v = Value::number(x);
-            let key = agent.name_key(Name::Str("toLocaleString"));
-            let f = agent.get_value(v, key)?;
-            let r = agent.call_value(f, v, &[])?;
-            out.extend(agent.text_units(r)?);
+            let v = agent.elt_value(elem, x)?;
+            agent.vm.temps.push(v);
+            let r = (|| {
+                let key = agent.name_key(Name::Str("toLocaleString"));
+                let f = agent.get_value(v, key)?;
+                let r = agent.call_value(f, v, &[])?;
+                agent.text_units(r)
+            })();
+            agent.vm.temps.pop();
+            out.extend(r?);
         } else {
-            out.extend(crate::number::number_to_string(x).encode_utf16());
+            let text = match x {
+                Elt::Num(n) => crate::number::number_to_string(n),
+                Elt::Big(bits) if elem == Elem::BigInt64 => (bits as i64).to_string(),
+                Elt::Big(bits) => bits.to_string(),
+            };
+            out.extend(text.encode_utf16());
         }
         if out.len() > super::string::MAX_LENGTH {
             return Err(agent.range_error("Invalid string length"));
@@ -1275,7 +1376,7 @@ fn map(agent: &mut Agent, c: Call) -> Res<Value> {
     agent.vm.temps.push(object(a));
     let r = (|| {
         for k in 0..len {
-            let v = agent.element(o, k);
+            let v = agent.element(o, k)?;
             let mapped = agent.call_value(f, this_arg, &[v, Value::number(k as f64), object(o)])?;
             let key = agent.index_key(k as f64);
             agent.put(object(a), key, mapped)?;
@@ -1303,14 +1404,15 @@ fn reduce_with(agent: &mut Agent, c: Call, right: bool) -> Res<Value> {
             return Err(agent.type_error("Reduce of empty array with no initial value"));
         }
         i = 1;
-        agent.element(o, index(0))
+        agent.element(o, index(0))?
     };
     let base = agent.vm.temps.len();
     let r = (|| {
         while i < len {
             let k = index(i);
-            let v = agent.element(o, k);
+            // The accumulator rooted before the element is made.
             agent.vm.temps.push(acc);
+            let v = agent.element(o, k)?;
             acc = agent.call_value(
                 f,
                 Value::UNDEFINED,
@@ -1373,6 +1475,7 @@ fn set(agent: &mut Agent, c: Call) -> Res<Value> {
         let Some(src_len) = agent.heap.view_length(src) else {
             return Err(agent.out_of_bounds(M));
         };
+        agent.same_content(target, src, CONTENT_MISMATCH)?;
         if offset + src_len as f64 > target_len as f64 {
             return Err(agent.range_error("offset is out of bounds"));
         }
@@ -1382,8 +1485,8 @@ fn set(agent: &mut Agent, c: Call) -> Res<Value> {
             let bytes = agent.heap.view_bytes(src, 0, src_len);
             agent.heap.store_view_bytes(target, at, &bytes);
         } else {
-            let values: Vec<f64> = (0..src_len)
-                .map(|k| agent.heap.view_get(src, k).unwrap_or(f64::NAN))
+            let values: Vec<Elt> = (0..src_len)
+                .map(|k| agent.heap.view_get(src, k).unwrap_or(Elt::Num(f64::NAN)))
                 .collect();
             for (k, n) in values.into_iter().enumerate() {
                 agent.heap.view_set(target, at + k, n);
@@ -1456,10 +1559,10 @@ fn slice(agent: &mut Agent, c: Call) -> Res<Value> {
 fn sort(agent: &mut Agent, c: Call) -> Res<Value> {
     let f = agent.comparator_of(agent.arg(c, 0))?;
     let (o, len) = agent.this_view(c.this, "%TypedArray%.prototype.sort")?;
-    let mut values: Vec<f64> = (0..len)
-        .map(|k| agent.heap.view_get(o, k).unwrap_or(f64::NAN))
+    let mut values: Vec<Elt> = (0..len)
+        .map(|k| agent.heap.view_get(o, k).unwrap_or(Elt::Num(f64::NAN)))
         .collect();
-    agent.sort_numbers(&mut values, f)?;
+    agent.sort_elements(agent.elem_of(o), &mut values, f)?;
     for (k, n) in values.into_iter().enumerate() {
         agent.heap.view_set(o, k, n);
     }
@@ -1471,10 +1574,10 @@ fn to_sorted(agent: &mut Agent, c: Call) -> Res<Value> {
     let (o, len) = agent.this_view(c.this, "%TypedArray%.prototype.toSorted")?;
     let a = agent.view_same_type(o, len)?;
     agent.vm.temps.push(object(a));
-    let mut values: Vec<f64> = (0..len)
-        .map(|k| agent.heap.view_get(o, k).unwrap_or(f64::NAN))
+    let mut values: Vec<Elt> = (0..len)
+        .map(|k| agent.heap.view_get(o, k).unwrap_or(Elt::Num(f64::NAN)))
         .collect();
-    let r = agent.sort_numbers(&mut values, f);
+    let r = agent.sort_elements(agent.elem_of(o), &mut values, f);
     agent.vm.temps.pop();
     r?;
     for (k, n) in values.into_iter().enumerate() {
@@ -1512,7 +1615,7 @@ fn with(agent: &mut Agent, c: Call) -> Res<Value> {
     let (o, len) = agent.this_view(c.this, "%TypedArray%.prototype.with")?;
     let rel = agent.integer(agent.arg(c, 0))?;
     let actual = if rel >= 0.0 { rel } else { len as f64 + rel };
-    let n = agent.number(agent.arg(c, 1))?;
+    let n = agent.elt_from(agent.elem_of(o), agent.arg(c, 1))?;
     if actual < 0.0 || !agent.heap.view_valid(o, Some(actual as usize)) {
         return Err(agent.range_error("Invalid typed array index"));
     }
@@ -1524,7 +1627,7 @@ fn with(agent: &mut Agent, c: Call) -> Res<Value> {
         } else {
             agent.heap.view_get(o, k)
         };
-        agent.heap.view_set(a, k, x.unwrap_or(f64::NAN));
+        agent.heap.view_set(a, k, x.unwrap_or(Elt::Num(f64::NAN)));
     }
     Ok(object(a))
 }

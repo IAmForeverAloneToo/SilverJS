@@ -36,7 +36,7 @@ pub(crate) const SHARED_ARRAY_BUFFER_PROTO: &[Entry] = &[
     ),
 ];
 
-/// `DataView.prototype`. The BigInt accessors come with `BigInt`.
+/// `DataView.prototype`.
 pub(crate) const DATA_VIEW_PROTO: &[Entry] = &[
     entry(Name::Str("constructor"), What::Constructor, HIDDEN),
     getter("buffer", view_buffer),
@@ -60,6 +60,10 @@ pub(crate) const DATA_VIEW_PROTO: &[Entry] = &[
     method("setFloat32", 2, set_float32),
     method("getFloat64", 1, get_float64),
     method("setFloat64", 2, set_float64),
+    method("getBigInt64", 1, get_big_int64),
+    method("setBigInt64", 2, set_big_int64),
+    method("getBigUint64", 1, get_big_uint64),
+    method("setBigUint64", 2, set_big_uint64),
     entry(
         Name::Sym(Wk::ToStringTag),
         What::Str("DataView"),
@@ -117,7 +121,8 @@ impl Agent {
         if !little {
             bytes.reverse();
         }
-        Ok(Value::number(elem.read(&bytes)))
+        let x = elem.read(&bytes);
+        self.elt_value(elem, x)
     }
 
     /// SetViewValue (section 25.3.1.6).
@@ -126,7 +131,7 @@ impl Agent {
         let Some(i) = self.index_value(self.arg(c, 0))? else {
             return Err(self.range_error(OFFSET_OUTSIDE));
         };
-        let n = self.number(self.arg(c, 1))?;
+        let n = self.elt_from(elem, self.arg(c, 1))?;
         let little = self.to_boolean(self.arg(c, 2));
         let at = self.view_index(o, i, elem, method)?;
         let mut bytes = vec![0; elem.size()];
@@ -361,4 +366,6 @@ view_accessors! {
     get_float16, set_float16 = Float16, "Float16";
     get_float32, set_float32 = Float32, "Float32";
     get_float64, set_float64 = Float64, "Float64";
+    get_big_int64, set_big_int64 = BigInt64, "BigInt64";
+    get_big_uint64, set_big_uint64 = BigUint64, "BigUint64";
 }

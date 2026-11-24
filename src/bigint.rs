@@ -462,6 +462,22 @@ impl BigInt {
         }
     }
 
+    /// The value if it fits a `u64`.
+    pub(crate) fn to_u64(&self) -> Option<u64> {
+        if self.neg && !self.is_zero() || self.mag.len() > 2 {
+            return None;
+        }
+        Some(self.low_u64())
+    }
+
+    /// The low 64 bits of the two's complement: BigInt.asUintN(64, x),
+    /// as ToBigInt64 and ToBigUint64 take it (sections 7.1.16, 7.1.17).
+    pub(crate) fn low_u64(&self) -> u64 {
+        let m = u64::from(self.mag.first().copied().unwrap_or(0))
+            | u64::from(self.mag.get(1).copied().unwrap_or(0)) << 32;
+        if self.neg { m.wrapping_neg() } else { m }
+    }
+
     pub(crate) fn neg(&self) -> BigInt {
         BigInt::of(!self.neg, self.mag.clone())
     }

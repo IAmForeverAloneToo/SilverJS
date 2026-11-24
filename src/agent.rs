@@ -606,7 +606,15 @@ impl<'a> Scope<'a> {
         key: PropertyKey,
     ) -> Option<Property<'a>> {
         let o = self.object_index(object)?;
-        Some(match self.agent.heap.get_own_property(o, key)? {
+        let mut p = self.agent.heap.get_own_property(o, key)?;
+        // A BigInt element's value, which the heap leaves to the agent.
+        if let OwnProperty::Data { value, .. } = &mut p
+            && let Some(Some(i)) = self.agent.heap.typed_key(o, key)
+            && self.agent.elem_of(o).is_bigint()
+        {
+            *value = self.agent.element(o, i).ok()?;
+        }
+        Some(match p {
             OwnProperty::Data {
                 value,
                 writable,
@@ -662,6 +670,10 @@ impl<'a> Scope<'a> {
             Got::Getter(g) => GetResult::Getter(self.local(g)),
             // A proxy's [[Get]] runs script: not an ordinary read (J5).
             Got::Proxy(_) => return None,
+            Got::Element(o, i) => {
+                let v = self.agent.element(o, i).ok()?;
+                GetResult::Value(self.local(v))
+            }
         })
     }
 

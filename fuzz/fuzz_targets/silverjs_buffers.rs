@@ -1,13 +1,15 @@
 //! Buffers changed under their views' feet: the bytes become a script
 //! that makes `ArrayBuffer`s (resizable and fixed), `SharedArrayBuffer`s
 //! (growable and fixed), typed arrays and `DataView`s over them, then
-//! reads, writes and calls the views' methods, `Atomics` and the base64
+//! reads, writes and calls the views' methods (the BigInt arrays' with
+//! BigInts), `Atomics` and the base64
 //! and hex decoders while values' `valueOf`, getters, comparators,
 //! callbacks and iteration resize, transfer (detach) or grow the
 //! buffers. Each step is caught, and the script checks that whatever was
 //! thrown is a `TypeError`, a `RangeError` or (a decoder's) a
 //! `SyntaxError`, that a detached view reads as empty, that every index
-//! below a view's length reads a number and the one at it undefined,
+//! below a view's length reads a number (a BigInt array's a BigInt) and
+//! the one at it undefined,
 //! that a data view reads its last byte and throws a RangeError past
 //! it, and that no view reaches past its buffer. The run must never panic, and
 //! the script must come out "ok" (or be stopped by its step budget). The
@@ -32,10 +34,10 @@ const STRIDES: [u32; 4] = [0, 1, 8, 64];
 /// checks.
 const PRELUDE: &str = r#"
 var C = [Uint8Array, Int8Array, Uint16Array, Int16Array, Uint32Array, Int32Array,
-  Uint8ClampedArray, Float32Array, Float64Array, Float16Array];
+  BigUint64Array, BigInt64Array, Uint8ClampedArray, Float32Array, Float64Array, Float16Array];
 var bufs = [new ArrayBuffer(8, { maxByteLength: 16 }), new ArrayBuffer(8), new ArrayBuffer(12, { maxByteLength: 12 })];
 var views = [new Uint8Array(bufs[0]), new Int16Array(bufs[0], 2, 2), new Float64Array(bufs[1]),
-  new Uint32Array(bufs[2], 4), new Float16Array(bufs[0], 2)];
+  new Uint32Array(bufs[2], 4), new Float16Array(bufs[0], 2), new BigInt64Array(bufs[1])];
 var shared = [new SharedArrayBuffer(8, { maxByteLength: 16 }), new SharedArrayBuffer(4)];
 var dvs = [new DataView(bufs[0]), new DataView(bufs[1], 2, 4), new DataView(shared[0], 1)];
 var bad = [];
@@ -55,6 +57,8 @@ function act(k) {
   } catch (e) { kind(e); }
 }
 function H(k, v) { return { valueOf: function () { act(k); return v; }, toString: function () { act(k); return ',' } }; }
+function HB(k, v) { return { valueOf: function () { act(k); return v; } }; }
+function big(v) { return v instanceof BigInt64Array || v instanceof BigUint64Array; }
 function V(a) { return views[a % (views.length || 1)]; }
 function B(a) { return a & 64 ? shared[a % shared.length] : bufs[a % bufs.length]; }
 function D(a) { return dvs[a % dvs.length]; }
@@ -77,7 +81,8 @@ function check() {
   views.forEach(function (v) {
     var n = v.length;
     if (v.buffer.detached && (n !== 0 || v.byteLength !== 0 || v.byteOffset !== 0)) bad.push('detached view has elements');
-    for (var i = 0; i < n; i++) if (typeof v[i] !== 'number') bad.push('no number at ' + i + ' of ' + n);
+    var want = big(v) ? 'bigint' : 'number';
+    for (var i = 0; i < n; i++) if (typeof v[i] !== want) bad.push('no ' + want + ' at ' + i + ' of ' + n);
     if (v[n] !== undefined || v[-1] !== undefined || v['-0'] !== undefined) bad.push('past the end');
     if (n > 0 && n * v.BYTES_PER_ELEMENT + v.byteOffset > v.buffer.byteLength) bad.push('outside its buffer');
     if (Object.keys(v).length !== n) bad.push('keys');
@@ -98,7 +103,7 @@ function op(f) {
 /// The step `code` with bytes `a` and `k`, as a statement.
 fn step(out: &mut String, code: u8, a: u8, k: u8) {
     let i = a % 20;
-    let body = match code % 44 {
+    let body = match code % 50 {
         0 => format!("V({a})[{i}]"),
         1 => format!("V({a})[{i}] = {k}"),
         2 => format!("V({a})[{i}] = H({k}, 3)"),
@@ -157,6 +162,21 @@ fn step(out: &mut String, code: u8, a: u8, k: u8) {
         40 => format!("V({a}).setFromHex('0102030405060708')"),
         41 => format!("V({a}).toBase64({{ get omitPadding() {{ act({k}); return true; }} }})"),
         42 => format!("Uint8Array.fromBase64(new Uint8Array(B({a})).toBase64()).length"),
+        43 => format!("V({a})[{i}] = HB({k}, -{k}n)"),
+        44 => format!(
+            "D({a}).setBigInt64(H({k}, 0), HB({}, -{k}n), {})",
+            k.wrapping_add(1),
+            k & 1
+        ),
+        45 => format!("D({a}).getBigUint64(H({k}, 0), true)"),
+        46 => format!("V({a}).fill(HB({k}, 5n), H({}, 1))", k.wrapping_add(4)),
+        47 => format!(
+            "Atomics.add(V({a}), H({k}, 0), HB({}, 1n))",
+            k.wrapping_add(2)
+        ),
+        48 => format!(
+            "V({a}).sort(function (x, y) {{ act({k}); return x < y ? -1 : x > y ? 1 : 0; }})"
+        ),
         _ => "check()".to_owned(),
     };
     let _ = writeln!(out, "op(function () {{ {body}; }});");

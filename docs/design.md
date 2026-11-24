@@ -604,7 +604,8 @@ which natives use far less than `Local`s; J6's benches report it.
     `silverjs_gen` is written, and with them the check that every
     handle resolves in its own agent and a stale one panics rather
     than resolves;
-  - `silverjs_buffers`: the bytes made a script of typed arrays and
+  - `silverjs_buffers`: the bytes made a script of typed arrays (the
+    BigInt arrays among them, from J4.3c) and
     data views over resizable, fixed and shared buffers whose
     methods, `Atomics` and the base64 decoders run while values'
     `valueOf`, getters and callbacks resize, detach and grow the
