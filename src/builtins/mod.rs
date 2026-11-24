@@ -15,6 +15,7 @@
 mod array;
 pub(crate) mod atomics;
 mod base64;
+pub(crate) mod bigint;
 mod binary;
 mod collection;
 mod error;
@@ -211,6 +212,8 @@ const TABLES: &[&[Entry]] = &[
     base64::UINT8_ARRAY_PROTO,
     global::SHARED_GLOBAL,
     json::JSON,
+    bigint::BIGINT,
+    bigint::BIGINT_PROTO,
 ];
 
 /// The tables' indices.
@@ -276,6 +279,8 @@ pub(crate) mod table {
     pub const UINT8_ARRAY_PROTO: u32 = 58;
     pub const SHARED_GLOBAL: u32 = 59;
     pub const JSON: u32 = 60;
+    pub const BIGINT: u32 = 61;
+    pub const BIGINT_PROTO: u32 = 62;
 }
 
 /// How native `id` resumes a generator, if it is `%GeneratorPrototype%`'s
@@ -599,6 +604,8 @@ impl Agent {
             (ObjectKind::Boolean, r.boolean_prototype)
         } else if v.as_string().is_some() {
             (ObjectKind::String, r.string_prototype)
+        } else if matches!(v.as_reference(), Some((RefKind::BigInt, _))) {
+            (ObjectKind::BigInt, r.intrinsics.bigint_prototype)
         } else {
             (ObjectKind::Symbol, r.symbol_prototype)
         };
@@ -630,6 +637,7 @@ impl Agent {
             ObjectKind::Number => p.is_number(),
             ObjectKind::Boolean => p.as_bool().is_some(),
             ObjectKind::String => p.as_string().is_some(),
+            ObjectKind::BigInt => matches!(p.as_reference(), Some((RefKind::BigInt, _))),
             _ => matches!(p.as_reference(), Some((RefKind::Symbol, _))),
         };
         if is(v) {

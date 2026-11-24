@@ -1096,8 +1096,13 @@ impl Agent {
             .cloned();
         match c {
             Some(Constant::Number(n)) => Ok(Value::number(n)),
-            Some(Constant::BigInt { .. }) => {
-                Err(self.throw_error(ErrorType::SyntaxError, messages::not_supported("BigInt")))
+            Some(Constant::BigInt { radix, digits }) => {
+                let units: Vec<u16> = digits.encode_utf16().collect();
+                match self.with_fuel(|f| crate::bigint::BigInt::from_digits(&units, radix, f)) {
+                    Ok(Some(b)) => self.alloc_bigint(b),
+                    Ok(None) => Ok(Value::UNDEFINED),
+                    Err(r) => Err(self.bigint_refused(r)),
+                }
             }
             _ => Ok(Value::UNDEFINED),
         }
@@ -1733,26 +1738,46 @@ impl Agent {
                         self.vm.acc = match v.as_int().and_then(|i| i.checked_add(delta)) {
                             Some(n) => Value::int(n),
                             None => {
-                                let n = tri!(self.number(v), start);
-                                Value::number(n + f64::from(delta))
+                                let v = tri!(self.numeric(v), start);
+                                match self.bigint_of(v).cloned() {
+                                    Some(b) => {
+                                        let one = crate::bigint::BigInt::from_i64(delta.into());
+                                        let r = self.with_fuel(|f| b.add(&one, f));
+                                        tri!(self.bigint_result(r), start)
+                                    }
+                                    None => {
+                                        let n = tri!(self.number(v), start);
+                                        Value::number(n + f64::from(delta))
+                                    }
+                                }
                             }
                         };
                     }
                     Op::Negate => {
-                        let v = self.vm.acc;
-                        let n = tri!(self.number(v), start);
-                        self.vm.acc = Value::number(-n);
+                        let v = tri!(self.numeric(self.vm.acc), start);
+                        self.vm.acc = match self.bigint_of(v).map(crate::bigint::BigInt::neg) {
+                            Some(b) => tri!(self.alloc_bigint(b), start),
+                            None => Value::number(-tri!(self.number(v), start)),
+                        };
                     }
                     Op::BitNot => {
-                        let v = self.vm.acc;
-                        let n = tri!(self.number(v), start);
-                        self.vm.acc = Value::int(!ops::to_int32(n));
+                        let v = tri!(self.numeric(self.vm.acc), start);
+                        self.vm.acc = match self.bigint_of(v).map(crate::bigint::BigInt::not) {
+                            Some(b) => tri!(self.alloc_bigint(b), start),
+                            None => Value::int(!ops::to_int32(tri!(self.number(v), start))),
+                        };
                     }
-                    Op::ToNumber | Op::ToNumeric => {
+                    Op::ToNumber => {
                         let v = self.vm.acc;
                         if !v.is_number() {
                             let n = tri!(self.number(v), start);
                             self.vm.acc = Value::number(n);
+                        }
+                    }
+                    Op::ToNumeric => {
+                        let v = self.vm.acc;
+                        if !v.is_number() {
+                            self.vm.acc = tri!(self.numeric(v), start);
                         }
                     }
                     Op::Not => {

@@ -1,0 +1,12 @@
+# Tokens for silverjs_bigint: an operator and its extra byte, then each
+# operand as a shape byte (0x80 negative; 0 zero, 1 one, 2 a byte, 3 to
+# 5 around a power of two, more for many limbs) and its bytes.
+divide_by_zero="\x03\x00\x02\x07\x00"
+remainder_by_zero="\x04\x00\x82\x07\x00"
+negative_exponent="\x05\x01\x02\x09\x00"
+as_int_n_64="\x0c\x03\x84\x40\x00"
+as_uint_n_63="\x0d\x02\x85\x3f\x00"
+power_of_two_minus_one="\x03\xff"
+negative_power_of_two="\x84\x80"
+shift_far="\x0a\xff\x01\x00"
+many_limbs="\x0f\x03"

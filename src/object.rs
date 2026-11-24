@@ -122,6 +122,8 @@ pub(crate) enum ObjectKind {
     Number,
     String,
     Symbol,
+    /// A BigInt's wrapper: the BigInt in its internal slot.
+    BigInt,
     /// An array iterator: the array-like (undefined once done), the next
     /// index and what it gives, in its internal slots.
     ArrayIterator,
@@ -764,6 +766,11 @@ pub(crate) fn same_value(heap: &Heap, a: Value, b: Value) -> bool {
             (Some(x), Some(y)) => x.same_units(y),
             _ => false,
         };
+    }
+    if let (Some((RefKind::BigInt, x)), Some((RefKind::BigInt, y))) =
+        (a.as_reference(), b.as_reference())
+    {
+        return heap.bigints.get(x) == heap.bigints.get(y);
     }
     a == b
 }

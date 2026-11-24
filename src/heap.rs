@@ -357,6 +357,7 @@ pub(crate) struct Heap {
     pub(crate) strings: Arena<StringCell>,
     pub(crate) symbols: Arena<SymbolCell>,
     pub(crate) internals: Arena<InternalCell>,
+    pub(crate) bigints: Arena<crate::bigint::BigInt>,
     pub(crate) atoms: Atoms,
     /// The key `length`, which arrays answer for themselves.
     pub(crate) length_key: PropertyKey,
@@ -383,6 +384,7 @@ impl Heap {
             objects: Arena::new(),
             strings: Arena::new(),
             symbols: Arena::new(),
+            bigints: Arena::new(),
             internals: Arena::new(),
             atoms,
             length_key,
@@ -399,6 +401,7 @@ impl Heap {
             + self.strings.bytes()
             + self.symbols.bytes()
             + self.internals.bytes()
+            + self.bigints.bytes()
             + self.atoms.bytes()
     }
 
@@ -412,6 +415,7 @@ impl Heap {
                 + self.strings.committed()
                 + self.symbols.committed()
                 + self.internals.committed()
+                + self.bigints.committed()
                 + self.atoms.bytes(),
             collections: self.collections,
         }
@@ -535,8 +539,7 @@ impl Heap {
             Some((RefKind::String, i)) => self.strings.get(i).is_some(),
             Some((RefKind::Symbol, i)) => self.symbols.get(i).is_some(),
             Some((RefKind::Internal, i)) => self.internals.get(i).is_some(),
-            // BigInts have no cells before J4.
-            Some(_) => false,
+            Some((RefKind::BigInt, i)) => self.bigints.get(i).is_some(),
         }
     }
 
@@ -557,7 +560,9 @@ impl Heap {
             Some((RefKind::Internal, j)) => {
                 self.internals.get_raw(j).is_some() && self.internals.marked(j as usize)
             }
-            Some(_) => false,
+            Some((RefKind::BigInt, j)) => {
+                self.bigints.get_raw(j).is_some() && self.bigints.marked(j as usize)
+            }
         }
     }
 
@@ -568,6 +573,7 @@ impl Heap {
         self.strings.begin_collection();
         self.symbols.begin_collection();
         self.internals.begin_collection();
+        self.bigints.begin_collection();
         let mut stack: Vec<Value> = roots.into_iter().collect();
         stack.extend(self.unit_strings.values());
         let mut weak = Vec::new();
@@ -600,6 +606,7 @@ impl Heap {
         self.strings.end_collection();
         self.symbols.end_collection();
         self.internals.end_collection();
+        self.bigints.end_collection();
         self.collections += 1;
     }
 
@@ -671,6 +678,9 @@ impl Heap {
                 }
                 Some((RefKind::String, i)) => {
                     self.strings.keep(i);
+                }
+                Some((RefKind::BigInt, i)) => {
+                    self.bigints.keep(i);
                 }
                 Some((RefKind::Symbol, i)) => {
                     if self.symbols.keep(i)

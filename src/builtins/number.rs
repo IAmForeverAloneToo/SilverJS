@@ -43,7 +43,11 @@ pub(crate) fn construct(agent: &mut Agent, c: Call) -> Res<Value> {
     let n = if c.argc == 0 {
         0.0
     } else {
-        agent.number(agent.arg(c, 0))?
+        let prim = agent.numeric(agent.arg(c, 0))?;
+        match agent.bigint_of(prim) {
+            Some(b) => b.to_f64(),
+            None => agent.number(prim)?,
+        }
     };
     let n = Value::number(n);
     if c.new_target.is_undefined() {

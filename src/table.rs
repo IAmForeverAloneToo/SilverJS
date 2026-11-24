@@ -281,8 +281,24 @@ impl Table {
     }
 }
 
+/// What a key's hash and comparison read: the arenas of the primitives
+/// compared by their contents.
+#[derive(Clone, Copy)]
+pub(crate) struct Prims<'a> {
+    strings: &'a Arena<StringCell>,
+    bigints: &'a Arena<crate::bigint::BigInt>,
+}
+
+fn bigint_of(p: Prims<'_>, v: Value) -> Option<&crate::bigint::BigInt> {
+    match v.as_reference() {
+        Some((RefKind::BigInt, i)) => p.bigints.get(i),
+        _ => None,
+    }
+}
+
 /// A key's hash, alike for keys SameValueZero calls the same.
-fn hash_of(strings: &Arena<StringCell>, v: Value) -> u32 {
+fn hash_of(p: Prims<'_>, v: Value) -> u32 {
+    let strings = p.strings;
     if let Some(n) = v.as_number() {
         let bits = if n.is_nan() {
             0x7ff8_0000_0000_0000
@@ -296,6 +312,12 @@ fn hash_of(strings: &Arena<StringCell>, v: Value) -> u32 {
     if let Some(s) = v.as_string() {
         return strings.get(s).map_or(0, StringCell::hash);
     }
+    if let Some(b) = bigint_of(p, v) {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        b.hash(&mut h);
+        return mix(h.finish());
+    }
     mix(v.bits())
 }
 
@@ -305,7 +327,8 @@ fn mix(bits: u64) -> u32 {
 }
 
 /// SameValueZero (section 7.2.11).
-pub(crate) fn same_value_zero(strings: &Arena<StringCell>, a: Value, b: Value) -> bool {
+pub(crate) fn same_value_zero(p: Prims<'_>, a: Value, b: Value) -> bool {
+    let strings = p.strings;
     if let (Some(x), Some(y)) = (a.as_number(), b.as_number()) {
         return x == y || (x.is_nan() && y.is_nan());
     }
@@ -314,6 +337,9 @@ pub(crate) fn same_value_zero(strings: &Arena<StringCell>, a: Value, b: Value) -
             (Some(x), Some(y)) => x.same_units(y),
             _ => false,
         };
+    }
+    if let (Some(x), Some(y)) = (bigint_of(p, a), bigint_of(p, b)) {
+        return x == y;
     }
     a == b
 }
@@ -332,20 +358,19 @@ impl Heap {
 
     /// Runs `f` on table `t` (and the strings, for its keys), keeping the
     /// heap's count of its bytes right.
-    fn with_table<R>(
-        &mut self,
-        t: Value,
-        f: impl FnOnce(&mut Table, &Arena<StringCell>) -> R,
-    ) -> Option<R> {
+    fn with_table<R>(&mut self, t: Value, f: impl FnOnce(&mut Table, Prims<'_>) -> R) -> Option<R> {
         let Some((RefKind::Internal, i)) = t.as_reference() else {
             return None;
         };
-        let strings = &self.strings;
+        let prims = Prims {
+            strings: &self.strings,
+            bigints: &self.bigints,
+        };
         let crate::internal::InternalCell::Table(table) = self.internals.get_mut(i)? else {
             return None;
         };
         let before = table.extra_bytes();
-        let r = f(table, strings);
+        let r = f(table, prims);
         let after = table.extra_bytes();
         self.internals.update_extra(before, after);
         Some(r)
@@ -354,8 +379,12 @@ impl Heap {
     /// The index of `key`'s entry in table `t`.
     pub(crate) fn table_find(&self, t: Value, key: Value) -> Option<usize> {
         let table = self.table(t)?;
-        let h = hash_of(&self.strings, key);
-        table.find(h, |k| same_value_zero(&self.strings, k, key))
+        let prims = Prims {
+            strings: &self.strings,
+            bigints: &self.bigints,
+        };
+        let h = hash_of(prims, key);
+        table.find(h, |k| same_value_zero(prims, k, key))
     }
 
     /// `key`'s value in table `t`.
@@ -367,9 +396,9 @@ impl Heap {
     /// Sets `key`'s value in table `t`, adding the entry at the end if it
     /// has none.
     pub(crate) fn table_set(&mut self, t: Value, key: Value, value: Value) {
-        self.with_table(t, |table, strings| {
-            let h = hash_of(strings, key);
-            match table.find(h, |k| same_value_zero(strings, k, key)) {
+        self.with_table(t, |table, prims| {
+            let h = hash_of(prims, key);
+            match table.find(h, |k| same_value_zero(prims, k, key)) {
                 Some(i) => {
                     if let Some(e) = table.entries.get_mut(i) {
                         e.1 = value;
@@ -382,8 +411,8 @@ impl Heap {
 
     /// Adds a registry's cell: its target, held value and token.
     pub(crate) fn table_register(&mut self, t: Value, target: Value, held: Value, token: Value) {
-        self.with_table(t, |table, strings| {
-            let h = hash_of(strings, target);
+        self.with_table(t, |table, prims| {
+            let h = hash_of(prims, target);
             table.push(h, target, held);
             table
                 .tokens

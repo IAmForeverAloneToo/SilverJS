@@ -135,6 +135,23 @@ pub(crate) fn string_to_number(units: &[u16]) -> f64 {
     sign * body.parse::<f64>().unwrap_or(f64::NAN)
 }
 
+/// A numeric binary operator but `+` on two numbers.
+fn number_binary(op: Op, x: f64, y: f64) -> Value {
+    match op {
+        Op::Sub => Value::number(x - y),
+        Op::Mul => Value::number(x * y),
+        Op::Div => Value::number(x / y),
+        Op::Mod => Value::number(x % y),
+        Op::Exp => Value::number(exponentiate(x, y)),
+        Op::BitOr => Value::int(to_int32(x) | to_int32(y)),
+        Op::BitAnd => Value::int(to_int32(x) & to_int32(y)),
+        Op::BitXor => Value::int(to_int32(x) ^ to_int32(y)),
+        Op::Shl => Value::int(to_int32(x).wrapping_shl(to_uint32(y) & 31)),
+        Op::Shr => Value::int(to_int32(x) >> (to_uint32(y) & 31)),
+        _ => Value::number(f64::from(to_uint32(x) >> (to_uint32(y) & 31))),
+    }
+}
+
 /// Number::exponentiate (section 6.1.6.1.3), where it differs from
 /// `powf`: a NaN exponent, and a base of magnitude 1 to an infinity.
 pub(crate) fn exponentiate(base: f64, exponent: f64) -> f64 {
@@ -185,7 +202,7 @@ impl Agent {
 
     /// The heap limit was reached: a `RangeError`, made past the limit
     /// (it is small), so that script can catch it.
-    fn out_of_memory(&mut self) -> Abrupt {
+    pub(crate) fn out_of_memory(&mut self) -> Abrupt {
         let proto = self.realm().error_proto(ErrorType::RangeError);
         let (o, _) = self
             .heap
@@ -250,6 +267,9 @@ impl Agent {
         if let Some(s) = v.as_string() {
             return self.heap.strings.get(s).is_some_and(|c| c.len() > 0);
         }
+        if let Some(b) = self.bigint_of(v) {
+            return !b.is_zero();
+        }
         !v.is_nullish()
     }
 
@@ -275,7 +295,7 @@ impl Agent {
                 let p = self.primitive(v, Some(false))?;
                 self.number(p)
             }
-            _ => Err(self.throw_error(ErrorType::TypeError, messages::not_supported("BigInt"))),
+            _ => Err(self.type_error(crate::builtins::bigint::TO_NUMBER)),
         }
     }
 
@@ -356,7 +376,13 @@ impl Agent {
                 let p = self.primitive(v, Some(true))?;
                 self.string_value(p)
             }
-            _ => Err(self.throw_error(ErrorType::TypeError, messages::not_supported("BigInt"))),
+            _ => {
+                let b = self.bigint_of(v).cloned().unwrap_or_default();
+                match self.with_fuel(|f| b.to_string_radix(10, f)) {
+                    Ok(text) => self.new_string(&text),
+                    Err(r) => Err(self.bigint_refused(r)),
+                }
+            }
         }
     }
 
@@ -426,6 +452,9 @@ impl Agent {
         if let (Some(x), Some(y)) = (a.as_number(), b.as_number()) {
             return x == y;
         }
+        if let (Some(x), Some(y)) = (self.bigint_of(a), self.bigint_of(b)) {
+            return x == y;
+        }
         if let (Some(x), Some(y)) = (a.as_string(), b.as_string()) {
             return match (self.heap.strings.get(x), self.heap.strings.get(y)) {
                 (Some(x), Some(y)) => x.same_units(y),
@@ -460,6 +489,17 @@ impl Agent {
             let n = self.number(a)?;
             return Ok(b.as_number() == Some(n));
         }
+        // A BigInt and a string: the string as a BigInt, if it is one.
+        let (big, other) = if self.is_bigint(a) { (a, b) } else { (b, a) };
+        if self.is_bigint(big)
+            && let Some(units) = other.as_string().and_then(|_| self.string_units(other))
+        {
+            let n = match self.with_fuel(|f| crate::bigint::BigInt::parse(&units, f)) {
+                Ok(n) => n,
+                Err(r) => return Err(self.bigint_refused(r)),
+            };
+            return Ok(n.is_some_and(|n| self.bigint_of(big) == Some(&n)));
+        }
         if a.as_bool().is_some() {
             let n = Value::number(self.number(a)?);
             return self.loose_equals(n, b);
@@ -476,6 +516,10 @@ impl Agent {
         if is_object(a) && !is_object(b) {
             let p = self.primitive(a, None)?;
             return self.loose_equals(p, b);
+        }
+        // A BigInt and a number, compared as mathematical values.
+        if let (Some(x), Some(n)) = (self.bigint_of(big), other.as_number()) {
+            return Ok(x.compare_number(n) == Some(std::cmp::Ordering::Equal));
         }
         Ok(false)
     }
@@ -494,6 +538,9 @@ impl Agent {
                 Op::TestLtEq => x <= y,
                 _ => x >= y,
             });
+        }
+        if self.is_bigint(pa) || self.is_bigint(pb) {
+            return self.relational_bigint(op, pa, pb);
         }
         let x = self.number(pa)?;
         let y = self.number(pb)?;
@@ -520,6 +567,8 @@ impl Agent {
                 self.vm.temps.push(pb);
                 let r = if pa.as_string().is_some() || pb.as_string().is_some() {
                     self.concat(pa, pb)
+                } else if self.is_bigint(pa) || self.is_bigint(pb) {
+                    self.bigint_binary(Op::Add, pa, pb)
                 } else {
                     match self.number(pa) {
                         Ok(x) => self.number(pb).map(|y| Value::number(x + y)),
@@ -570,21 +619,21 @@ impl Agent {
 
     /// The numeric binary operators but `+`.
     pub(crate) fn numeric_binary(&mut self, op: Op, a: Value, b: Value) -> Res<Value> {
+        // Two numbers, the common case, skip ToNumeric and the BigInt test.
+        if let (Some(x), Some(y)) = (a.as_number(), b.as_number()) {
+            return Ok(number_binary(op, x, y));
+        }
+        let a = self.numeric(a)?;
+        self.vm.temps.push(a);
+        let b = self.numeric(b);
+        self.vm.temps.pop();
+        let b = b?;
+        if self.is_bigint(a) || self.is_bigint(b) {
+            return self.bigint_binary(op, a, b);
+        }
         let x = self.number(a)?;
         let y = self.number(b)?;
-        Ok(match op {
-            Op::Sub => Value::number(x - y),
-            Op::Mul => Value::number(x * y),
-            Op::Div => Value::number(x / y),
-            Op::Mod => Value::number(x % y),
-            Op::Exp => Value::number(exponentiate(x, y)),
-            Op::BitOr => Value::int(to_int32(x) | to_int32(y)),
-            Op::BitAnd => Value::int(to_int32(x) & to_int32(y)),
-            Op::BitXor => Value::int(to_int32(x) ^ to_int32(y)),
-            Op::Shl => Value::int(to_int32(x).wrapping_shl(to_uint32(y) & 31)),
-            Op::Shr => Value::int(to_int32(x) >> (to_uint32(y) & 31)),
-            _ => Value::number(f64::from(to_uint32(x) >> (to_uint32(y) & 31))),
-        })
+        Ok(number_binary(op, x, y))
     }
 
     // Properties.
@@ -649,7 +698,12 @@ impl Agent {
             _ if self.callable(v).is_some() => "function".into(),
             _ => match v.as_object() {
                 Some(o) => self.object_display(o),
-                None => "Symbol()".into(),
+                None => match self.bigint_of(v) {
+                    Some(b) => {
+                        crate::bigint::unmetered(|f| b.to_string_radix(10, f)).unwrap_or_default()
+                    }
+                    None => "Symbol()".into(),
+                },
             },
         }
     }
@@ -666,6 +720,7 @@ impl Agent {
         match v.as_reference() {
             Some((RefKind::String, _)) => r.string_prototype,
             Some((RefKind::Symbol, _)) => r.symbol_prototype,
+            Some((RefKind::BigInt, _)) => r.intrinsics.bigint_prototype,
             _ => Value::NULL,
         }
     }

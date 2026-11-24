@@ -147,6 +147,8 @@ pub(crate) struct Intrinsics {
     pub data_view_prototype: Value,
     pub atomics: Value,
     pub json: Value,
+    pub bigint: Value,
+    pub bigint_prototype: Value,
 }
 
 impl Intrinsics {
@@ -211,6 +213,8 @@ impl Intrinsics {
         data_view_prototype: Value::UNDEFINED,
         atomics: Value::UNDEFINED,
         json: Value::UNDEFINED,
+        bigint: Value::UNDEFINED,
+        bigint_prototype: Value::UNDEFINED,
     };
 
     /// The typed array constructor of `elem`.
@@ -288,6 +292,8 @@ impl Intrinsics {
             self.data_view_prototype,
             self.atomics,
             self.json,
+            self.bigint,
+            self.bigint_prototype,
         ]);
         out.extend_from_slice(&self.typed);
         out.extend_from_slice(&self.typed_prototypes);
@@ -354,6 +360,7 @@ pub(crate) const CTORS: &[Entry] = &[
         super::binary::construct_shared_array_buffer,
     ),
     ctor("DataView", 1, super::binary::construct_data_view),
+    ctor("BigInt", 1, super::bigint::construct),
     method("FunctionPrototype", 0, super::function::function_prototype),
     method("ThrowTypeError", 0, super::function::throw_type_error),
     method("parseInt", 2, parse_int),
@@ -405,6 +412,7 @@ pub(crate) const GLOBAL: &[Entry] = &[
     intrinsic("Float16Array"),
     intrinsic("DataView"),
     intrinsic("Map"),
+    intrinsic("BigInt"),
     intrinsic("Set"),
     intrinsic("WeakMap"),
     intrinsic("WeakSet"),
@@ -458,6 +466,7 @@ impl Agent {
             "DataView" => i.data_view,
             "Atomics" => i.atomics,
             "JSON" => i.json,
+            "BigInt" => i.bigint,
             _ if name.ends_with("Array") => crate::buffer::Elem::ALL
                 .iter()
                 .position(|e| e.name() == name)
@@ -724,6 +733,10 @@ impl Agent {
         self.set_intrinsics(|i| i.data_view = dv);
         let atomics = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.atomics = atomics);
+        let bp = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.bigint_prototype = bp);
+        let bigint = self.make_ctor("BigInt", bp)?;
+        self.set_intrinsics(|i| i.bigint = bigint);
         let json = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.json = json);
         let ip = self.realm().intrinsics.iterator_prototype;
@@ -902,6 +915,8 @@ impl Agent {
         )?;
         self.install_table(i.atomics, table::ATOMICS, Value::UNDEFINED, &[])?;
         self.install_table(i.json, table::JSON, Value::UNDEFINED, &[])?;
+        self.install_table(i.bigint, table::BIGINT, Value::UNDEFINED, &[])?;
+        self.install_table(i.bigint_prototype, table::BIGINT_PROTO, i.bigint, &[])?;
         self.install_table(i.promise, table::PROMISE, Value::UNDEFINED, &[])?;
         self.install_table(
             i.promise_prototype,

@@ -611,6 +611,12 @@ which natives use far less than `Local`s; J6's benches report it.
     buffers; no panic, only the spec's TypeErrors and RangeErrors (and
     a decoder's SyntaxErrors), a detached view empty, no view past
     its buffer (J4.2, the lead's condition);
+  - `silverjs_bigint`: differential, the bytes made pairs of BigInts
+    (both signs, zero, a byte, around a power of two, many limbs) and
+    an operator each, every result checked against num-bigint, a
+    test-only oracle: the arithmetic, bitwise and shift operators,
+    `asIntN` and `asUintN` at the edge widths, comparisons, radix
+    conversion both ways (J4.3b, the lead's condition);
   - `silverjs_bytecode`: any bytes to the compiled-unit reader, which
     must refuse what it did not write (a checksum and a structural
     validation), never panic, never run it.

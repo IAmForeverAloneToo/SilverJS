@@ -18,6 +18,7 @@
 
 pub mod agent;
 pub mod ast;
+mod bigint;
 mod buffer;
 mod builtins;
 pub mod compiler;
@@ -39,6 +40,8 @@ pub mod value;
 
 #[cfg(test)]
 mod async_tests;
+#[cfg(test)]
+mod bigint_tests;
 #[cfg(test)]
 mod builtins_tests;
 #[cfg(test)]

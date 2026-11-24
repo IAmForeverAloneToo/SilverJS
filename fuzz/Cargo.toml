@@ -18,6 +18,10 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 silverjs = { path = ".." }
+# The independent model silverjs_bigint checks the arithmetic against: a
+# test-only oracle, never part of the engine.
+num-bigint = "0.4"
+num-traits = "0.2"
 
 [[bin]]
 name = "silverjs_parse"
@@ -49,3 +53,10 @@ bench = false
 
 [workspace]
 members = ["."]
+
+[[bin]]
+name = "silverjs_bigint"
+path = "fuzz_targets/silverjs_bigint.rs"
+test = false
+doc = false
+bench = false
