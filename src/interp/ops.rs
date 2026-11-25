@@ -1480,38 +1480,65 @@ impl Agent {
     /// hiding its name further out whether enumerable or not.
     pub(crate) fn for_in_start(&mut self, v: Value) -> Res<Value> {
         let object = if v.is_nullish() { Value::UNDEFINED } else { v };
-        let mut names: Vec<PropertyKey> = Vec::new();
+        let mut names: Vec<(PropertyKey, Value)> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let mut at = object.as_object();
         if let Some(units) = self.string_units(object) {
-            names.extend((0..units.len()).map(|i| PropertyKey::Index(i as u32)));
+            names
+                .extend((0..units.len()).map(|i| (PropertyKey::Index(i as u32), Value::UNDEFINED)));
             at = self.primitive_proto(object).as_object();
         }
-        // A proxy's keys, then its prototype, then each key's descriptor:
-        // the reference browser's trap order.
-        while let Some(o) = at {
-            let keys = self.o_own_keys(o)?;
-            at = self.o_get_prototype_of(o)?.as_object();
-            for key in keys {
-                if matches!(key, PropertyKey::Symbol(_)) || !seen.insert(key) {
-                    continue;
+        // Each object's keys, then its prototype; an ordinary object's
+        // keys filtered now, a proxy's each as it comes (its descriptor
+        // read then): the reference browser's trap order.
+        let base = self.vm.temps.len();
+        // The object, rooted while its traps run (they may collect).
+        self.vm.temps.push(object);
+        let walked = (|| -> Res<()> {
+            while let Some(o) = at {
+                let keys = self.o_own_keys(o)?;
+                let proxy = self.is_proxy(o);
+                if proxy {
+                    // Kept until the keys are made: each key holds it.
+                    self.vm.temps.push(Value::reference(RefKind::Object, o));
                 }
-                if self
-                    .o_get_own_property(o, key)?
-                    .is_some_and(|p| enumerable(&p))
-                {
-                    names.push(key);
+                at = self.o_get_prototype_of(o)?.as_object();
+                for key in keys {
+                    if matches!(key, PropertyKey::Symbol(_)) || !seen.insert(key) {
+                        continue;
+                    }
+                    if proxy {
+                        names.push((key, Value::reference(RefKind::Object, o)));
+                    } else if self
+                        .o_get_own_property(o, key)?
+                        .is_some_and(|p| enumerable(&p))
+                    {
+                        names.push((key, Value::UNDEFINED));
+                    }
                 }
             }
+            Ok(())
+        })();
+        if let Err(e) = walked {
+            self.vm.temps.truncate(base);
+            return Err(e);
         }
-        let it = self.alloc_internal(InternalCell::ForIn(ForIn {
+        let made = self.alloc_internal(InternalCell::ForIn(ForIn {
             object,
             keys: Vec::new(),
+            sources: Vec::new(),
             next: 0,
-        }))?;
+        }));
+        let it = match made {
+            Ok(it) => it,
+            Err(e) => {
+                self.vm.temps.truncate(base);
+                return Err(e);
+            }
+        };
         self.vm.temps.push(it);
         let mut result = Ok(it);
-        for key in names {
+        for (key, source) in names {
             let s = match key {
                 PropertyKey::Index(i) => self.new_string(&i.to_string()),
                 PropertyKey::Atom(a) => {
@@ -1526,6 +1553,7 @@ impl Agent {
                         self.heap.with_internal(i, |c| {
                             if let InternalCell::ForIn(f) = c {
                                 f.keys.push(s);
+                                f.sources.push(source);
                             }
                         });
                     }
@@ -1536,35 +1564,45 @@ impl Agent {
                 }
             }
         }
-        self.vm.temps.pop();
+        self.vm.temps.truncate(base);
         result
     }
 
     /// The next key a for-in visits (one deleted since its start is
-    /// skipped), or undefined when done.
-    pub(crate) fn for_in_next(&mut self, it: Value) -> Value {
+    /// skipped), or undefined when done. A proxy's key is visited if its
+    /// descriptor is enumerable; without one, if the proxy's prototype
+    /// has it (the reference browser reads no `has` trap).
+    pub(crate) fn for_in_next(&mut self, it: Value) -> Res<Value> {
         let Some((RefKind::Internal, i)) = it.as_reference() else {
-            return Value::UNDEFINED;
+            return Ok(Value::UNDEFINED);
         };
         loop {
-            let (object, key) = match self.heap.internals.get_mut(i) {
+            let (object, key, source) = match self.heap.internals.get_mut(i) {
                 Some(InternalCell::ForIn(f)) => {
                     let Some(&k) = f.keys.get(f.next) else {
-                        return Value::UNDEFINED;
+                        return Ok(Value::UNDEFINED);
                     };
+                    let source = f.sources.get(f.next).copied().unwrap_or(Value::UNDEFINED);
                     f.next += 1;
-                    (f.object, k)
+                    (f.object, k, source)
                 }
-                _ => return Value::UNDEFINED,
+                _ => return Ok(Value::UNDEFINED),
             };
             let units = self.string_units(key).unwrap_or_default();
             let pk = self.heap.atoms.key(&units);
-            let still = match object.as_object() {
-                Some(o) => self.heap.has_property(o, pk),
-                None => true,
+            let still = match (source.as_object(), object.as_object()) {
+                (Some(p), _) => match self.o_get_own_property(p, pk)? {
+                    Some(d) => enumerable(&d),
+                    None => match self.o_get_prototype_of(p)?.as_object() {
+                        Some(up) => self.o_has_property(up, pk)?,
+                        None => false,
+                    },
+                },
+                (None, Some(o)) => self.heap.has_property(o, pk),
+                (None, None) => true,
             };
             if still {
-                return key;
+                return Ok(key);
             }
         }
     }

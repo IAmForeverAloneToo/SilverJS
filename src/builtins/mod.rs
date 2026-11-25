@@ -22,6 +22,7 @@ pub(crate) mod date;
 mod disposable;
 pub(crate) use disposable::Step;
 mod error;
+mod from_async;
 mod function;
 mod generator;
 mod global;
@@ -226,6 +227,7 @@ const TABLES: &[&[Entry]] = &[
     disposable::DISPOSABLE_STACK_PROTO,
     disposable::ASYNC_DISPOSABLE_STACK_PROTO,
     disposable::DISPOSABLE_INTERNAL,
+    from_async::FROM_ASYNC_INTERNAL,
 ];
 
 /// The tables' indices.
@@ -301,6 +303,7 @@ pub(crate) mod table {
     pub const DISPOSABLE_STACK_PROTO: u32 = 68;
     pub const ASYNC_DISPOSABLE_STACK_PROTO: u32 = 69;
     pub const DISPOSABLE_INTERNAL: u32 = 70;
+    pub const FROM_ASYNC_INTERNAL: u32 = 71;
 }
 
 /// How native `id` resumes a generator, if it is `%GeneratorPrototype%`'s
@@ -759,6 +762,10 @@ impl Agent {
         key: PropertyKey,
         v: Value,
     ) -> Res<()> {
+        // A proxy's [[DefineOwnProperty]] is its trap's.
+        if o.as_object().is_some_and(|i| self.is_proxy(i)) {
+            return self.define_or_throw(o, key, Descriptor::data(v));
+        }
         if self.create_data_property(o, key, v) {
             Ok(())
         } else {
@@ -798,8 +805,15 @@ impl Agent {
 
     /// DeletePropertyOrThrow (section 7.3.10).
     pub(crate) fn delete_or_throw(&mut self, o: Value, key: PropertyKey) -> Res<()> {
-        if o.as_object().is_none_or(|i| self.heap.delete(i, key)) {
+        let done = match o.as_object() {
+            Some(i) => self.o_delete(i, key)?,
+            None => true,
+        };
+        if done {
             Ok(())
+        } else if o.as_object().is_some_and(|i| self.is_proxy(i)) {
+            let k = self.key_display(key);
+            Err(self.type_error(messages::proxy_delete_false(&k)))
         } else {
             let k = self.key_display(key);
             let text = self.display(o);
@@ -939,17 +953,25 @@ impl Agent {
             .is_some_and(|c| c.kind() == ObjectKind::Array)
     }
 
-    /// IsArray (section 7.2.2): an array, or a proxy of one.
-    pub(crate) fn is_array_through(&self, v: Value) -> bool {
+    /// IsArray (section 7.2.2), throwing for a revoked proxy.
+    pub(crate) fn is_array_checked(&mut self, v: Value) -> Res<bool> {
         let mut at = v;
         loop {
             let Some(c) = at.as_object().and_then(|o| self.heap.objects.get(o)) else {
-                return false;
+                return Ok(false);
             };
             match c.kind() {
-                ObjectKind::Array => return true,
-                ObjectKind::Proxy => at = c.internal().first().copied().unwrap_or(Value::NULL),
-                _ => return false,
+                ObjectKind::Array => return Ok(true),
+                ObjectKind::Proxy => {
+                    let target = c.internal().first().copied().unwrap_or(Value::NULL);
+                    if target.is_null() {
+                        return Err(self.type_error(
+                            "Cannot perform 'IsArray' on a proxy that has been revoked",
+                        ));
+                    }
+                    at = target;
+                }
+                _ => return Ok(false),
             }
         }
     }

@@ -32,6 +32,10 @@ pub(crate) struct Env {
 pub(crate) struct ForIn {
     pub object: Value,
     pub keys: Vec<Value>,
+    /// Each key's proxy, whose descriptor of it is read as the key comes
+    /// (the reference browser's order), or undefined for an ordinary
+    /// object's, checked when the loop starts.
+    pub sources: Vec<Value>,
     pub next: usize,
 }
 
@@ -85,6 +89,7 @@ impl Trace for InternalCell {
             InternalCell::ForIn(f) => {
                 out.push(f.object);
                 out.extend_from_slice(&f.keys);
+                out.extend_from_slice(&f.sources);
             }
             InternalCell::Stack(s) => {
                 out.push(s.message);
@@ -102,7 +107,7 @@ impl Trace for InternalCell {
     fn extra_bytes(&self) -> usize {
         match self {
             InternalCell::Env(e) => e.slots.capacity() * 8,
-            InternalCell::ForIn(f) => f.keys.capacity() * 8,
+            InternalCell::ForIn(f) => (f.keys.capacity() + f.sources.capacity()) * 8,
             InternalCell::Stack(s) => s.frames.capacity() * std::mem::size_of::<StackFrame>(),
             InternalCell::Table(t) => std::mem::size_of::<crate::table::Table>() + t.extra_bytes(),
             InternalCell::Buffer(b) => {

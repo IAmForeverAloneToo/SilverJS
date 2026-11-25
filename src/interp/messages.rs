@@ -61,6 +61,10 @@ pub(crate) fn promise_reject_not_function(_what: &str) -> String {
 }
 
 pub(crate) const CONSTRUCTOR_NOT_OBJECT: &str = "The .constructor property is not an object";
+
+/// `Object.setPrototypeOf(Object.prototype, x)` and its `__proto__`.
+pub(crate) const IMMUTABLE_PROTOTYPE: &str =
+    "Immutable prototype object 'Object.prototype' cannot have their prototype set";
 pub(crate) const PROMISE_WITHOUT_NEW: &str = "Promise constructor cannot be invoked without 'new'";
 pub(crate) const PROMISE_EXECUTOR_TWICE: &str =
     "Promise executor has already been invoked with non-undefined arguments";

@@ -2269,7 +2269,7 @@ impl Agent {
                     Op::ForInNext => {
                         let x = r.u();
                         let it = self.reg(base, x);
-                        self.vm.acc = self.for_in_next(it);
+                        self.vm.acc = tri!(self.for_in_next(it), start);
                     }
                 }
             }

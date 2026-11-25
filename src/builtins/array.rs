@@ -17,6 +17,7 @@ const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
 pub(crate) const STATICS: &[Entry] = &[
     method("isArray", 1, is_array),
     method("from", 1, from),
+    method("fromAsync", 1, super::from_async::from_async),
     method("of", 0, of),
     entry(Name::Sym(Wk::Species), What::Getter(species), CONFIGURABLE),
 ];
@@ -115,7 +116,7 @@ impl Agent {
 
     /// ArraySpeciesCreate (section 10.4.2.3).
     fn array_species_create(&mut self, original: Value, length: f64) -> Res<Value> {
-        if !self.is_array_through(original) {
+        if !self.is_array_checked(original)? {
             return self.array_create(length, None);
         }
         let key = self.realm().constructor_key;
@@ -149,13 +150,13 @@ impl Agent {
         self.construct_value(c, &[Value::number(length)], c)
     }
 
-    fn set_length(&mut self, o: Value, len: f64) -> Res<()> {
+    pub(super) fn set_length(&mut self, o: Value, len: f64) -> Res<()> {
         let key = self.heap.length_key;
         self.put(o, key, Value::number(len))
     }
 
     /// Get of index `i` (which may be past 2^32 - 2).
-    fn get_index(&mut self, o: Value, i: f64) -> Res<Value> {
+    pub(super) fn get_index(&mut self, o: Value, i: f64) -> Res<Value> {
         let key = self.index_key(i);
         self.get_value(o, key)
     }
@@ -170,7 +171,7 @@ impl Agent {
         self.put(o, key, v)
     }
 
-    fn create_index(&mut self, o: Value, i: f64, v: Value) -> Res<()> {
+    pub(super) fn create_index(&mut self, o: Value, i: f64, v: Value) -> Res<()> {
         let key = self.index_key(i);
         self.create_data_property_or_throw(o, key, v)
     }
@@ -235,7 +236,8 @@ pub(crate) fn construct(agent: &mut Agent, c: Call) -> Res<Value> {
 }
 
 fn is_array(agent: &mut Agent, c: Call) -> Res<Value> {
-    Ok(Value::bool(agent.is_array_through(agent.arg(c, 0))))
+    let v = agent.arg(c, 0);
+    Ok(Value::bool(agent.is_array_checked(v)?))
 }
 
 fn species(_: &mut Agent, c: Call) -> Res<Value> {
@@ -386,7 +388,7 @@ fn spreadable(agent: &mut Agent, v: Value) -> Res<bool> {
     if !s.is_undefined() {
         return Ok(agent.to_boolean(s));
     }
-    Ok(agent.is_array_through(v))
+    agent.is_array_checked(v)
 }
 
 fn concat(agent: &mut Agent, c: Call) -> Res<Value> {
@@ -1268,7 +1270,7 @@ impl Agent {
                 if let Some((f, this_arg)) = mapper.filter(|_| work.len() == 1) {
                     v = self.call_value(f, this_arg, &[v, Value::number(k), src])?;
                 }
-                if d > 0.0 && self.is_array_through(v) {
+                if d > 0.0 && self.is_array_checked(v)? {
                     self.vm.temps.push(v);
                     let l = self.length_of(v)?;
                     work.push((v, l, 0.0, d - 1.0));

@@ -1152,21 +1152,33 @@ fn with_resolvers(agent: &mut Agent, c: Call) -> Res<Value> {
 
 /// `Promise.try` (section 27.2.4.8 of ES2025).
 fn try_(agent: &mut Agent, c: Call) -> Res<Value> {
+    // The callback first; a value given through PromiseResolve, so that
+    // a promise of the receiver comes back as it is (the 2026 change,
+    // which the reference browser follows), a throw rejected.
     let ctor = this_ctor(agent, c)?;
-    let cap = agent.new_capability(ctor)?;
-    agent.vm.temps.push(cap.promise);
     let f = agent.arg(c, 0);
     let args: Vec<Value> = (1..c.argc).map(|i| agent.arg(c, i)).collect();
-    let r = match agent.call_value(f, Value::UNDEFINED, &args) {
-        Ok(v) => agent.settle_capability(cap, v, false),
+    match agent.call_value(f, Value::UNDEFINED, &args) {
+        Ok(v) => {
+            agent.vm.temps.push(v);
+            let r = agent.promise_resolve(ctor, v);
+            agent.vm.temps.pop();
+            r
+        }
         Err(Abrupt::Throw) => {
             let e = std::mem::replace(&mut agent.vm.exception, Value::UNDEFINED);
-            agent.settle_capability(cap, e, true)
+            agent.vm.temps.push(e);
+            let r = agent.new_capability(ctor).and_then(|cap| {
+                agent.vm.temps.push(cap.promise);
+                let r = agent.settle_capability(cap, e, true);
+                agent.vm.temps.pop();
+                r.map(|()| cap.promise)
+            });
+            agent.vm.temps.pop();
+            r
         }
         Err(e) => Err(e),
-    };
-    agent.vm.temps.pop();
-    r.map(|()| cap.promise)
+    }
 }
 
 /// `get Promise[@@species]`.

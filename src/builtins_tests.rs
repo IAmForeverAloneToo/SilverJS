@@ -86,7 +86,7 @@ fn own_keys_are_in_the_reference_browsers_order() {
             "values",
             "groupBy",
         ],
-        &["groupBy"],
+        &[],
     );
     keys_as_chrome(
         "Object.prototype",
@@ -158,7 +158,7 @@ fn own_keys_are_in_the_reference_browsers_order() {
             "of",
             "Symbol(Symbol.species)",
         ],
-        &["fromAsync"],
+        &[],
     );
     keys_as_chrome(
         "Array.prototype",

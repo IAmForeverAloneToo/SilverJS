@@ -190,6 +190,9 @@ pub(crate) enum ObjectKind {
     /// A block's dispose capability (section 9.1.1.1, a `using`
     /// declaration's scope): never seen by a script.
     DisposeCapability,
+    /// A run of `Array.fromAsync` (section 23.1.2.2), its state in its
+    /// internal slots: never seen by a script.
+    FromAsync,
 }
 
 /// An object cell.

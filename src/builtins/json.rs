@@ -397,27 +397,8 @@ impl Agent {
         }
     }
 
-    /// IsArray, throwing for a revoked proxy as section 7.2.2 does.
     fn json_is_array(&mut self, v: Value) -> Res<bool> {
-        let mut at = v;
-        loop {
-            let Some(c) = at.as_object().and_then(|o| self.heap.objects.get(o)) else {
-                return Ok(false);
-            };
-            match c.kind() {
-                ObjectKind::Array => return Ok(true),
-                ObjectKind::Proxy => {
-                    let target = c.internal().first().copied().unwrap_or(Value::NULL);
-                    if target.is_null() {
-                        return Err(self.type_error(
-                            "Cannot perform 'IsArray' on a proxy that has been revoked",
-                        ));
-                    }
-                    at = target;
-                }
-                _ => return Ok(false),
-            }
-        }
+        self.is_array_checked(v)
     }
 
     /// EnumerableOwnProperties(`o`, key) (section 7.3.24): its own

@@ -171,9 +171,20 @@ impl Agent {
         Ok(proto)
     }
 
+    /// Whether `o` is a realm's `%Object.prototype%`, an immutable
+    /// prototype exotic object (section 10.4.7): its prototype stays as
+    /// it is.
+    pub(crate) fn is_immutable_prototype(&self, o: u32) -> bool {
+        let v = Value::reference(crate::value::RefKind::Object, o);
+        self.vm.realms.iter().any(|r| r.object_prototype == v)
+    }
+
     /// `[[SetPrototypeOf]]`.
     pub(crate) fn o_set_prototype_of(&mut self, o: u32, proto: Value) -> Res<bool> {
         if !self.is_proxy(o) {
+            if self.is_immutable_prototype(o) {
+                return Ok(self.heap.get_prototype_of(o) == proto);
+            }
             return Ok(self.heap.set_prototype_of(o, proto));
         }
         let (target, handler, trap) = self.proxy_trap(o, "setPrototypeOf")?;

@@ -33,6 +33,7 @@ pub(crate) const STATICS: &[Entry] = &[
     method("entries", 1, entries),
     method("fromEntries", 1, from_entries),
     method("values", 1, values),
+    method("groupBy", 2, group_by),
 ];
 
 /// `Object.fromEntries(iterable)` (section 20.1.2.7): each entry an
@@ -72,6 +73,54 @@ fn from_entries(agent: &mut Agent, c: Call) -> Res<Value> {
                 agent.iterator_close_quiet(iterator)?;
                 return Err(e);
             }
+        }
+        Ok(o)
+    })();
+    agent.vm.temps.truncate(base);
+    result
+}
+
+/// `Object.groupBy(items, callback)` (section 20.1.2.12): GroupBy with
+/// property keys, the groups the properties of an object of no
+/// prototype, each made where its key first comes.
+fn group_by(agent: &mut Agent, c: Call) -> Res<Value> {
+    let (items, callback) = (agent.arg(c, 0), agent.arg(c, 1));
+    if items.is_nullish() {
+        return Err(agent.type_error("Object.groupBy called on null or undefined"));
+    }
+    if !agent.is_callable(callback) {
+        let text = agent.display(callback);
+        return Err(agent.type_error(format!("{text} is not a function")));
+    }
+    let o = agent.alloc_object(ObjectCell::new(Value::NULL, ObjectKind::Ordinary))?;
+    let base = agent.vm.temps.len();
+    agent.vm.temps.push(o);
+    let result = (|| {
+        let (it, next) = agent.get_iterator_typed(items)?;
+        agent.vm.temps.extend([it, next]);
+        let mut k = 0.0;
+        while let Some(v) = agent.iterator_step(it, next)? {
+            let mark = agent.vm.temps.len();
+            let step = (|| {
+                agent.vm.temps.push(v);
+                let key = agent.call_value(callback, Value::UNDEFINED, &[v, Value::number(k)])?;
+                agent.vm.temps.push(key);
+                let key = agent.property_key(key)?;
+                let mut group = agent.get_value(o, key)?;
+                if group.is_undefined() {
+                    group = agent.array_of(&[])?;
+                    agent.define_value(o, key, group)?;
+                }
+                agent.array_push(group, v)
+            })();
+            agent.vm.temps.truncate(mark);
+            if let Err(e) = step {
+                if matches!(e, crate::interp::Abrupt::Throw) {
+                    agent.iterator_close_quiet(it)?;
+                }
+                return Err(e);
+            }
+            k += 1.0;
         }
         Ok(o)
     })();
@@ -372,11 +421,11 @@ impl Agent {
     }
 
     /// The `[[Class]]`-like tag `Object.prototype.toString` begins from.
-    fn builtin_tag(&self, o: Value) -> &'static str {
-        if self.is_array_through(o) {
-            return "Array";
+    fn builtin_tag(&mut self, o: Value) -> Res<&'static str> {
+        if self.is_array_checked(o)? {
+            return Ok("Array");
         }
-        match self.kind_of(o) {
+        Ok(match self.kind_of(o) {
             Some(ObjectKind::Arguments) => "Arguments",
             Some(ObjectKind::Error) => "Error",
             Some(ObjectKind::Boolean) => "Boolean",
@@ -385,7 +434,7 @@ impl Agent {
             Some(ObjectKind::Date) => "Date",
             _ if self.is_callable(o) => "Function",
             _ => "Object",
-        }
+        })
     }
 }
 
@@ -605,6 +654,9 @@ fn set_prototype_of(agent: &mut Agent, c: Call) -> Res<Value> {
     if let Some(i) = o.as_object()
         && !agent.o_set_prototype_of(i, proto)?
     {
+        if agent.is_immutable_prototype(i) {
+            return Err(agent.type_error(messages::IMMUTABLE_PROTOTYPE));
+        }
         if agent.is_proxy(i) {
             return Err(agent.type_error(messages::PROXY_SET_PROTO_FALSE));
         }
@@ -770,7 +822,7 @@ pub(crate) fn to_string(agent: &mut Agent, c: Call) -> Res<Value> {
         _ => {
             let o = agent.object_of(this)?;
             agent.vm.temps.push(o);
-            let builtin = agent.builtin_tag(o);
+            let builtin = agent.builtin_tag(o)?;
             let key = agent.well_known_key(Wk::ToStringTag);
             let tag = agent.get_value(o, key);
             agent.vm.temps.pop();
@@ -815,6 +867,9 @@ fn set_proto(agent: &mut Agent, c: Call) -> Res<Value> {
         return Ok(Value::UNDEFINED);
     };
     if !agent.o_set_prototype_of(i, proto)? {
+        if agent.is_immutable_prototype(i) {
+            return Err(agent.type_error(messages::IMMUTABLE_PROTOTYPE));
+        }
         if agent.heap.is_extensible(i) {
             return Err(agent.type_error("Cyclic __proto__ value"));
         }
