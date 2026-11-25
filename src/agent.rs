@@ -50,6 +50,18 @@ impl Default for AgentOptions {
     }
 }
 
+/// The local time zone `Date` works in, as the embedder gives it (see
+/// [`Agent::set_time_zone`]); without one, UTC.
+pub trait TimeZone {
+    /// The offset of local time from UTC at the time value `t`
+    /// (milliseconds since 1970 began, UTC), in milliseconds: -14,400,000
+    /// for New York in summer.
+    fn offset(&self, t: f64) -> f64;
+    /// The zone's name at `t`, as `Date`'s `toString` writes it:
+    /// "Eastern Daylight Time".
+    fn name(&self, t: f64) -> String;
+}
+
 /// The heap limit was reached (script sees a `RangeError`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutOfMemory;

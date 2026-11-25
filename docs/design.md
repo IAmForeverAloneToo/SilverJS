@@ -618,6 +618,12 @@ which natives use far less than `Local`s; J6's benches report it.
     test-only oracle: the arithmetic, bitwise and shift operators,
     `asIntN` and `asUintN` at the edge widths, comparisons, radix
     conversion both ways (J4.3b, the lead's condition);
+  - `silverjs_date`: any text to `Date.parse` in UTC, a fixed zone and
+    one with a daylight change: NaN or an integral time value, in
+    bounded time, and the string forms reading back to the time; a
+    string of the recorded table (the dates probe's corpus, symbols and
+    spaces, Chrome 158) must give what the reference browser gave
+    (J4.3d, the lead's condition);
   - `silverjs_bytecode`: any bytes to the compiled-unit reader, which
     must refuse what it did not write (a checksum and a structural
     validation), never panic, never run it.

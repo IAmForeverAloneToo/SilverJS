@@ -149,6 +149,8 @@ pub(crate) struct Intrinsics {
     pub json: Value,
     pub bigint: Value,
     pub bigint_prototype: Value,
+    pub date: Value,
+    pub date_prototype: Value,
 }
 
 impl Intrinsics {
@@ -215,6 +217,8 @@ impl Intrinsics {
         json: Value::UNDEFINED,
         bigint: Value::UNDEFINED,
         bigint_prototype: Value::UNDEFINED,
+        date: Value::UNDEFINED,
+        date_prototype: Value::UNDEFINED,
     };
 
     /// The typed array constructor of `elem`.
@@ -294,6 +298,8 @@ impl Intrinsics {
             self.json,
             self.bigint,
             self.bigint_prototype,
+            self.date,
+            self.date_prototype,
         ]);
         out.extend_from_slice(&self.typed);
         out.extend_from_slice(&self.typed_prototypes);
@@ -363,6 +369,7 @@ pub(crate) const CTORS: &[Entry] = &[
     ),
     ctor("DataView", 1, super::binary::construct_data_view),
     ctor("BigInt", 1, super::bigint::construct),
+    ctor("Date", 7, super::date::construct),
     method("FunctionPrototype", 0, super::function::function_prototype),
     method("ThrowTypeError", 0, super::function::throw_type_error),
     method("parseInt", 2, parse_int),
@@ -388,6 +395,7 @@ pub(crate) const GLOBAL: &[Entry] = &[
     intrinsic("Boolean"),
     intrinsic("String"),
     intrinsic("Symbol"),
+    intrinsic("Date"),
     intrinsic("Promise"),
     intrinsic("Error"),
     intrinsic("AggregateError"),
@@ -471,6 +479,7 @@ impl Agent {
             "Atomics" => i.atomics,
             "JSON" => i.json,
             "BigInt" => i.bigint,
+            "Date" => i.date,
             _ if name.ends_with("Array") => crate::buffer::Elem::ALL
                 .iter()
                 .position(|e| e.name() == name)
@@ -741,6 +750,10 @@ impl Agent {
         self.set_intrinsics(|i| i.bigint_prototype = bp);
         let bigint = self.make_ctor("BigInt", bp)?;
         self.set_intrinsics(|i| i.bigint = bigint);
+        let datep = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.date_prototype = datep);
+        let date = self.make_ctor("Date", datep)?;
+        self.set_intrinsics(|i| i.date = date);
         let json = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.json = json);
         let ip = self.realm().intrinsics.iterator_prototype;
@@ -921,6 +934,8 @@ impl Agent {
         self.install_table(i.json, table::JSON, Value::UNDEFINED, &[])?;
         self.install_table(i.bigint, table::BIGINT, Value::UNDEFINED, &[])?;
         self.install_table(i.bigint_prototype, table::BIGINT_PROTO, i.bigint, &[])?;
+        self.install_table(i.date, table::DATE, Value::UNDEFINED, &[])?;
+        self.install_table(i.date_prototype, table::DATE_PROTO, i.date, &[])?;
         self.install_table(i.promise, table::PROMISE, Value::UNDEFINED, &[])?;
         self.install_table(
             i.promise_prototype,

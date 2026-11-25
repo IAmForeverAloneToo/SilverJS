@@ -122,3 +122,14 @@ has a RangeError where the `Atomics` row has a TypeError.
 The probes' lists are in that test, each with the names a later step
 brings (`JSON` is `parse,stringify,rawJSON,isRawJSON,@@toStringTag`,
 for J4).
+
+## Date
+
+| Observed | Step | Test |
+|---|---|---|
+| `Date.parse` past the Date Time String Format: month names by their first three letters (a later one replacing an earlier), the date's numbers in the order their values tell (past 31 or 0 a year; else month, day, year), a year below 50 in 20xx and below 100 in 19xx, none 2001; a time of colons whose parts past 59 go to the date; AM and PM after a time; zone names (UT, UTC, GMT, Z and the US zones) once a number is read; an offset after a time or a zone name replacing it; a `-` straight after a number or word separating; comments in parentheses (Chrome 158, the dates probe: 439 strings in UTC and in New York) | J4.3d | `date_tests::the_corpus_parses_as_the_reference_browser_parses_it_in_utc`, `..._in_new_york` |
+| Which characters `Date.parse` skips (the other ASCII symbols and control characters), takes as part of a word (`[\]^_`, the backquote, `{\|}~`, DEL and every character past ASCII but space, so that a word of them refuses the string after a number), takes as space (ASCII's, no-break space, the BOM and the space separators, not the line separators) and ends at (NUL); a time must end at the end, at space, at a sign or at Z (Chrome 158, the symbols and spaces probes) | J4.3d | `date_tests::symbols_and_spaces_parse_as_the_reference_browser_parses_them` |
+| A `-000000` year, which the format forbids, is skipped and the rest read as the other forms (`-000000-01-01` is 1 January 2001, local); with a time after it, refused (Chrome 158; Test262's `year-zero`) | J4.3d | `date_tests::dates_read_as_the_reference_browser_gives_them_in_utc` |
+| `toString`'s zone offset in whole minutes (`GMT-0456` for mean time's -4:56:02), and a time before 1883 named by today's daylight rules though its offset is mean time; `getTimezoneOffset` gives the fraction (296.0333...) | J4.3d | `date_tests::the_corpus_parses_as_the_reference_browser_parses_it_in_new_york` |
+| `toLocaleString`, `toLocaleDateString` and `toLocaleTimeString`: until `Intl`, the reference browser's en-US forms alone (`11/24/2026, 10:00:00 AM`), a year at or before 0 written without an era (`1 - year`); other locales and the options wait for `Intl` | J4.3d | `date_tests::the_corpus_parses_as_the_reference_browser_parses_it_in_utc` |
+| Receivers: a getter's or string form's non-date `this` is `this is not a Date object.`; `setTime`'s and `[Symbol.toPrimitive]`'s are the generic incompatible-receiver message; `Invalid hint: x` (Chrome 158, the numbers probe) | J4.3d | `date_tests::dates_read_as_the_reference_browser_gives_them_in_utc` |

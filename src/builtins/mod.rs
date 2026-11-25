@@ -18,6 +18,7 @@ mod base64;
 pub(crate) mod bigint;
 mod binary;
 mod collection;
+pub(crate) mod date;
 mod error;
 mod function;
 mod generator;
@@ -214,6 +215,8 @@ const TABLES: &[&[Entry]] = &[
     json::JSON,
     bigint::BIGINT,
     bigint::BIGINT_PROTO,
+    date::DATE,
+    date::DATE_PROTO,
 ];
 
 /// The tables' indices.
@@ -281,6 +284,8 @@ pub(crate) mod table {
     pub const JSON: u32 = 60;
     pub const BIGINT: u32 = 61;
     pub const BIGINT_PROTO: u32 = 62;
+    pub const DATE: u32 = 63;
+    pub const DATE_PROTO: u32 = 64;
 }
 
 /// How native `id` resumes a generator, if it is `%GeneratorPrototype%`'s

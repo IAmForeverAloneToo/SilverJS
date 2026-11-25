@@ -174,6 +174,8 @@ pub(crate) enum ObjectKind {
     DataView,
     /// What `JSON.rawJSON` makes (section 25.5.3): its [[IsRawJSON]].
     RawJson,
+    /// A `Date` (section 21.4): its time value in its internal slot.
+    Date,
 }
 
 /// An object cell.

@@ -155,6 +155,10 @@ pub(crate) struct Vm {
     pub current: RealmIndex,
     pub steps: u32,
     pub interrupt: Option<Box<dyn FnMut() -> bool>>,
+    /// The embedder's clock: the time value now (`Date.now`).
+    pub clock: Option<Box<dyn FnMut() -> f64>>,
+    /// The embedder's local time zone (UTC without one).
+    pub time_zone: Option<Box<dyn crate::agent::TimeZone>>,
     pub reentry: u32,
     /// Values Rust holds across an allocation (a new object being
     /// filled), rooted while it does.
@@ -201,6 +205,8 @@ impl Default for Vm {
             current: 0,
             steps: STEPS_PER_CHECK,
             interrupt: None,
+            clock: None,
+            time_zone: None,
             reentry: 0,
             temps: Vec::new(),
             well_known: Vec::new(),
@@ -338,6 +344,17 @@ impl Agent {
     /// `true` terminates the run (no `catch` or `finally` runs).
     pub fn set_interrupt(&mut self, hook: Option<Box<dyn FnMut() -> bool>>) {
         self.vm.interrupt = hook;
+    }
+
+    /// Sets the clock `Date` reads the time from: the time value now
+    /// (milliseconds since 1970 began, UTC). Without one, the system's.
+    pub fn set_clock(&mut self, clock: Option<Box<dyn FnMut() -> f64>>) {
+        self.vm.clock = clock;
+    }
+
+    /// Sets the local time zone `Date` works in. Without one, UTC.
+    pub fn set_time_zone(&mut self, zone: Option<Box<dyn crate::agent::TimeZone>>) {
+        self.vm.time_zone = zone;
     }
 
     pub(crate) fn realm(&self) -> &Realm {

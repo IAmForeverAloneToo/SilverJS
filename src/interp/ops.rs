@@ -327,8 +327,14 @@ impl Agent {
             }
             return Ok(r);
         }
+        self.ordinary_primitive(v, hint == Some(true))
+    }
+
+    /// OrdinaryToPrimitive (section 7.1.1.1): `toString` first when
+    /// `string_first`, else `valueOf`.
+    pub(crate) fn ordinary_primitive(&mut self, v: Value, string_first: bool) -> Res<Value> {
         let realm = self.realm();
-        let order = if hint == Some(true) {
+        let order = if string_first {
             [realm.to_string_key, realm.value_of_key]
         } else {
             [realm.value_of_key, realm.to_string_key]

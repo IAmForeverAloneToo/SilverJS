@@ -22,6 +22,7 @@ mod bigint;
 mod buffer;
 mod builtins;
 pub mod compiler;
+mod date;
 mod embed;
 mod heap;
 mod internal;
@@ -50,6 +51,8 @@ mod class_tests;
 mod collection_tests;
 #[cfg(test)]
 mod compiler_tests;
+#[cfg(test)]
+mod date_tests;
 #[cfg(test)]
 mod generator_tests;
 #[cfg(test)]

@@ -60,3 +60,10 @@ path = "fuzz_targets/silverjs_bigint.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "silverjs_date"
+path = "fuzz_targets/silverjs_date.rs"
+test = false
+doc = false
+bench = false
