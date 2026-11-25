@@ -1144,34 +1144,28 @@ fn the_iterator_prototypes_keys_are_in_the_reference_browsers_order() {
         &["next", "Symbol(Symbol.toStringTag)"],
         &[],
     );
-    let helpers = [
-        "constructor",
-        "reduce",
-        "toArray",
-        "forEach",
-        "some",
-        "every",
-        "find",
-        "map",
-        "filter",
-        "take",
-        "drop",
-        "flatMap",
-        "join",
-        "includes",
-        "Symbol(Symbol.toStringTag)",
-        "Symbol(Symbol.dispose)",
-    ];
-    let mut chrome = helpers[..14].to_vec();
-    chrome.extend([
-        "Symbol(Symbol.iterator)",
-        "Symbol(Symbol.toStringTag)",
-        "Symbol(Symbol.dispose)",
-    ]);
     keys_as_chrome(
         "Object.getPrototypeOf(Object.getPrototypeOf([].values()))",
-        &chrome,
-        &helpers,
+        &[
+            "constructor",
+            "reduce",
+            "toArray",
+            "forEach",
+            "some",
+            "every",
+            "find",
+            "map",
+            "filter",
+            "take",
+            "drop",
+            "flatMap",
+            "join",
+            "includes",
+            "Symbol(Symbol.iterator)",
+            "Symbol(Symbol.toStringTag)",
+            "Symbol(Symbol.dispose)",
+        ],
+        &[],
     );
 }
 

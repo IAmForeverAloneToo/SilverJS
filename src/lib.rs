@@ -60,6 +60,8 @@ mod heap_tests;
 #[cfg(test)]
 mod interp_tests;
 #[cfg(test)]
+mod iter_tests;
+#[cfg(test)]
 mod iteration_tests;
 #[cfg(test)]
 mod json_tests;

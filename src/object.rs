@@ -176,6 +176,12 @@ pub(crate) enum ObjectKind {
     RawJson,
     /// A `Date` (section 21.4): its time value in its internal slot.
     Date,
+    /// An iterator helper (section 27.1.2.1): what it does, what it
+    /// iterates and its state, in its internal slots.
+    IteratorHelper,
+    /// What `Iterator.from` wraps an iterator in (section 27.1.3.2.1.1):
+    /// the iterator and its `next`.
+    IteratorWrap,
 }
 
 /// An object cell.

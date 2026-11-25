@@ -151,6 +151,9 @@ pub(crate) struct Intrinsics {
     pub bigint_prototype: Value,
     pub date: Value,
     pub date_prototype: Value,
+    pub iterator: Value,
+    pub iterator_helper_prototype: Value,
+    pub wrap_for_valid_iterator_prototype: Value,
 }
 
 impl Intrinsics {
@@ -219,6 +222,9 @@ impl Intrinsics {
         bigint_prototype: Value::UNDEFINED,
         date: Value::UNDEFINED,
         date_prototype: Value::UNDEFINED,
+        iterator: Value::UNDEFINED,
+        iterator_helper_prototype: Value::UNDEFINED,
+        wrap_for_valid_iterator_prototype: Value::UNDEFINED,
     };
 
     /// The typed array constructor of `elem`.
@@ -300,6 +306,9 @@ impl Intrinsics {
             self.bigint_prototype,
             self.date,
             self.date_prototype,
+            self.iterator,
+            self.iterator_helper_prototype,
+            self.wrap_for_valid_iterator_prototype,
         ]);
         out.extend_from_slice(&self.typed);
         out.extend_from_slice(&self.typed_prototypes);
@@ -370,6 +379,7 @@ pub(crate) const CTORS: &[Entry] = &[
     ctor("DataView", 1, super::binary::construct_data_view),
     ctor("BigInt", 1, super::bigint::construct),
     ctor("Date", 7, super::date::construct),
+    ctor("Iterator", 0, super::iter_helpers::construct),
     method("FunctionPrototype", 0, super::function::function_prototype),
     method("ThrowTypeError", 0, super::function::throw_type_error),
     method("parseInt", 2, parse_int),
@@ -426,6 +436,7 @@ pub(crate) const GLOBAL: &[Entry] = &[
     intrinsic("Map"),
     intrinsic("BigInt"),
     intrinsic("Set"),
+    intrinsic("Iterator"),
     intrinsic("WeakMap"),
     intrinsic("WeakSet"),
     intrinsic("Proxy"),
@@ -480,6 +491,7 @@ impl Agent {
             "JSON" => i.json,
             "BigInt" => i.bigint,
             "Date" => i.date,
+            "Iterator" => i.iterator,
             _ if name.ends_with("Array") => crate::buffer::Elem::ALL
                 .iter()
                 .position(|e| e.name() == name)
@@ -635,6 +647,12 @@ impl Agent {
         // inherit from it.
         let ip = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.iterator_prototype = ip);
+        let iterator = self.make_ctor("Iterator", ip)?;
+        self.set_intrinsics(|i| i.iterator = iterator);
+        let hp = self.alloc_object(ObjectCell::new(ip, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.iterator_helper_prototype = hp);
+        let wp = self.alloc_object(ObjectCell::new(ip, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.wrap_for_valid_iterator_prototype = wp);
         let aip = self.alloc_object(ObjectCell::new(ip, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.array_iterator_prototype = aip);
         let sip = self.alloc_object(ObjectCell::new(ip, ObjectKind::Ordinary))?;
@@ -796,6 +814,19 @@ impl Agent {
         self.install_table(
             i.iterator_prototype,
             table::ITERATOR_PROTO,
+            Value::UNDEFINED,
+            &[],
+        )?;
+        self.install_table(i.iterator, table::ITERATOR, Value::UNDEFINED, &[])?;
+        self.install_table(
+            i.iterator_helper_prototype,
+            table::ITERATOR_HELPER_PROTO,
+            Value::UNDEFINED,
+            &[],
+        )?;
+        self.install_table(
+            i.wrap_for_valid_iterator_prototype,
+            table::WRAP_PROTO,
             Value::UNDEFINED,
             &[],
         )?;

@@ -70,6 +70,12 @@ const NOT_APPLICABLE: &[&str] = &[
     // `ArrayBuffer.prototype` has no `transferToImmutable` (the binary
     // data probe, J4.2a).
     "immutable-arraybuffer",
+    // Chrome 158 doesn't ship it: `Iterator.prototype` has no `chunks`
+    // or `windows`, `Promise` no `allKeyed` or `allSettledKeyed` (the
+    // J4.4 probe). SilverJS ships what the reference browser ships; at
+    // each new major version these are probed again.
+    "iterator-chunking",
+    "await-dictionary",
 ];
 
 /// Features the reference browser does not implement, though ECMA-262

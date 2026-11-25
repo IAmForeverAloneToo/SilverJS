@@ -357,6 +357,15 @@ impl Heap {
     }
 
     /// Runs `f` on table `t` (and the strings, for its keys), keeping the
+    /// SameValueZero (section 7.2.11) of two values.
+    pub(crate) fn same_value_zero(&self, a: Value, b: Value) -> bool {
+        let prims = Prims {
+            strings: &self.strings,
+            bigints: &self.bigints,
+        };
+        same_value_zero(prims, a, b)
+    }
+
     /// heap's count of its bytes right.
     fn with_table<R>(&mut self, t: Value, f: impl FnOnce(&mut Table, Prims<'_>) -> R) -> Option<R> {
         let Some((RefKind::Internal, i)) = t.as_reference() else {

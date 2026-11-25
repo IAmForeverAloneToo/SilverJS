@@ -23,6 +23,7 @@ mod error;
 mod function;
 mod generator;
 mod global;
+mod iter_helpers;
 mod iterator;
 mod json;
 mod math;
@@ -174,7 +175,7 @@ const TABLES: &[&[Entry]] = &[
     stack::ACCESSORS,
     stack::CALL_SITE,
     stack::CALL_SITE_CTOR,
-    iterator::ITERATOR_PROTO,
+    iter_helpers::ITERATOR_PROTO,
     iterator::ARRAY_ITERATOR_PROTO,
     iterator::STRING_ITERATOR_PROTO,
     generator::GENERATOR_PROTO,
@@ -217,6 +218,9 @@ const TABLES: &[&[Entry]] = &[
     bigint::BIGINT_PROTO,
     date::DATE,
     date::DATE_PROTO,
+    iter_helpers::ITERATOR,
+    iter_helpers::ITERATOR_HELPER_PROTO,
+    iter_helpers::WRAP_PROTO,
 ];
 
 /// The tables' indices.
@@ -286,6 +290,9 @@ pub(crate) mod table {
     pub const BIGINT_PROTO: u32 = 62;
     pub const DATE: u32 = 63;
     pub const DATE_PROTO: u32 = 64;
+    pub const ITERATOR: u32 = 65;
+    pub const ITERATOR_HELPER_PROTO: u32 = 66;
+    pub const WRAP_PROTO: u32 = 67;
 }
 
 /// How native `id` resumes a generator, if it is `%GeneratorPrototype%`'s

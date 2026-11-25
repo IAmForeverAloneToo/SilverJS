@@ -1,22 +1,15 @@
 //! The iterators of J3.1 (ECMA-262 sections 27.1.2, 23.1.5 and 22.1.5):
-//! `%IteratorPrototype%`, the array iterators `values`, `keys` and
-//! `entries` give, and the string iterator. Iterator helpers
-//! (`Iterator.prototype.map` and the rest) are J4's.
+//! the array iterators `values`, `keys` and `entries` give, and the
+//! string iterator. `%IteratorPrototype%` and the iterator helpers are
+//! [`super::iter_helpers`]'s.
 
-use super::{CONFIGURABLE, Call, Entry, HIDDEN, Name, What, Wk, entry, method};
+use super::{CONFIGURABLE, Call, Entry, Name, What, Wk, entry, method};
 use crate::agent::Agent;
 use crate::heap::ObjectCell;
 use crate::interp::Res;
 use crate::object::ObjectKind;
 use crate::string::PropertyKey;
 use crate::value::Value;
-
-/// `%IteratorPrototype%`.
-pub(crate) const ITERATOR_PROTO: &[Entry] = &[entry(
-    Name::Sym(Wk::Iterator),
-    What::Method(0, iterator_self),
-    HIDDEN,
-)];
 
 /// `%ArrayIteratorPrototype%`.
 pub(crate) const ARRAY_ITERATOR_PROTO: &[Entry] = &[
@@ -44,10 +37,6 @@ pub(crate) enum ArrayIterKind {
     Keys = 0,
     Values = 1,
     Entries = 2,
-}
-
-fn iterator_self(_: &mut Agent, c: Call) -> Res<Value> {
-    Ok(c.this)
 }
 
 impl Agent {
