@@ -82,6 +82,8 @@ mod proxy_tests;
 #[cfg(test)]
 mod realm_tests;
 #[cfg(test)]
+mod regexp_tests;
+#[cfg(test)]
 mod remainder_tests;
 #[cfg(test)]
 mod stack_tests;

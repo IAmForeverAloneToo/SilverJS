@@ -193,6 +193,12 @@ pub(crate) enum ObjectKind {
     /// A run of `Array.fromAsync` (section 23.1.2.2), its state in its
     /// internal slots: never seen by a script.
     FromAsync,
+    /// A `RegExp` (section 22.2): its source, flags and program in its
+    /// internal slots.
+    RegExp,
+    /// A `RegExp String Iterator` (section 22.2.9): its regexp, string,
+    /// flags and whether it is done.
+    RegExpStringIterator,
 }
 
 /// An object cell.

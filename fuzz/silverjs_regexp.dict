@@ -1,0 +1,13 @@
+# Tokens for silverjs_regexp: a kind byte picks the node (0-2 a letter,
+# 3 a dot, 4 a class, 5 an assertion, 6-7 a group, 8 an alternation, 9 a
+# sequence, 10-11 a quantified group, 12 a lookaround or backreference),
+# then its bytes; after each pattern a flags byte (1 i, 2 u) and the
+# subject (a first byte of 0 makes a long run of a's).
+quantified_star="\x0a\x00\x00\x00\x00\x00\x00"
+quantified_range="\x0b\x00\x00\x02\x02\x05\x01"
+capture_group="\x06\x00"
+alternation="\x08\x01"
+lookbehind="\x0c\x01\x02"
+backref="\x0c\x00\x00"
+long_subject="\x00\x00\x40\x04"
+ignore_case_unicode="\x03"

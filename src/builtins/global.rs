@@ -158,6 +158,9 @@ pub(crate) struct Intrinsics {
     pub disposable_stack_prototype: Value,
     pub async_disposable_stack: Value,
     pub async_disposable_stack_prototype: Value,
+    pub regexp: Value,
+    pub regexp_prototype: Value,
+    pub regexp_string_iterator_prototype: Value,
 }
 
 impl Intrinsics {
@@ -233,6 +236,9 @@ impl Intrinsics {
         disposable_stack_prototype: Value::UNDEFINED,
         async_disposable_stack: Value::UNDEFINED,
         async_disposable_stack_prototype: Value::UNDEFINED,
+        regexp: Value::UNDEFINED,
+        regexp_prototype: Value::UNDEFINED,
+        regexp_string_iterator_prototype: Value::UNDEFINED,
     };
 
     /// The typed array constructor of `elem`.
@@ -321,6 +327,9 @@ impl Intrinsics {
             self.disposable_stack_prototype,
             self.async_disposable_stack,
             self.async_disposable_stack_prototype,
+            self.regexp,
+            self.regexp_prototype,
+            self.regexp_string_iterator_prototype,
         ]);
         out.extend_from_slice(&self.typed);
         out.extend_from_slice(&self.typed_prototypes);
@@ -359,6 +368,7 @@ pub(crate) const CTORS: &[Entry] = &[
         super::error::construct_suppressed_error,
     ),
     ctor("Promise", 1, super::promise::construct),
+    ctor("RegExp", 2, super::regexp::construct),
     ctor("Proxy", 2, super::proxy::construct),
     ctor("Map", 0, super::collection::construct_map),
     ctor("Set", 0, super::collection::construct_set),
@@ -430,6 +440,7 @@ pub(crate) const GLOBAL: &[Entry] = &[
     intrinsic("Symbol"),
     intrinsic("Date"),
     intrinsic("Promise"),
+    intrinsic("RegExp"),
     intrinsic("Error"),
     intrinsic("AggregateError"),
     intrinsic("EvalError"),
@@ -519,6 +530,7 @@ impl Agent {
             "Date" => i.date,
             "Iterator" => i.iterator,
             "DisposableStack" => i.disposable_stack,
+            "RegExp" => i.regexp,
             "AsyncDisposableStack" => i.async_disposable_stack,
             _ if name.ends_with("Array") => crate::buffer::Elem::ALL
                 .iter()
@@ -808,6 +820,13 @@ impl Agent {
         self.set_intrinsics(|i| i.async_disposable_stack_prototype = adsp);
         let ads = self.make_ctor("AsyncDisposableStack", adsp)?;
         self.set_intrinsics(|i| i.async_disposable_stack = ads);
+        let rp = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.regexp_prototype = rp);
+        let re = self.make_ctor("RegExp", rp)?;
+        self.set_intrinsics(|i| i.regexp = re);
+        let ip = self.realm().intrinsics.iterator_prototype;
+        let rsip = self.alloc_object(ObjectCell::new(ip, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.regexp_string_iterator_prototype = rsip);
         let json = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.json = json);
         let ip = self.realm().intrinsics.iterator_prototype;
@@ -1013,6 +1032,14 @@ impl Agent {
             i.async_disposable_stack_prototype,
             table::ASYNC_DISPOSABLE_STACK_PROTO,
             i.async_disposable_stack,
+            &[],
+        )?;
+        self.install_table(i.regexp, table::REGEXP, Value::UNDEFINED, &[])?;
+        self.install_table(i.regexp_prototype, table::REGEXP_PROTO, i.regexp, &[])?;
+        self.install_table(
+            i.regexp_string_iterator_prototype,
+            table::REGEXP_STRING_ITERATOR_PROTO,
+            Value::UNDEFINED,
             &[],
         )?;
         self.install_table(i.promise, table::PROMISE, Value::UNDEFINED, &[])?;

@@ -36,6 +36,7 @@ mod primitive;
 pub(crate) mod promise;
 pub(crate) mod proxy;
 mod reflect;
+pub(crate) mod regexp;
 mod stack;
 mod string;
 mod typed;
@@ -228,6 +229,9 @@ const TABLES: &[&[Entry]] = &[
     disposable::ASYNC_DISPOSABLE_STACK_PROTO,
     disposable::DISPOSABLE_INTERNAL,
     from_async::FROM_ASYNC_INTERNAL,
+    regexp::REGEXP,
+    regexp::REGEXP_PROTO,
+    regexp::STRING_ITERATOR_PROTO,
 ];
 
 /// The tables' indices.
@@ -304,6 +308,9 @@ pub(crate) mod table {
     pub const ASYNC_DISPOSABLE_STACK_PROTO: u32 = 69;
     pub const DISPOSABLE_INTERNAL: u32 = 70;
     pub const FROM_ASYNC_INTERNAL: u32 = 71;
+    pub const REGEXP: u32 = 72;
+    pub const REGEXP_PROTO: u32 = 73;
+    pub const REGEXP_STRING_ITERATOR_PROTO: u32 = 74;
 }
 
 /// How native `id` resumes a generator, if it is `%GeneratorPrototype%`'s
@@ -907,6 +914,7 @@ impl Agent {
             Some(ObjectKind::Boolean) => "Boolean",
             Some(ObjectKind::Number) => "Number",
             Some(ObjectKind::String) => "String",
+            Some(ObjectKind::RegExp) => "RegExp",
             Some(ObjectKind::TypedArray) => self.heap.view(o).map_or("Object", |v| v.elem.name()),
             _ => "Object",
         };

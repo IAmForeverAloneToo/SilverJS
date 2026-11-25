@@ -624,6 +624,17 @@ which natives use far less than `Local`s; J6's benches report it.
     string of the recorded table (the dates probe's corpus, symbols and
     spaces, Chrome 158) must give what the reference browser gave
     (J4.3d, the lead's condition);
+  - `silverjs_regexp`: differential, the bytes made small patterns
+    (classes, groups, alternation, greedy and lazy quantifiers,
+    anchors, lookarounds, backreferences), flags and subjects, some a
+    long run that a catastrophic pattern backtracks over; each `exec`
+    under `d` must end without a throw or a panic, at a result or the
+    step budget (the backtracking bound), and where the regex crate, a
+    test-only oracle, means the same thing (no lookaround, no
+    backreference, no quantified body that can match empty or holds a
+    capture) every capture's span must be its. The rest is checked
+    against QuickJS-ng, a black box, by a script out of the repository
+    (J4.5a, the lead's condition);
   - `silverjs_bytecode`: any bytes to the compiled-unit reader, which
     must refuse what it did not write (a checksum and a structural
     validation), never panic, never run it.

@@ -432,6 +432,7 @@ impl Agent {
             Some(ObjectKind::Number) => "Number",
             Some(ObjectKind::String) => "String",
             Some(ObjectKind::Date) => "Date",
+            Some(ObjectKind::RegExp) => "RegExp",
             _ if self.is_callable(o) => "Function",
             _ => "Object",
         })

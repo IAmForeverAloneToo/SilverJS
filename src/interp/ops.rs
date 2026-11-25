@@ -714,6 +714,19 @@ impl Agent {
         }
     }
 
+    /// The object a read-only property belongs to, as Chrome names it
+    /// in the TypeError: `#<Ctor>` for one that keeps
+    /// `Object.prototype.toString`, `[object RegExp]` and the like for
+    /// one with a `toString` of its own (a function stays `#<Object>`).
+    #[cold]
+    #[inline(never)]
+    fn read_only_display(&self, target: Value) -> String {
+        match target.as_object() {
+            Some(o) if self.callable(target).is_none() => self.object_display(o),
+            _ => "#<Object>".into(),
+        }
+    }
+
     /// The prototype a primitive's properties are read from.
     fn primitive_proto(&self, v: Value) -> Value {
         let r = self.realm();
@@ -845,8 +858,8 @@ impl Agent {
             SetOutcome::Done(false) => {
                 if strict {
                     let k = self.key_display(key);
-                    Err(self
-                        .throw_error(ErrorType::TypeError, messages::read_only(&k, "#<Object>")))
+                    let of = self.read_only_display(target);
+                    Err(self.throw_error(ErrorType::TypeError, messages::read_only(&k, &of)))
                 } else {
                     Ok(())
                 }
@@ -860,8 +873,8 @@ impl Agent {
                     Ok(())
                 } else {
                     let k = self.key_display(key);
-                    Err(self
-                        .throw_error(ErrorType::TypeError, messages::read_only(&k, "#<Object>")))
+                    let of = self.read_only_display(target);
+                    Err(self.throw_error(ErrorType::TypeError, messages::read_only(&k, &of)))
                 }
             }
             SetOutcome::Typed(t) => self.typed_set(t, key, value),

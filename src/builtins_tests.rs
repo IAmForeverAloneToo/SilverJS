@@ -277,7 +277,7 @@ fn own_keys_are_in_the_reference_browsers_order() {
             "valueOf",
             "Symbol(Symbol.iterator)",
         ],
-        &["match", "matchAll", "search"],
+        &[],
     );
     keys_as_chrome(
         "Number",

@@ -155,6 +155,10 @@ pub(crate) struct Vm {
     pub current: RealmIndex,
     pub steps: u32,
     pub interrupt: Option<Box<dyn FnMut() -> bool>>,
+    /// The compiled regexps, each source and flags once (boxed: inline,
+    /// its 72 bytes moved the fields after it, and an A/B had the
+    /// closures bench about 12% slower).
+    pub regexps: Box<crate::builtins::regexp::Cache>,
     /// The embedder's clock: the time value now (`Date.now`).
     pub clock: Option<Box<dyn FnMut() -> f64>>,
     /// The embedder's local time zone (UTC without one).
@@ -205,6 +209,7 @@ impl Default for Vm {
             current: 0,
             steps: STEPS_PER_CHECK,
             interrupt: None,
+            regexps: Default::default(),
             clock: None,
             time_zone: None,
             reentry: 0,
@@ -1097,6 +1102,17 @@ impl Agent {
     }
 
     /// The constant `k` of a function, as a value.
+    /// A regexp literal's object from its body's and flags' constants,
+    /// out of line so that the dispatch loop stays as small as it was.
+    #[inline(never)]
+    fn create_regexp(&mut self, unit: u32, func: u32, b: usize, f: usize) -> Res<Value> {
+        let body = self.constant(unit, func, b)?;
+        self.vm.temps.push(body);
+        let flags = self.constant(unit, func, f);
+        self.vm.temps.pop();
+        self.regexp_literal(body, flags?)
+    }
+
     fn constant(&mut self, unit: u32, func: u32, k: usize) -> Res<Value> {
         let u = self.vm.units.get(unit as usize);
         if let Some(s) = u
@@ -1582,14 +1598,8 @@ impl Agent {
                         );
                     }
                     Op::CreateRegExp => {
-                        let _ = (r.u(), r.u());
-                        tri!(
-                            Err::<(), Abrupt>(self.throw_error(
-                                ErrorType::SyntaxError,
-                                messages::not_supported("RegExp")
-                            )),
-                            start
-                        );
+                        let (b, f) = (r.u(), r.u());
+                        self.vm.acc = tri!(self.create_regexp(u, fi, b, f), start);
                     }
                     Op::GetNamed => {
                         let (o, k, _ic) = (r.u(), r.u(), r.u());

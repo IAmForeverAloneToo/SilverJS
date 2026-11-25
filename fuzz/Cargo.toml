@@ -22,6 +22,9 @@ silverjs = { path = ".." }
 # test-only oracle, never part of the engine.
 num-bigint = "0.4"
 num-traits = "0.2"
+# The independent model silverjs_regexp checks matches against, where it
+# means what JavaScript means: a test-only oracle as well.
+regex = "1"
 
 [[bin]]
 name = "silverjs_parse"
@@ -64,6 +67,13 @@ bench = false
 [[bin]]
 name = "silverjs_date"
 path = "fuzz_targets/silverjs_date.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "silverjs_regexp"
+path = "fuzz_targets/silverjs_regexp.rs"
 test = false
 doc = false
 bench = false

@@ -459,8 +459,3 @@ pub(crate) fn cannot_delete(key: &str, object: &str) -> String {
 pub(crate) fn already_declared(name: &str) -> String {
     format!("Identifier '{name}' has already been declared")
 }
-
-/// What J2 does not run yet, thrown where the program reaches it.
-pub(crate) fn not_supported(what: &str) -> String {
-    format!("{what} is not supported yet")
-}

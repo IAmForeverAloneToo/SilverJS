@@ -44,12 +44,15 @@ pub(crate) const PROTO: &[Entry] = &[
     method("lastIndexOf", 1, last_index_of),
     method("link", 1, link),
     method("localeCompare", 1, locale_compare),
+    method("match", 1, super::regexp::string_match),
+    method("matchAll", 1, super::regexp::string_match_all),
     method("normalize", 0, normalize),
     method("padEnd", 1, pad_end),
     method("padStart", 1, pad_start),
     method("repeat", 1, repeat),
     method("replace", 2, replace),
     method("replaceAll", 2, replace_all),
+    method("search", 1, super::regexp::string_search),
     method("slice", 2, slice),
     method("small", 0, small),
     method("split", 2, split),
@@ -120,14 +123,9 @@ impl Agent {
         self.text_units(this)
     }
 
-    /// IsRegExp (section 7.2.6), as far as `@@match` tells it.
+    /// IsRegExp (section 7.2.6).
     fn is_regexp(&mut self, v: Value) -> Res<bool> {
-        if v.as_object().is_none() {
-            return Ok(false);
-        }
-        let key = self.well_known_key(Wk::Match);
-        let m = self.get_value(v, key)?;
-        Ok(!m.is_undefined() && self.to_boolean(m))
+        self.is_regexp_value(v)
     }
 
     fn no_regexp(&mut self, v: Value, method: &str) -> Res<()> {
@@ -603,9 +601,9 @@ impl Agent {
         Ok(out)
     }
 
-    /// `@@replace` or `@@split` of a pattern object, when it has one (a
-    /// primitive's are never looked up).
-    fn pattern_method(&mut self, pattern: Value, w: Wk) -> Res<Value> {
+    /// A pattern object's `@@match`, `@@matchAll`, `@@replace`, `@@search` or
+    /// `@@split`, when it has one (a primitive's are never looked up).
+    pub(crate) fn pattern_method(&mut self, pattern: Value, w: Wk) -> Res<Value> {
         if pattern.as_object().is_none() {
             return Ok(Value::UNDEFINED);
         }
@@ -630,7 +628,9 @@ fn replace_impl(agent: &mut Agent, c: Call, all: bool) -> Res<Value> {
             return Err(agent.type_error(crate::interp::messages::NULLISH_TO_OBJECT));
         }
         if !agent.text_units(flags)?.contains(&u16::from(b'g')) {
-            return Err(agent.type_error("replaceAll must be called with a global RegExp"));
+            return Err(agent.type_error(
+                "String.prototype.replaceAll called with a non-global RegExp argument",
+            ));
         }
     }
     let replacer = agent.pattern_method(search, Wk::Replace)?;
