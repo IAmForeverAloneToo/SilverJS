@@ -23,6 +23,20 @@ impl CharSet {
         s
     }
 
+    /// The set of a generated table's ranges, written flat (first, last,
+    /// first, last, ...), sorted and merged as the generator writes them.
+    pub(crate) fn from_flat(flat: &[u32]) -> CharSet {
+        CharSet {
+            ranges: flat
+                .chunks_exact(2)
+                .filter_map(|p| match *p {
+                    [first, last] => Some((first, last)),
+                    _ => None,
+                })
+                .collect(),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn ranges(&self) -> &[(u32, u32)] {
         &self.ranges

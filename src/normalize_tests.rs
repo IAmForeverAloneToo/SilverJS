@@ -25,8 +25,8 @@ fn the_unicode_version_is_one_everywhere() {
     let database = format!("Database {}.", crate::UNICODE_VERSION);
     assert!(include_str!("normalize_tables.rs").contains(&database));
     assert!(include_str!("unicode_tables.rs").contains(&database));
-    let ucd = format!("UCD {}'s", crate::UNICODE_VERSION);
-    assert!(include_str!("regexp/properties.rs").contains(&ucd));
+    assert!(include_str!("regexp/property_tables.rs").contains(&database));
+    assert!(include_str!("regexp/casefold_tables.rs").contains(&database));
 }
 
 /// The J4.4d probes' facts: identifiers, case mapping and decomposition

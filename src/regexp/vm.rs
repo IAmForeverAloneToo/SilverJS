@@ -265,9 +265,6 @@ impl Compiler {
     }
 
     fn class(&mut self, class: &Class, mode: Mode) -> Result<(), String> {
-        if class.unsupported {
-            return Err("Unicode property escapes are not supported yet".to_owned());
-        }
         let index = self.classes.len() as u32;
         self.classes.push(class.set.clone());
         if class.strings.is_empty() {

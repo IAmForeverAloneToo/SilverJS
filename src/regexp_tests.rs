@@ -265,3 +265,80 @@ fn a_catastrophic_pattern_stops_soon_after_the_interrupt() {
         );
     }
 }
+
+/// The J4.5b probe (Chrome 158): property escapes, `v`-mode sets, their
+/// messages and their case folding, and a bad regexp literal's message
+/// through `Function` and `eval`.
+const PROPERTY_PROBE: &str = r#"// SilverJS's J4.5b probe cases: property escapes and v-mode sets, their
+// messages and their case folding. Each is [label, source of an
+// expression]; the page and SilverJS's shell run the same list.
+var cases = [
+  ['bad name', "new RegExp('\\\\p{Foo}', 'u')"],
+  ['bad name in class', "new RegExp('[\\\\p{Foo}]', 'u')"],
+  ['bad value', "new RegExp('\\\\p{Script=Foo}', 'u')"],
+  ['bad name v', "new RegExp('\\\\p{Foo}', 'v')"],
+  ['bad name in class v', "new RegExp('[\\\\p{Foo}]', 'v')"],
+  ['string property with u', "new RegExp('\\\\p{RGI_Emoji}', 'u')"],
+  ['negated string property', "new RegExp('\\\\P{RGI_Emoji}', 'v')"],
+  ['negated class with strings', "new RegExp('[^\\\\p{RGI_Emoji}]', 'v')"],
+  ['gc=L alone and loose', "[/\\p{L}/u.test('a'), /\\p{gc=L}/u.test('1'), /\\p{General_Category=Letter}/u.test('b')].join()"],
+  ['loose matching is not done', "new RegExp('\\\\p{letter}', 'u')"],
+  ['Script vs Extensions', "[/\\p{sc=Deva}/u.test('\\u0964'), /\\p{scx=Deva}/u.test('\\u0964'), /\\p{scx=Zyyy}/u.test('\\u0964')].join()"],
+  ['Unknown', "[/\\p{sc=Zzzz}/u.test('\\u0378'), /\\p{scx=Unknown}/u.test('a')].join()"],
+  ['P without i', "[/\\P{Lu}/u.test('A'), /\\P{Lu}/u.test('a'), /[\\P{L}]/u.test('1'), /[^\\P{L}]/u.test('a')].join()"],
+  ['P Lu iu',"[/\\P{Lu}/iu.test('a'), /\\P{Lu}/iu.test('A'), /\\p{Lu}/iu.test('a'), /[^\\p{Lu}]/iu.test('a')].join()"],
+  ['P Lu iv', "[/\\P{Lu}/iv.test('a'), /\\P{Lu}/iv.test('A'), /\\p{Lu}/iv.test('a'), /[^\\p{Lu}]/iv.test('a')].join()"],
+  ['P Ll iv', "[/\\P{Ll}/iv.test('a'), /\\P{Ll}/iv.test('A'), /[\\P{Ll}]/iv.test('A')].join()"],
+  ['emoji longest', "JSON.stringify('\\u{1F468}\\u200D\\u{1F469}\\u200D\\u{1F467}x'.match(/^\\p{RGI_Emoji}/v)[0].length)"],
+  ['keycap and flag', "[/^\\p{Emoji_Keycap_Sequence}$/v.test('#\\uFE0F\\u20E3'), /^\\p{RGI_Emoji_Flag_Sequence}$/v.test('\\u{1F1EB}\\u{1F1F7}')].join()"],
+  ['set ops', "[/[\\p{L}--[a-z]]/v.test('a'), /[\\p{L}&&\\p{sc=Grek}]/v.test('\\u03B1'), /[[a-z]--\\q{a|bc}]/v.test('a'), /^[\\q{abc|d}]$/v.test('abc')].join()"],
+  ['set ops i', "[/[\\p{Lu}--[A-Z]]/iv.test('a'), /[\\p{Lu}&&[a-z]]/iv.test('A'), /[[a-z]--[A]]/iv.test('a')].join()"],
+  ['Any Assigned ASCII', "[/^\\p{Any}$/u.test('\\u{10FFFF}'), /\\p{Assigned}/u.test('\\u0378'), /\\p{ASCII}/u.test('\\x7F')].join()"],
+  ['17.0 script', "[/\\p{sc=Sidetic}/u.test('\\u{10940}'), /\\p{Script=Sidt}/u.test('\\u{10940}')].join()"],
+  ['source and flags', "String(new RegExp('\\\\p{L}', 'v'))"],
+  ['v class syntax characters', "['[{]', '[a&&&b]', '[a--]', '[(]', '[a-]', '[&&a]', '[a!!]'].map(function (p) { try { new RegExp(p, 'v'); return p + ' ok'; } catch (e) { return p + ' ' + e.message; } }).join(' | ')"],
+  ['literal error in Function', "(function () { try { new Function('return /a{2,1}/'); } catch (e) { return e.message; } })()"],
+  ['literal error in eval', "(function () { try { eval('/(/'); } catch (e) { return e.message; } })()"]
+];
+function run() {
+  return cases.map(function (c) {
+    try { return c[0] + ': ' + String(new Function('return ' + c[1])()); }
+    catch (e) { return c[0] + ': ' + e.constructor.name + ': ' + e.message; }
+  });
+}
+run().join('\n')"#;
+
+#[test]
+fn property_escapes_and_sets_read_as_the_reference_browser_gives_them() {
+    let want = [
+        r#"bad name: SyntaxError: Invalid regular expression: /\p{Foo}/u: Invalid property name"#,
+        r#"bad name in class: SyntaxError: Invalid regular expression: /[\p{Foo}]/u: Invalid property name in character class"#,
+        r#"bad value: SyntaxError: Invalid regular expression: /\p{Script=Foo}/u: Invalid property name"#,
+        r#"bad name v: SyntaxError: Invalid regular expression: /\p{Foo}/v: Invalid property name"#,
+        r#"bad name in class v: SyntaxError: Invalid regular expression: /[\p{Foo}]/v: Invalid property name in character class"#,
+        r#"string property with u: SyntaxError: Invalid regular expression: /\p{RGI_Emoji}/u: Invalid property name"#,
+        r#"negated string property: SyntaxError: Invalid regular expression: /\P{RGI_Emoji}/v: Invalid property name"#,
+        r#"negated class with strings: SyntaxError: Invalid regular expression: /[^\p{RGI_Emoji}]/v: Negated character class may contain strings"#,
+        r#"gc=L alone and loose: true,false,true"#,
+        r#"loose matching is not done: SyntaxError: Invalid regular expression: /\p{letter}/u: Invalid property name"#,
+        r#"Script vs Extensions: false,true,false"#,
+        r#"Unknown: true,false"#,
+        r#"P without i: false,true,true,true"#,
+        r#"P Lu iu: true,true,true,false"#,
+        r#"P Lu iv: false,false,true,false"#,
+        r#"P Ll iv: false,false,false"#,
+        r#"emoji longest: 8"#,
+        r#"keycap and flag: true,true"#,
+        r#"set ops: false,true,false,true"#,
+        r#"set ops i: false,true,false"#,
+        r#"Any Assigned ASCII: true,false,true"#,
+        r#"17.0 script: true,true"#,
+        r#"source and flags: /\p{L}/v"#,
+        r#"v class syntax characters: [{] Invalid regular expression: /[{]/v: Invalid character in character class | [a&&&b] Invalid regular expression: /[a&&&b]/v: Invalid character in character class | [a--] Invalid regular expression: /[a--]/v: Invalid character in character class | [(] Invalid regular expression: /[(]/v: Invalid character in character class | [a-] Invalid regular expression: /[a-]/v: Invalid character in character class | [&&a] Invalid regular expression: /[&&a]/v: Invalid set operation in character class | [a!!] Invalid regular expression: /[a!!]/v: Invalid set operation in character class"#,
+        r#"literal error in Function: Invalid regular expression: /a{2,1}/: numbers out of order in {} quantifier"#,
+        r#"literal error in eval: Invalid regular expression: /(/: Unterminated group"#,
+    ];
+    let got = run(PROPERTY_PROBE);
+    let got: Vec<&str> = got.split('\n').collect();
+    assert_eq!(got, want);
+}

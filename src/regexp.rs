@@ -11,6 +11,7 @@ mod casefold_tables;
 pub(crate) mod charset;
 pub(crate) mod parse;
 mod properties;
+mod property_tables;
 pub(crate) mod vm;
 
 /// The early errors of a RegularExpressionLiteral.

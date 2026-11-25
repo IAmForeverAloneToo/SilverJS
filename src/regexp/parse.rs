@@ -7,6 +7,7 @@
 //! to build the tree. Groups and classes nest by recursion bounded at
 //! [`MAX_DEPTH`].
 
+use super::casefold::{canonicalize, simple_fold_set, unfolded_characters};
 use super::charset::CharSet;
 use super::properties;
 use crate::stack::StackGuard;
@@ -80,8 +81,6 @@ pub(crate) struct Class {
     pub negated: bool,
     pub set: CharSet,
     pub strings: Vec<Vec<u32>>,
-    /// A property escape the engine has no table for yet.
-    pub unsupported: bool,
     /// Whether a property of strings stands in it (MayContainStrings).
     pub string_property: bool,
 }
@@ -106,6 +105,8 @@ enum ClassAtom {
 }
 
 const INVALID_SET: &str = "Invalid set operation in character class";
+/// A ClassSetSyntaxCharacter where a character should be (Chrome's).
+const INVALID_CHAR: &str = "Invalid character in character class";
 const UNTERMINATED_CLASS: &str = "Unterminated character class";
 /// ClassSetReservedPunctuator: what `v` mode lets be escaped in a class.
 const RESERVED_PUNCTUATORS: &str = "&-!#%,:;<=>@`~";
@@ -839,11 +840,7 @@ impl Parser {
                 }));
             }
             'p' | 'P' if self.unicode => {
-                self.property(c == 'P')?;
-                return Ok(ClassAtom::Set(Class {
-                    unsupported: true,
-                    ..Class::default()
-                }));
+                return Ok(ClassAtom::Set(self.property(c == 'P', in_class)?));
             }
             'f' => 0x0C,
             'n' => 0x0A,
@@ -915,10 +912,19 @@ impl Parser {
         Ok(ClassAtom::Char(value))
     }
 
-    /// `{Name}` or `{Name=Value}` after `\p` or `\P` (`negated`); whether
-    /// it is a property of strings (only `\p` may be, with `v`).
-    fn property(&mut self, negated: bool) -> Result<bool, String> {
-        let bad = || "Invalid property name".to_owned();
+    /// `{Name}` or `{Name=Value}` after `\p` or `\P` (`negated`): its
+    /// characters, and its strings for a property of strings (only `\p`
+    /// may be one, with `v`). `\P` is the complement (CharacterComplement,
+    /// not a negated class: under `i` the two differ); with `v` and `i`,
+    /// of the simple case folding, within the characters it keeps.
+    fn property(&mut self, negated: bool, in_class: bool) -> Result<Class, String> {
+        let bad = || {
+            if in_class {
+                "Invalid property name in character class".to_owned()
+            } else {
+                "Invalid property name".to_owned()
+            }
+        };
         if !self.eat('{') {
             return Err(bad());
         }
@@ -937,13 +943,29 @@ impl Parser {
                 _ => return Err(bad()),
             }
         }
-        match value {
-            Some(value) if properties::valid_value(&name, &value) => Ok(false),
-            Some(_) => Err(bad()),
-            None if properties::lone_name(&name) => Ok(false),
-            None if self.sets && !negated && properties::string_property(&name) => Ok(true),
-            None => Err(bad()),
+        let p =
+            properties::lookup(&name, value.as_deref(), self.sets && !negated).ok_or_else(bad)?;
+        let fold = self.sets && self.fold;
+        let mut set = if fold { simple_fold_set(&p.set) } else { p.set };
+        if negated {
+            set = if fold {
+                unfolded_characters().subtract(&set)
+            } else {
+                set.complement(MAX_CODE_POINT)
+            };
         }
+        let strings = if fold {
+            let canon = |s: &Vec<u32>| s.iter().map(|&c| canonicalize(c, true)).collect();
+            p.strings.iter().map(canon).collect()
+        } else {
+            p.strings
+        };
+        Ok(Class {
+            set,
+            strings,
+            string_property: p.of_strings,
+            ..Class::default()
+        })
     }
 
     /// A character class after its `[`, through its `]`.
@@ -1014,7 +1036,7 @@ impl Parser {
             let mut all = first;
             while self.eat_str("&&") {
                 if self.at('&') {
-                    return Err(INVALID_SET.to_owned());
+                    return Err(INVALID_CHAR.to_owned());
                 }
                 let (s, _) = self.class_set_operand()?;
                 all = intersect(&all, &s);
@@ -1071,7 +1093,9 @@ impl Parser {
                     if a > b {
                         return Err("Range out of order in character class".to_owned());
                     }
-                    all.set.add_range(a, b);
+                    let mut range = Class::default();
+                    range.set.add_range(a, b);
+                    union(&mut all, self.maybe_fold(range));
                 }
                 Some('&') if self.peek_at(1) == Some(ch('&')) => {
                     return Err(INVALID_SET.to_owned());
@@ -1085,16 +1109,37 @@ impl Parser {
         }
     }
 
+    /// MaybeSimpleCaseFolding (section 22.2.2.9.3): with `v` and `i`, a
+    /// class operand's characters and strings simple-case-folded, before
+    /// any set operation (the reference browser's, too).
+    fn maybe_fold(&self, c: Class) -> Class {
+        if !(self.sets && self.fold) {
+            return c;
+        }
+        let fold = |s: &Vec<u32>| s.iter().map(|&x| canonicalize(x, true)).collect();
+        Class {
+            set: simple_fold_set(&c.set),
+            strings: c.strings.iter().map(fold).collect(),
+            ..c
+        }
+    }
+
     /// One ClassSetOperand: a nested class, an escape, `\q{...}` or a
-    /// character; its character when it is one (the end of a range).
+    /// character, folded as `maybe_fold` says; its character when it is
+    /// one (the end of a range, as written).
     fn class_set_operand(&mut self) -> Result<(Class, Option<u32>), String> {
+        let (c, at) = self.class_set_operand_as_written()?;
+        Ok((self.maybe_fold(c), at))
+    }
+
+    fn class_set_operand_as_written(&mut self) -> Result<(Class, Option<u32>), String> {
         let Some(c) = self.peek_char() else {
             return Err(UNTERMINATED_CLASS.to_owned());
         };
         if c == '[' {
             self.i += 1;
             let inner = self.nested(|c| c.class_set_contents())?;
-            return Ok((resolve_negation(inner), None));
+            return Ok((resolve_negation(inner, self.fold), None));
         }
         if c != '\\' {
             return self.class_set_character().map(|c| (single(c), Some(c)));
@@ -1109,15 +1154,7 @@ impl Parser {
         }
         if matches!(e, 'p' | 'P') {
             self.i += 1;
-            let strings = self.property(e == 'P')?;
-            return Ok((
-                Class {
-                    unsupported: true,
-                    string_property: strings,
-                    ..Class::default()
-                },
-                None,
-            ));
+            return Ok((self.property(e == 'P', true)?, None));
         }
         if RESERVED_PUNCTUATORS.contains(e) {
             self.i += 1;
@@ -1137,7 +1174,7 @@ impl Parser {
         };
         let ch_ = char::from_u32(c).unwrap_or('\0');
         if "()[]{}/-\\|".contains(ch_) {
-            return Err(INVALID_SET.to_owned());
+            return Err(INVALID_CHAR.to_owned());
         }
         if "&!#$%*+,.:;<=>?@^`~".contains(ch_) && self.peek_at(1) == Some(c) {
             return Err(INVALID_SET.to_owned());
@@ -1204,34 +1241,39 @@ fn add_atom(out: &mut Class, a: ClassAtom) {
     }
 }
 
-/// A nested negated class made its complement (a `v` class may nest).
-fn resolve_negation(c: Class) -> Class {
+/// A nested negated class made its complement (a `v` class may nest):
+/// with `i` (`fold`), within the characters simple case folding keeps
+/// (CharacterComplement, section 22.2.2.9.5).
+fn resolve_negation(c: Class, fold: bool) -> Class {
     if !c.negated {
         return c;
     }
+    let set = if fold {
+        unfolded_characters().subtract(&c.set)
+    } else {
+        c.set.complement(MAX_CODE_POINT)
+    };
     Class {
         negated: false,
-        set: c.set.complement(MAX_CODE_POINT),
+        set,
         strings: Vec::new(),
-        unsupported: c.unsupported,
         string_property: false,
     }
 }
 
 fn union(a: &mut Class, b: Class) {
-    let b = resolve_negation(b);
+    let b = resolve_negation(b, false);
     a.set.union(&b.set);
     for s in b.strings {
         if !a.strings.contains(&s) {
             a.strings.push(s);
         }
     }
-    a.unsupported |= b.unsupported;
     a.string_property |= b.string_property;
 }
 
 fn intersect(a: &Class, b: &Class) -> Class {
-    let b = resolve_negation(b.clone());
+    let b = resolve_negation(b.clone(), false);
     Class {
         negated: false,
         set: a.set.intersect(&b.set),
@@ -1241,13 +1283,12 @@ fn intersect(a: &Class, b: &Class) -> Class {
             .filter(|s| b.strings.contains(s))
             .cloned()
             .collect(),
-        unsupported: a.unsupported || b.unsupported,
         string_property: a.string_property && b.string_property,
     }
 }
 
 fn subtract(a: &Class, b: &Class) -> Class {
-    let b = resolve_negation(b.clone());
+    let b = resolve_negation(b.clone(), false);
     Class {
         negated: false,
         set: a.set.subtract(&b.set),
@@ -1257,7 +1298,6 @@ fn subtract(a: &Class, b: &Class) -> Class {
             .filter(|s| !b.strings.contains(s))
             .cloned()
             .collect(),
-        unsupported: a.unsupported || b.unsupported,
         string_property: a.string_property,
     }
 }

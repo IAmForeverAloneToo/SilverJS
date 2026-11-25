@@ -83,23 +83,22 @@ fn legacy_set(agent: &mut Agent, c: Call) -> Res<Value> {
 
 /// Whether `source` is one parenthesized function expression and
 /// nothing else, so that a `Function` constructor's parameters or body
-/// cannot close the function and go on.
-fn one_function(source: &str) -> bool {
-    let Ok(program) = crate::parser::parse(source, Goal::Script) else {
-        return false;
-    };
+/// cannot close the function and go on; the parser's message when it
+/// does not parse at all.
+fn one_function(source: &str) -> Result<bool, String> {
+    let program = crate::parser::parse(source, Goal::Script).map_err(|e| e.message)?;
     let [s] = program.body.as_slice() else {
-        return false;
+        return Ok(false);
     };
     let stmt = program.ast.stmt(*s);
     let Stmt::Expr(e) = stmt.kind else {
-        return false;
+        return Ok(false);
     };
     let mut e = program.ast.expr(e);
     if let Expr::Paren(inner) = e.kind {
         e = program.ast.expr(inner);
     }
-    matches!(e.kind, Expr::Function(_)) && stmt.span.end as usize >= source.trim_end().len()
+    Ok(matches!(e.kind, Expr::Function(_)) && stmt.span.end as usize >= source.trim_end().len())
 }
 
 /// `Function(...)`: CreateDynamicFunction (section 20.2.1.1.1) for an
@@ -156,11 +155,21 @@ fn dynamic_function(
     // Each part alone, as the spec parses them: neither can close the
     // function and go on, so the whole is the one function they make
     // (its own early errors, a repeated parameter under "use strict",
-    // are the compiler's).
-    if !one_function(&format!("({keyword} anonymous({params}\n) {{\n}})"))
-        || !one_function(&format!("({keyword} anonymous(\n) {{\n{body}\n}})"))
-    {
-        return Err(syntax(agent));
+    // are the compiler's). A part that does not parse throws the
+    // parser's own SyntaxError, as the reference browser does (a bad
+    // regexp literal's message, say); one that parses but is not one
+    // function, the message above.
+    for part in [
+        format!("({keyword} anonymous({params}\n) {{\n}})"),
+        format!("({keyword} anonymous(\n) {{\n{body}\n}})"),
+    ] {
+        match one_function(&part) {
+            Ok(true) => {}
+            Ok(false) => return Err(syntax(agent)),
+            Err(m) => {
+                return Err(agent.throw_error(crate::interp::ErrorType::SyntaxError, m));
+            }
+        }
     }
     let source = format!("({keyword} anonymous({params}\n) {{\n{body}\n}})");
     let origin = crate::interp::Origin::Eval {

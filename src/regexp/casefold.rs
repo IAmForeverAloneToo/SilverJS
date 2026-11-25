@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use super::casefold_tables::SIMPLE_FOLD;
+use super::charset::CharSet;
 
 /// `c` canonicalized: `unicode` for the `u` or `v` flag.
 pub(crate) fn canonicalize(c: u32, unicode: bool) -> u32 {
@@ -80,6 +81,37 @@ fn classes(unicode: bool) -> &'static HashMap<u32, Vec<u32>> {
             m
         })
     }
+}
+
+/// The characters simple case folding changes (CaseFolding.txt's
+/// statuses C and S), made once.
+fn folding() -> &'static CharSet {
+    static SET: OnceLock<CharSet> = OnceLock::new();
+    SET.get_or_init(|| {
+        let mut s = CharSet::new();
+        for &(a, _) in SIMPLE_FOLD {
+            s.add(a);
+        }
+        s
+    })
+}
+
+/// `set` simple-case-folded (MaybeSimpleCaseFolding, section 22.2.2.9.3,
+/// with the `i` flag in `v` mode): each character made its fold.
+pub(crate) fn simple_fold_set(set: &CharSet) -> CharSet {
+    let mut out = set.subtract(folding());
+    for &(a, b) in SIMPLE_FOLD {
+        if set.contains(a) {
+            out.add(b);
+        }
+    }
+    out
+}
+
+/// AllCharacters for the `i` flag in `v` mode (section 22.2.2.9.5): the
+/// characters simple case folding keeps as they are.
+pub(crate) fn unfolded_characters() -> CharSet {
+    folding().complement(super::parse::MAX_CODE_POINT)
 }
 
 /// Whether any character that canonicalizes as `c` does passes `f`.
