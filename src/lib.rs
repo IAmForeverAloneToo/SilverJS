@@ -28,6 +28,8 @@ mod heap;
 mod internal;
 mod interp;
 pub mod lexer;
+mod normalize;
+mod normalize_tables;
 mod number;
 mod object;
 pub mod parser;
@@ -69,6 +71,8 @@ mod json_tests;
 mod language_tests;
 #[cfg(test)]
 mod lexer_tests;
+#[cfg(test)]
+mod normalize_tests;
 #[cfg(test)]
 mod object_tests;
 #[cfg(test)]

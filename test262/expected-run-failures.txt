@@ -2122,16 +2122,6 @@ test/built-ins/String/prototype/matchAll/regexp-prototype-matchAll-throws.js thr
 test/built-ins/String/prototype/matchAll/regexp-prototype-matchAll-v-u-flag.js throws
 test/built-ins/String/prototype/matchAll/this-val-non-obj-coercible.js throws
 test/built-ins/String/prototype/matchAll/toString-this-val.js throws
-test/built-ins/String/prototype/normalize/form-is-not-valid-throws.js throws
-test/built-ins/String/prototype/normalize/length.js throws
-test/built-ins/String/prototype/normalize/name.js throws
-test/built-ins/String/prototype/normalize/normalize.js throws
-test/built-ins/String/prototype/normalize/not-a-constructor.js throws
-test/built-ins/String/prototype/normalize/return-abrupt-from-form.js throws
-test/built-ins/String/prototype/normalize/return-abrupt-from-this.js throws
-test/built-ins/String/prototype/normalize/return-normalized-string-from-coerced-form.js throws
-test/built-ins/String/prototype/normalize/return-normalized-string-using-default-parameter.js throws
-test/built-ins/String/prototype/normalize/return-normalized-string.js throws
 test/built-ins/String/prototype/replace/15.5.4.11-1.js throws
 test/built-ins/String/prototype/replace/S15.5.4.11_A12.js throws
 test/built-ins/String/prototype/replace/S15.5.4.11_A1_T14.js throws

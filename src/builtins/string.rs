@@ -44,6 +44,7 @@ pub(crate) const PROTO: &[Entry] = &[
     method("lastIndexOf", 1, last_index_of),
     method("link", 1, link),
     method("localeCompare", 1, locale_compare),
+    method("normalize", 0, normalize),
     method("padEnd", 1, pad_end),
     method("padStart", 1, pad_start),
     method("repeat", 1, repeat),
@@ -399,6 +400,28 @@ fn is_lone(s: &[u16], i: usize) -> bool {
     } else {
         false
     }
+}
+
+/// `String.prototype.normalize(form)` (section 22.1.3.15): by the
+/// tables of the Unicode version the reference browser ships.
+fn normalize(agent: &mut Agent, c: Call) -> Res<Value> {
+    let s = agent.this_units(c.this, "normalize")?;
+    let f = agent.arg(c, 0);
+    let form = if f.is_undefined() {
+        crate::normalize::Form::Nfc
+    } else {
+        let name = agent.string_value(f)?;
+        let units = agent.string_units(name).unwrap_or_default();
+        match crate::normalize::Form::named(&units) {
+            Some(form) => form,
+            None => {
+                return Err(agent
+                    .range_error("The normalization form should be one of NFC, NFD, NFKC, NFKD."));
+            }
+        }
+    };
+    let out = crate::normalize::normalize(&s, form);
+    agent.new_string_units(&out)
 }
 
 fn is_well_formed(agent: &mut Agent, c: Call) -> Res<Value> {
