@@ -24,8 +24,152 @@ impl Gen<'_, '_> {
 
     fn block(&mut self, key: ScopeKey, stmts: &[StmtId]) -> R {
         let save = self.enter_scope(key)?;
-        self.stmts(stmts)?;
+        match self.using_in(stmts) {
+            Some(is_async) => self.disposing(is_async, |g| g.stmts(stmts))?,
+            None => self.stmts(stmts)?,
+        }
         self.leave_scope(save);
+        Ok(())
+    }
+
+    /// Whether `stmts` declare with `using`: `Some(true)` if one is an
+    /// `await using`.
+    pub(super) fn using_in(&self, stmts: &[StmtId]) -> Option<bool> {
+        let mut found = None;
+        for s in stmts {
+            if let Stmt::Var(d) = &self.ast.stmt(*s).kind {
+                match d.kind {
+                    VarKind::AwaitUsing => return Some(true),
+                    VarKind::Using => found = Some(false),
+                    _ => {}
+                }
+            }
+        }
+        found
+    }
+
+    /// `body` with a dispose capability, its `using` resources disposed
+    /// however it is left (DisposeResources, section 7.5.x of the
+    /// explicit resource management proposal): last added first, each
+    /// one's throw kept (over an earlier one, in a SuppressedError), and
+    /// with `await using` each async result awaited. Then on as it was
+    /// left, or the kept throw thrown.
+    pub(super) fn disposing(&mut self, is_async: bool, body: impl FnOnce(&mut Self) -> R) -> R {
+        let cap = self.alloc();
+        self.op(Op::DisposeNew);
+        self.reg_op(Op::Star, cap);
+        let token = self.alloc();
+        let value = self.alloc();
+        let entry = self.new_label();
+        self.control.push(Control::Finally {
+            token,
+            value,
+            entry,
+            completions: Vec::new(),
+        });
+        let context = self.handler_context();
+        let start = self.pc();
+        self.using_caps.push(cap);
+        let r = body(self);
+        self.using_caps.pop();
+        r?;
+        let end = self.pc();
+        self.emit(Op::LdaSmi, &[FALL_THROUGH]);
+        self.reg_op(Op::Star, token);
+        self.jump(Op::Jump, entry);
+        let target = self.pc();
+        self.handler(Handler {
+            start,
+            end,
+            target,
+            context,
+        });
+        self.reg_op(Op::Star, value);
+        self.emit(Op::LdaSmi, &[THREW]);
+        self.reg_op(Op::Star, token);
+        self.bind(entry);
+        let completions = match self.control.pop() {
+            Some(Control::Finally { completions, .. }) => completions,
+            _ => Vec::new(),
+        };
+        // A throw out of the body: the completion the disposal starts
+        // from.
+        let steps = self.new_label();
+        self.emit(Op::LdaSmi, &[THREW]);
+        self.reg_op(Op::TestStrictEq, token);
+        self.jump(Op::JumpIfFalse, steps);
+        self.reg_op(Op::Ldar, value);
+        self.reg_op(Op::DisposeThrow, cap);
+        self.bind(steps);
+        // The steps, each one's throw kept.
+        let (head, done) = (self.new_label(), self.new_label());
+        let awaited = self.alloc();
+        self.bind(head);
+        let step_start = self.pc();
+        self.jump_with(Op::DisposeStep, &[i64::from(cap), i64::from(awaited)], done);
+        if is_async {
+            self.jump(Op::JumpIfFalse, head);
+            self.reg_op(Op::Ldar, awaited);
+            self.await_acc(Span::new(0, 0));
+        }
+        let step_end = self.pc();
+        self.jump(Op::Jump, head);
+        let caught = self.pc();
+        self.handler(Handler {
+            start: step_start,
+            end: step_end,
+            target: caught,
+            context,
+        });
+        self.reg_op(Op::DisposeThrow, cap);
+        self.jump(Op::Jump, head);
+        self.bind(done);
+        self.reg_op(Op::DisposeEnd, cap);
+        // Then on as it was entered.
+        for (k, c) in completions.iter().enumerate() {
+            let next = self.new_label();
+            self.emit(Op::LdaSmi, &[FIRST_COMPLETION + k as i64]);
+            self.reg_op(Op::TestStrictEq, token);
+            self.jump(Op::JumpIfFalse, next);
+            if *c == Completion::Return {
+                self.reg_op(Op::Ldar, value);
+            }
+            self.jump_out(*c);
+            self.bind(next);
+        }
+        if let Some(r) = context {
+            self.free(r);
+        }
+        self.free(awaited);
+        self.free(value);
+        self.free(token);
+        self.free(cap);
+        Ok(())
+    }
+
+    /// A `using` or `await using` declaration: each value added to the
+    /// scope's resources, then bound.
+    fn using_decl(&mut self, decl: &VarDecl, span: Span) -> R {
+        let Some(cap) = self.using_caps.last().copied() else {
+            return Err(unsupported("using declarations here", span));
+        };
+        let hint = i64::from(decl.kind == VarKind::AwaitUsing);
+        for d in &decl.decls {
+            let node = self.ast.pat(d.target);
+            let Pat::Ident(name) = &node.kind else {
+                return Err(unsupported("using patterns", node.span));
+            };
+            match d.init {
+                Some(init) => {
+                    let inferred = units(&name.name);
+                    self.expr_named(init, Some(&inferred))?;
+                }
+                None => self.op(Op::LdaUndefined),
+            }
+            self.pos(node.span);
+            self.emit(Op::DisposeAdd, &[i64::from(cap), hint]);
+            self.store_name(&name.name, node.span, true)?;
+        }
         Ok(())
     }
 
@@ -174,6 +318,18 @@ impl Gen<'_, '_> {
         span: Span,
     ) -> R {
         let save = self.enter_scope(ScopeKey::Stmt(id))?;
+        if let Some(ForInit::Var(decl)) = init
+            && matches!(decl.kind, VarKind::Using | VarKind::AwaitUsing)
+        {
+            let is_async = decl.kind == VarKind::AwaitUsing;
+            let per_iteration = save.save.is_some();
+            self.disposing(is_async, |g| {
+                g.var_decl(decl, span)?;
+                g.for_rest(test, update, body, labels, per_iteration)
+            })?;
+            self.leave_scope(save);
+            return Ok(());
+        }
         match init {
             Some(ForInit::Var(decl)) => self.var_decl(decl, span)?,
             Some(ForInit::Expr(e)) => self.expr(*e)?,
@@ -181,7 +337,20 @@ impl Gen<'_, '_> {
         }
         // A `let` captured by a closure is a new binding each
         // iteration: the environment is copied.
-        let per_iteration = save.save.is_some();
+        self.for_rest(test, update, body, labels, save.save.is_some())?;
+        self.leave_scope(save);
+        Ok(())
+    }
+
+    /// A `for` statement's loop, after its head's declaration.
+    fn for_rest(
+        &mut self,
+        test: Option<ExprId>,
+        update: Option<ExprId>,
+        body: StmtId,
+        labels: Vec<crate::ast::Name>,
+        per_iteration: bool,
+    ) -> R {
         if per_iteration {
             self.op(Op::CopyContext);
         }
@@ -203,7 +372,6 @@ impl Gen<'_, '_> {
         self.jump(Op::JumpLoop, head);
         self.control.pop();
         self.bind(end);
-        self.leave_scope(save);
         Ok(())
     }
 
@@ -725,8 +893,24 @@ impl Gen<'_, '_> {
         } else {
             None
         };
-        self.bind_head(left)?;
-        self.stmt(body)?;
+        match left {
+            ForHead::Var(d) if matches!(d.kind, VarKind::Using | VarKind::AwaitUsing) => {
+                let is_async = d.kind == VarKind::AwaitUsing;
+                // The value, kept while the capability is made.
+                let kept = save.as_ref().map(|(v, _)| *v);
+                self.disposing(is_async, |g| {
+                    if let Some(v) = kept {
+                        g.reg_op(Op::Ldar, v);
+                    }
+                    g.bind_head(left)?;
+                    g.stmt(body)
+                })?;
+            }
+            _ => {
+                self.bind_head(left)?;
+                self.stmt(body)?;
+            }
+        }
         if let Some((v, save)) = save {
             self.leave_scope(save);
             self.free(v);
@@ -793,6 +977,12 @@ impl Gen<'_, '_> {
                 } else {
                     Bind::Init
                 };
+                if let (Some(cap), VarKind::Using | VarKind::AwaitUsing) =
+                    (self.using_caps.last().copied(), decl.kind)
+                {
+                    let hint = i64::from(decl.kind == VarKind::AwaitUsing);
+                    self.emit(Op::DisposeAdd, &[i64::from(cap), hint]);
+                }
                 self.bind_pattern(d.target, mode)
             }
             ForHead::Pattern(p) => self.bind_pattern(*p, Bind::Assign),
@@ -851,7 +1041,7 @@ impl Gen<'_, '_> {
 
     fn var_decl(&mut self, decl: &VarDecl, span: Span) -> R {
         if matches!(decl.kind, VarKind::Using | VarKind::AwaitUsing) {
-            return Err(unsupported("using declarations", span));
+            return self.using_decl(decl, span);
         }
         let lexical = decl.kind != VarKind::Var;
         for d in &decl.decls {

@@ -182,6 +182,14 @@ pub(crate) enum ObjectKind {
     /// What `Iterator.from` wraps an iterator in (section 27.1.3.2.1.1):
     /// the iterator and its `next`.
     IteratorWrap,
+    /// A `DisposableStack` (section 27.3): its state and resources in
+    /// its internal slots, as a dispose capability keeps them.
+    DisposableStack,
+    /// An `AsyncDisposableStack` (section 27.4), the same.
+    AsyncDisposableStack,
+    /// A block's dispose capability (section 9.1.1.1, a `using`
+    /// declaration's scope): never seen by a script.
+    DisposeCapability,
 }
 
 /// An object cell.

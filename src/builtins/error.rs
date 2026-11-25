@@ -75,6 +75,47 @@ pub(crate) fn construct_aggregate_error(agent: &mut Agent, c: Call) -> Res<Value
     r
 }
 
+/// `SuppressedError(error, suppressed, message)` (section 20.5.8.1 of
+/// the explicit resource management proposal): `message` if given, then
+/// `error` and `suppressed`; no options.
+pub(crate) fn construct_suppressed_error(agent: &mut Agent, c: Call) -> Res<Value> {
+    let nt = if c.new_target.is_undefined() {
+        c.callee
+    } else {
+        c.new_target
+    };
+    let proto = agent.prototype_from(nt, |r| r.error_proto(ErrorType::SuppressedError))?;
+    let o = agent.alloc_object(ObjectCell::new(proto, ObjectKind::Error))?;
+    agent.vm.temps.push(o);
+    let result = (|| {
+        let message = agent.arg(c, 2);
+        let m = if message.is_undefined() {
+            Value::UNDEFINED
+        } else {
+            agent.string_value(message)?
+        };
+        agent.vm.temps.push(m);
+        let captured = agent.capture_stack(o, m, true, Value::UNDEFINED);
+        agent.vm.temps.pop();
+        captured?;
+        let Some(i) = o.as_object() else {
+            return Ok(o);
+        };
+        if !m.is_undefined() {
+            let key = agent.realm().message_key;
+            agent.heap.define_own_property(i, key, hidden(m));
+        }
+        for (k, name) in [(0, "error"), (1, "suppressed")] {
+            let v = agent.arg(c, k);
+            let key = agent.name_key(Name::Str(name));
+            agent.heap.define_own_property(i, key, hidden(v));
+        }
+        Ok(o)
+    })();
+    agent.vm.temps.pop();
+    result
+}
+
 /// The error constructors' common body (section 20.5.1.1): an object of
 /// the prototype `new.target` gives, its `message` and `cause`.
 fn construct(agent: &mut Agent, c: Call, t: ErrorType) -> Res<Value> {

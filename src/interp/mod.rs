@@ -2098,6 +2098,39 @@ impl Agent {
                     Op::CheckIterResult => {
                         tri!(self.check_iter_result(), start);
                     }
+                    Op::DisposeNew => {
+                        let kind = crate::object::ObjectKind::DisposeCapability;
+                        let cap = tri!(self.new_dispose_capability(Value::NULL, kind), start);
+                        self.vm.acc = cap;
+                    }
+                    Op::DisposeAdd => {
+                        let (c, hint) = (r.u(), r.u());
+                        let (cap, v) = (self.reg(base, c), self.vm.acc);
+                        tri!(self.add_disposable(cap, v, hint == 1), start);
+                    }
+                    Op::DisposeThrow => {
+                        let c = r.u();
+                        let (cap, e) = (self.reg(base, c), self.vm.acc);
+                        tri!(self.dispose_throw(cap, e), start);
+                    }
+                    Op::DisposeStep => {
+                        let (c, w) = (r.u(), r.u());
+                        let off = r.j();
+                        let cap = self.reg(base, c);
+                        match tri!(self.dispose_step(cap), start) {
+                            crate::builtins::Step::Done => r.pc = target(start, off),
+                            crate::builtins::Step::Next => self.vm.acc = Value::FALSE,
+                            crate::builtins::Step::Await(v) => {
+                                self.set_reg(base, w, v);
+                                self.vm.acc = Value::TRUE;
+                            }
+                        }
+                    }
+                    Op::DisposeEnd => {
+                        let c = r.u();
+                        let cap = self.reg(base, c);
+                        tri!(self.dispose_end(cap), start);
+                    }
                     Op::AsyncDelegateMethod => {
                         let (it, nx, m, o) = (r.u(), r.u(), r.u(), r.u());
                         tri!(self.op_async_delegate_method(base, it, nx, m, o), start);

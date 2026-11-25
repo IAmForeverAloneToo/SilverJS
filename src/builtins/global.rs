@@ -89,7 +89,7 @@ pub(crate) struct Intrinsics {
     pub boolean: Value,
     pub symbol: Value,
     /// The error constructors, by [`ErrorType`].
-    pub errors: [Value; 8],
+    pub errors: [Value; 9],
     pub throw_type_error: Value,
     /// Every error's `stack` accessor pair.
     pub stack_get: Value,
@@ -154,6 +154,10 @@ pub(crate) struct Intrinsics {
     pub iterator: Value,
     pub iterator_helper_prototype: Value,
     pub wrap_for_valid_iterator_prototype: Value,
+    pub disposable_stack: Value,
+    pub disposable_stack_prototype: Value,
+    pub async_disposable_stack: Value,
+    pub async_disposable_stack_prototype: Value,
 }
 
 impl Intrinsics {
@@ -165,7 +169,7 @@ impl Intrinsics {
         number: Value::UNDEFINED,
         boolean: Value::UNDEFINED,
         symbol: Value::UNDEFINED,
-        errors: [Value::UNDEFINED; 8],
+        errors: [Value::UNDEFINED; 9],
         throw_type_error: Value::UNDEFINED,
         stack_get: Value::UNDEFINED,
         stack_set: Value::UNDEFINED,
@@ -225,6 +229,10 @@ impl Intrinsics {
         iterator: Value::UNDEFINED,
         iterator_helper_prototype: Value::UNDEFINED,
         wrap_for_valid_iterator_prototype: Value::UNDEFINED,
+        disposable_stack: Value::UNDEFINED,
+        disposable_stack_prototype: Value::UNDEFINED,
+        async_disposable_stack: Value::UNDEFINED,
+        async_disposable_stack_prototype: Value::UNDEFINED,
     };
 
     /// The typed array constructor of `elem`.
@@ -309,6 +317,10 @@ impl Intrinsics {
             self.iterator,
             self.iterator_helper_prototype,
             self.wrap_for_valid_iterator_prototype,
+            self.disposable_stack,
+            self.disposable_stack_prototype,
+            self.async_disposable_stack,
+            self.async_disposable_stack_prototype,
         ]);
         out.extend_from_slice(&self.typed);
         out.extend_from_slice(&self.typed_prototypes);
@@ -341,6 +353,11 @@ pub(crate) const CTORS: &[Entry] = &[
     ctor("TypeError", 1, super::error::construct_type_error),
     ctor("URIError", 1, super::error::construct_uri_error),
     ctor("AggregateError", 2, super::error::construct_aggregate_error),
+    ctor(
+        "SuppressedError",
+        3,
+        super::error::construct_suppressed_error,
+    ),
     ctor("Promise", 1, super::promise::construct),
     ctor("Proxy", 2, super::proxy::construct),
     ctor("Map", 0, super::collection::construct_map),
@@ -380,6 +397,12 @@ pub(crate) const CTORS: &[Entry] = &[
     ctor("BigInt", 1, super::bigint::construct),
     ctor("Date", 7, super::date::construct),
     ctor("Iterator", 0, super::iter_helpers::construct),
+    ctor("DisposableStack", 0, super::disposable::construct),
+    ctor(
+        "AsyncDisposableStack",
+        0,
+        super::disposable::construct_async,
+    ),
     method("FunctionPrototype", 0, super::function::function_prototype),
     method("ThrowTypeError", 0, super::function::throw_type_error),
     method("parseInt", 2, parse_int),
@@ -415,6 +438,7 @@ pub(crate) const GLOBAL: &[Entry] = &[
     intrinsic("SyntaxError"),
     intrinsic("TypeError"),
     intrinsic("URIError"),
+    intrinsic("SuppressedError"),
     intrinsic("globalThis"),
     intrinsic("JSON"),
     intrinsic("Math"),
@@ -443,6 +467,8 @@ pub(crate) const GLOBAL: &[Entry] = &[
     intrinsic("Reflect"),
     intrinsic("FinalizationRegistry"),
     intrinsic("WeakRef"),
+    intrinsic("DisposableStack"),
+    intrinsic("AsyncDisposableStack"),
     method("decodeURI", 1, super::uri::decode_uri),
     method("decodeURIComponent", 1, super::uri::decode_uri_component),
     method("encodeURI", 1, super::uri::encode_uri),
@@ -492,6 +518,8 @@ impl Agent {
             "BigInt" => i.bigint,
             "Date" => i.date,
             "Iterator" => i.iterator,
+            "DisposableStack" => i.disposable_stack,
+            "AsyncDisposableStack" => i.async_disposable_stack,
             _ if name.ends_with("Array") => crate::buffer::Elem::ALL
                 .iter()
                 .position(|e| e.name() == name)
@@ -772,6 +800,14 @@ impl Agent {
         self.set_intrinsics(|i| i.date_prototype = datep);
         let date = self.make_ctor("Date", datep)?;
         self.set_intrinsics(|i| i.date = date);
+        let dsp = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.disposable_stack_prototype = dsp);
+        let ds = self.make_ctor("DisposableStack", dsp)?;
+        self.set_intrinsics(|i| i.disposable_stack = ds);
+        let adsp = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.async_disposable_stack_prototype = adsp);
+        let ads = self.make_ctor("AsyncDisposableStack", adsp)?;
+        self.set_intrinsics(|i| i.async_disposable_stack = ads);
         let json = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.json = json);
         let ip = self.realm().intrinsics.iterator_prototype;
@@ -967,6 +1003,18 @@ impl Agent {
         self.install_table(i.bigint_prototype, table::BIGINT_PROTO, i.bigint, &[])?;
         self.install_table(i.date, table::DATE, Value::UNDEFINED, &[])?;
         self.install_table(i.date_prototype, table::DATE_PROTO, i.date, &[])?;
+        self.install_table(
+            i.disposable_stack_prototype,
+            table::DISPOSABLE_STACK_PROTO,
+            i.disposable_stack,
+            &[],
+        )?;
+        self.install_table(
+            i.async_disposable_stack_prototype,
+            table::ASYNC_DISPOSABLE_STACK_PROTO,
+            i.async_disposable_stack,
+            &[],
+        )?;
         self.install_table(i.promise, table::PROMISE, Value::UNDEFINED, &[])?;
         self.install_table(
             i.promise_prototype,

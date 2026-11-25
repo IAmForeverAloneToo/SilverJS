@@ -47,7 +47,7 @@ pub(crate) struct Realm {
     pub boolean_prototype: Value,
     pub symbol_prototype: Value,
     /// The error prototypes, by [`ErrorType`].
-    pub errors: [Value; 8],
+    pub errors: [Value; 9],
     pub intrinsics: Intrinsics,
     pub lexical: HashMap<PropertyKey, Lexical>,
     /// The template objects of the tagged templates run in this realm,
@@ -165,7 +165,7 @@ impl Agent {
             number_prototype: u,
             boolean_prototype: u,
             symbol_prototype: u,
-            errors: [u; 8],
+            errors: [u; 9],
             intrinsics: Intrinsics::NONE,
             lexical: HashMap::new(),
             templates: HashMap::new(),

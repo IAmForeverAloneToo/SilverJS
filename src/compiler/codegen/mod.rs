@@ -221,6 +221,9 @@ pub(super) struct Gen<'s, 'a> {
     /// The source of the value the next pattern binds, which its errors
     /// quote (a declaration's initializer, an assignment's right side).
     pub(super) pattern_source: Option<Span>,
+    /// The dispose capabilities of the `using` scopes compiled into, in
+    /// registers, the innermost last.
+    pub(super) using_caps: Vec<u32>,
 }
 
 impl<'s, 'a> Gen<'s, 'a> {
@@ -248,6 +251,7 @@ impl<'s, 'a> Gen<'s, 'a> {
             completion: None,
             pending_labels: Vec::new(),
             pattern_source: None,
+            using_caps: Vec::new(),
             sh,
         }
     }
@@ -593,7 +597,10 @@ impl<'s, 'a> Gen<'s, 'a> {
         if self.a.scope(top).kind == ScopeKind::Eval {
             self.eval_prologue(top)?;
         }
-        self.stmts(&program.body)?;
+        match self.using_in(&program.body) {
+            Some(is_async) => self.disposing(is_async, |g| g.stmts(&program.body))?,
+            None => self.stmts(&program.body)?,
+        }
         self.reg_op(Op::Ldar, c);
         self.op(Op::Return);
         Ok(())
@@ -760,7 +767,10 @@ impl<'s, 'a> Gen<'s, 'a> {
         }
         match &f.body {
             Body::Block(stmts) => {
-                self.stmts(stmts)?;
+                match self.using_in(stmts) {
+                    Some(is_async) => self.disposing(is_async, |g| g.stmts(stmts))?,
+                    None => self.stmts(stmts)?,
+                }
                 self.op(Op::LdaUndefined);
             }
             Body::Expr(e) => {

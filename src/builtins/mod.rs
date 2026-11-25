@@ -19,6 +19,8 @@ pub(crate) mod bigint;
 mod binary;
 mod collection;
 pub(crate) mod date;
+mod disposable;
+pub(crate) use disposable::Step;
 mod error;
 mod function;
 mod generator;
@@ -221,6 +223,9 @@ const TABLES: &[&[Entry]] = &[
     iter_helpers::ITERATOR,
     iter_helpers::ITERATOR_HELPER_PROTO,
     iter_helpers::WRAP_PROTO,
+    disposable::DISPOSABLE_STACK_PROTO,
+    disposable::ASYNC_DISPOSABLE_STACK_PROTO,
+    disposable::DISPOSABLE_INTERNAL,
 ];
 
 /// The tables' indices.
@@ -293,6 +298,9 @@ pub(crate) mod table {
     pub const ITERATOR: u32 = 65;
     pub const ITERATOR_HELPER_PROTO: u32 = 66;
     pub const WRAP_PROTO: u32 = 67;
+    pub const DISPOSABLE_STACK_PROTO: u32 = 68;
+    pub const ASYNC_DISPOSABLE_STACK_PROTO: u32 = 69;
+    pub const DISPOSABLE_INTERNAL: u32 = 70;
 }
 
 /// How native `id` resumes a generator, if it is `%GeneratorPrototype%`'s

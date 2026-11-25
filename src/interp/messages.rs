@@ -15,10 +15,11 @@ pub(crate) enum ErrorType {
     EvalError,
     UriError,
     AggregateError,
+    SuppressedError,
 }
 
 impl ErrorType {
-    pub(crate) const ALL: [ErrorType; 8] = [
+    pub(crate) const ALL: [ErrorType; 9] = [
         ErrorType::Error,
         ErrorType::TypeError,
         ErrorType::RangeError,
@@ -27,6 +28,7 @@ impl ErrorType {
         ErrorType::EvalError,
         ErrorType::UriError,
         ErrorType::AggregateError,
+        ErrorType::SuppressedError,
     ];
 
     pub(crate) fn name(self) -> &'static str {
@@ -39,6 +41,7 @@ impl ErrorType {
             ErrorType::EvalError => "EvalError",
             ErrorType::UriError => "URIError",
             ErrorType::AggregateError => "AggregateError",
+            ErrorType::SuppressedError => "SuppressedError",
         }
     }
 }

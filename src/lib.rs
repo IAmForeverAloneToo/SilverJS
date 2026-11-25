@@ -81,6 +81,8 @@ mod realm_tests;
 mod stack_tests;
 #[cfg(test)]
 mod typed_tests;
+#[cfg(test)]
+mod using_tests;
 
 pub use embed::{ErrorKind, HostFn, JsResult, RealmId, Thrown};
 pub use heap::HeapStats;

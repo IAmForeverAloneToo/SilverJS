@@ -100,14 +100,40 @@ fn async_dispose(agent: &mut Agent, c: Call) -> Res<Value> {
         if ret.is_nullish() {
             return agent.resolve_promise(promise, Value::UNDEFINED);
         }
-        match agent.call_value(ret, c.this, &[Value::UNDEFINED]) {
-            Ok(_) => agent.resolve_promise(promise, Value::UNDEFINED),
+        if !agent.is_callable(ret) {
+            let (r, o) = (agent.display(ret), agent.display(c.this));
+            let e = agent.make_error(
+                crate::interp::ErrorType::TypeError,
+                &format!("'{r}' returned for property 'return' of object '{o}' is not a function"),
+            )?;
+            return agent.reject_promise(promise, e);
+        }
+        // `return()`'s result awaited, the promise then fulfilled with
+        // undefined (or rejected as it is).
+        // Called with no argument, as the reference browser and Test262
+        // have it.
+        let wrapped = agent.call_value(ret, c.this, &[]).and_then(|r| {
+            let ctor = agent.realm().intrinsics.promise;
+            agent.promise_resolve(ctor, r)
+        });
+        let wrapped = match wrapped {
+            Ok(w) => w,
             Err(crate::interp::Abrupt::Throw) => {
                 let e = std::mem::replace(&mut agent.vm.exception, Value::UNDEFINED);
-                agent.reject_promise(promise, e)
+                return agent.reject_promise(promise, e);
             }
-            Err(e) => Err(e),
-        }
+            Err(e) => return Err(e),
+        };
+        agent.vm.temps.push(wrapped);
+        let unwrap = agent.undefined_thunk();
+        agent.vm.temps.pop();
+        let cap = super::promise::Capability {
+            promise,
+            resolve: Value::UNDEFINED,
+            reject: Value::UNDEFINED,
+        };
+        agent.perform_then(wrapped, unwrap?, Value::UNDEFINED, Some(cap));
+        Ok(())
     })();
     agent.vm.temps.pop();
     r.map(|()| promise)
