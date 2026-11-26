@@ -29,7 +29,9 @@ impl Agent {
     ) -> Res<crate::compiler::CompiledUnit> {
         // Its lone surrogates kept, in stand-ins the lexer writes back.
         let units = self.string_units(source).unwrap_or_default();
-        let (text, stand_ins) = crate::source_units::text_of(&units);
+        let Some((text, stand_ins)) = crate::source_units::text_of(&units) else {
+            return Err(self.throw_error(ErrorType::SyntaxError, crate::source_units::NO_WINDOW));
+        };
         let cx = crate::parser::EvalContext {
             stand_ins,
             ..cx.clone()

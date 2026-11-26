@@ -29,10 +29,11 @@ cases = [
     ('src/compiler/codegen/expr.rs', '                    body,\n                    self.sh.program.stand_ins,',
      '                    body,\n                    None,'),
     # eval's text keeps its lone surrogates.
-    ('src/interp/eval.rs', '        let (text, stand_ins) = crate::source_units::text_of(&units);',
-     '        let (text, stand_ins) = (String::from_utf16_lossy(&units), None);'),
+    ('src/interp/eval.rs',
+     '        let Some((text, stand_ins)) = crate::source_units::text_of(&units) else {',
+     '        let Some((text, stand_ins)) = Some((String::from_utf16_lossy(&units), None)) else {'),
     # The window is one the text leaves free; none without a lone surrogate.
-    (U, '        .find(|&b| !in_window(b));', '        .find(|&b| in_window(b) || b > 0);'),
+    (U, '        .find(|&b| !in_window(b))?;', '        .find(|&b| in_window(b) || b > 0)?;'),
     (U, '    if decoded.iter().all(Result::is_ok) {', '    if false {'),
 ]
 

@@ -75,6 +75,31 @@ out.join(' | ')"#
     );
 }
 
+/// J4.6a (the lead's check): a source with a lone surrogate and a
+/// character in each of the 32 stand-in windows is refused with a
+/// SyntaxError, never read with a real character in the surrogate's
+/// place; with one window left free, every character keeps its value.
+#[test]
+fn a_source_using_every_stand_in_window_is_a_syntax_error() {
+    assert_eq!(
+        run(r#"var d = String.fromCharCode(0xD800), out = [];
+function chars(n) { var s = ''; for (var i = 0; i < n; i++) s += String.fromCodePoint(0x100000 + i * 0x800 + 0x7FF); return s; }
+function tryit(f) { try { return f(); } catch (x) { return x.name + ': ' + x.message; } }
+out.push(tryit(function () { return eval("'" + chars(32) + d + "'").length; }));
+out.push(tryit(function () { return (0, eval)("'" + d + chars(32) + "'").length; }));
+out.push(tryit(function () { return Function("return '" + chars(32) + d + "'")().length; }));
+out.push(tryit(function () { return Function("a", "return a + '" + d + "'")(chars(32)).length; }));
+var s = eval("'" + chars(31) + d + "'");
+out.push(s.length + ',' + (s.slice(0, 62) === chars(31)) + ',' + s.charCodeAt(62).toString(16));
+out.push(eval("'" + chars(32) + "'") === chars(32));
+out.join(' | ')"#),
+        "SyntaxError: Lone surrogates in this source have no free stand-in window | \
+         SyntaxError: Lone surrogates in this source have no free stand-in window | \
+         SyntaxError: Lone surrogates in this source have no free stand-in window | \
+         65 | 63,true,d800 | true"
+    );
+}
+
 /// J4.6b (the J4.6 params probe, Chrome 158): a parameter of a list that
 /// is not simple is uninitialized until its own element is bound, read
 /// from its function or from a closure; an array pattern left by a

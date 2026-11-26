@@ -182,7 +182,12 @@ fn dynamic_function(
     units.extend("\n) {\n".encode_utf16());
     units.extend(body_units);
     units.extend("\n})".encode_utf16());
-    let (source, stand_ins) = crate::source_units::text_of(&units);
+    let Some((source, stand_ins)) = crate::source_units::text_of(&units) else {
+        return Err(agent.throw_error(
+            crate::interp::ErrorType::SyntaxError,
+            crate::source_units::NO_WINDOW,
+        ));
+    };
     let origin = crate::interp::Origin::Eval {
         caller: agent.caller_position(),
         caller_name: "<anonymous>".into(),
