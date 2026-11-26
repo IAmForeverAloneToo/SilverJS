@@ -554,6 +554,12 @@ impl Gen<'_, '_> {
                     // A return's value stays in the accumulator.
                     self.close_iterator(it, done, is_async);
                 }
+                Some(Control::Destructuring { it, done }) => {
+                    let (it, done) = (*it, *done);
+                    // IteratorClose with the return: what `return()`
+                    // throws, or a result that is no object, wins.
+                    self.close_iterator(it, done, false);
+                }
                 Some(Control::Breakable { .. }) | None => {}
             }
         }

@@ -87,6 +87,14 @@ pub(crate) enum BindingKind {
     Private,
 }
 
+impl Binding {
+    /// A parameter of a list that is not simple: uninitialized until its
+    /// own element is bound (its TDZ ends at `tdz_end`).
+    pub(crate) fn param_tdz(&self) -> bool {
+        self.kind == BindingKind::Param && self.tdz_end > 0
+    }
+}
+
 impl BindingKind {
     /// Starts uninitialized (a temporal dead zone).
     pub(crate) fn lexical(self) -> bool {
@@ -878,9 +886,27 @@ impl<'a> Walker<'a> {
             Body::Block(stmts) => self.push_stmts(stmts),
             Body::Expr(e) => self.work.push(Item::Expr(*e)),
         }
+        // A parameter list that is not simple binds its parameters in
+        // order, each uninitialized until its own element is (section
+        // 10.2.11, steps 20 to 26): its TDZ ends where the element does.
+        // (Wider than hasParameterExpressions, but a list without
+        // expressions cannot tell.)
+        let simple = f.rest.is_none()
+            && f.params
+                .iter()
+                .all(|p| p.default.is_none() && matches!(ast.pat(p.target).kind, Pat::Ident(_)));
+        let end_of = |p: PatId, d: Option<ExprId>| {
+            if simple {
+                return 0;
+            }
+            let end = ast.pat(p).span.end;
+            d.map_or(end, |d| end.max(ast.expr(d).span.end))
+        };
         if let Some(r) = f.rest {
-            self.work
-                .push(Item::Pat(r, Target::Declare(BindingKind::Param, 0, None)));
+            self.work.push(Item::Pat(
+                r,
+                Target::Declare(BindingKind::Param, end_of(r, None), None),
+            ));
         }
         for (i, p) in f.params.iter().enumerate().rev() {
             if let Some(d) = p.default {
@@ -889,7 +915,7 @@ impl<'a> Walker<'a> {
             let pos = u32::try_from(i).unwrap_or(u32::MAX);
             self.work.push(Item::Pat(
                 p.target,
-                Target::Declare(BindingKind::Param, 0, Some(pos)),
+                Target::Declare(BindingKind::Param, end_of(p.target, p.default), Some(pos)),
             ));
         }
     }
@@ -1177,6 +1203,7 @@ impl<'a> Walker<'a> {
             for bi in 0..self.a.scopes[si].bindings.len() {
                 let b = &self.a.scopes[si].bindings[bi];
                 let (bkind, captured, param) = (b.kind, b.captured, b.param);
+                let starts_uninit = bkind.lexical() || b.param_tdz();
                 let loc =
                     if sloppy_eval && matches!(bkind, BindingKind::Var | BindingKind::Function) {
                         Loc::Dynamic
@@ -1199,7 +1226,7 @@ impl<'a> Walker<'a> {
                             BindingKind::FuncSelf => 2,
                             _ => 0,
                         };
-                        slots.push((name, bkind.lexical(), constant));
+                        slots.push((name, starts_uninit, constant));
                         Loc::Slot(slot)
                     } else if let (BindingKind::Param, Some(p)) = (bkind, param) {
                         Loc::Register(p)

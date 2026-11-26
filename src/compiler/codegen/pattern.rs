@@ -5,7 +5,7 @@
 //! copies the rest.
 
 use super::expr::static_key;
-use super::{Gen, R, units, unsupported};
+use super::{Control, Gen, R, units, unsupported};
 use crate::ast::{Expr, MemberProp, Pat, PatElem, PatId, PatProp, PropKey, Span};
 use crate::compiler::Handler;
 use crate::compiler::bytecode::Op;
@@ -214,6 +214,7 @@ impl Gen<'_, '_> {
         self.reg_op(Op::Star, done);
         let context = self.handler_context();
         let start = self.pc();
+        self.control.push(Control::Destructuring { it, done });
         for el in elems {
             match el {
                 // An elision: a step, its value dropped.
@@ -249,6 +250,7 @@ impl Gen<'_, '_> {
             self.free(a);
             self.store_target(r, target, mode)?;
         }
+        self.control.pop();
         let end = self.pc();
         // Done with it before it was: closed.
         self.emit(Op::IteratorClose, &[i64::from(it), i64::from(done)]);

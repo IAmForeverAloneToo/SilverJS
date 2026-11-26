@@ -194,6 +194,10 @@ pub(super) enum Control {
         entry: Label,
         completions: Vec<Completion>,
     },
+    /// An array pattern's iterator (and its done register) while its
+    /// elements are bound: closed by a return that leaves it, a
+    /// generator's `return()` at a `yield` in a target or default.
+    Destructuring { it: u32, done: u32 },
 }
 
 pub(super) struct Gen<'s, 'a> {
@@ -445,8 +449,21 @@ impl<'s, 'a> Gen<'s, 'a> {
     /// Whether a read of a binding at `at` must check its TDZ.
     pub(super) fn needs_tdz(r: &Resolved, at: u32) -> bool {
         r.uninit_this
-            || (r.kind.is_some_and(BindingKind::lexical)
+            || ((r.kind.is_some_and(BindingKind::lexical) || Self::param_tdz(r))
                 && !(r.same_function && !r.in_switch && at >= r.tdz_end))
+    }
+
+    /// A parameter of a list that is not simple (uninitialized until its
+    /// own element is bound).
+    fn param_tdz(r: &Resolved) -> bool {
+        r.kind == Some(BindingKind::Param) && r.tdz_end > 0
+    }
+
+    /// A reference from the parameter's own function before its element
+    /// ends: it always runs before the parameter is initialized, whose
+    /// register still holds the argument, so it throws outright.
+    fn param_before_init(r: &Resolved, at: u32) -> bool {
+        Self::param_tdz(r) && r.same_function && at < r.tdz_end
     }
 
     /// Stores the accumulator into a binding of the current scope at its
@@ -688,7 +705,9 @@ impl<'s, 'a> Gen<'s, 'a> {
         let param_count = self.a.function(self.index).param_count;
         for b in &scope.bindings {
             match (b.kind, b.loc) {
-                (BindingKind::Param, Loc::Slot(k)) => {
+                // A captured parameter; one of a list that is not simple
+                // gets its argument when its own element is bound.
+                (BindingKind::Param, Loc::Slot(k)) if !b.param_tdz() => {
                     if let Some(p) = b.param {
                         self.reg_op(Op::Ldar, p);
                         self.emit(Op::StaSlot, &[0, i64::from(k)]);
@@ -743,9 +762,20 @@ impl<'s, 'a> Gen<'s, 'a> {
                 self.bind_pattern(p.target, pattern::Bind::Init)?;
                 continue;
             };
+            let r = self.resolve(&name.name);
+            // A captured parameter of a list that is not simple: its
+            // argument now (its slot held its TDZ until here).
+            if Self::param_tdz(&r)
+                && let Place::Slot { depth: 0, slot } = r.place
+            {
+                self.reg_op(Op::Ldar, u32::try_from(i).unwrap_or(u32::MAX));
+                self.emit(Op::StaSlot, &[0, i64::from(slot)]);
+            }
             if let Some(d) = p.default {
                 let skip = self.new_label();
-                self.load_name(&name.name, node.span, false)?;
+                // Read as at its element's end: initialized by now.
+                let at = Span::new(r.tdz_end.max(node.span.start), r.tdz_end.max(node.span.end));
+                self.load_name(&name.name, at, false)?;
                 self.jump(Op::JumpIfNotUndefined, skip);
                 let inferred = units(&name.name);
                 self.expr_named(d, Some(&inferred))?;
@@ -868,6 +898,9 @@ impl<'s, 'a> Gen<'s, 'a> {
         if Self::needs_tdz(r, span.start) {
             let n = self.name(name);
             self.pos(span);
+            if Self::param_before_init(r, span.start) {
+                self.op(Op::LdaUninitialized);
+            }
             self.emit(Op::CheckTdz, &[n]);
         }
     }
@@ -878,6 +911,12 @@ impl<'s, 'a> Gen<'s, 'a> {
         let r = self.resolve(name);
         let check = !init && Self::needs_tdz(&r, span.start);
         let n = self.name(name);
+        if !init && Self::param_before_init(&r, span.start) {
+            self.pos(span);
+            self.op(Op::LdaUninitialized);
+            self.emit(Op::CheckTdz, &[n]);
+            return Ok(());
+        }
         if check {
             self.pos(span);
             match r.place {

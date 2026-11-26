@@ -74,3 +74,86 @@ out.join(' | ')"#
         r#"d800 | 3,dc00 | d800 | d800 | d800 | true | dc00 | true | fffd,d800 | 10ffff | SyntaxError: Invalid or unexpected token"#
     );
 }
+
+/// J4.6b (the J4.6 params probe, Chrome 158): a parameter of a list that
+/// is not simple is uninitialized until its own element is bound, read
+/// from its function or from a closure; an array pattern left by a
+/// generator's `return()` at a `yield` in it closes its iterator, after
+/// which a `finally` runs.
+const PARAMS_PROBE: &str = r#"// SilverJS's J4.6b probe: default parameters' TDZ and the iterator
+// close of an array pattern left by a generator's return(). Each is
+// [label, function]; the page and SilverJS's shell run the same list.
+function err(f) { try { return 'no throw: ' + String(f()); } catch (e) { return e.constructor.name + ': ' + e.message; } }
+var cases = [
+  ['ref later', function () { return err(function () { function f(x = y, y) {} f(); }); }],
+  ['ref self', function () { return err(function () { function f(x = x) {} f(); }); }],
+  ['ref later given', function () { return err(function () { function f(x = y, y) { return x; } return f(1); }); }],
+  ['ref earlier', function () { return err(function () { function f(a, b = a) { return b; } return f(7); }); }],
+  ['closure called early', function () { return err(function () { function f(a = (function () { return b; })(), b) {} f(); }); }],
+  ['closure called late', function () { return err(function () { function f(a = function () { return b; }, b = 2) { return a(); } return f(); }); }],
+  ['assign later', function () { return err(function () { function f(a = (b = 3), b) {} f(); }); }],
+  ['pattern ref later', function () { return err(function () { function f({ p = q }, q) {} f({}); }); }],
+  ['rest after default', function () { return err(function () { function f(a = 1, ...r) { return a + r.length; } return f(undefined, 1, 2); }); }],
+  ['arrow ref later', function () { return err(function () { var f = (x = y, y) => 0; f(); }); }],
+  ['typeof later', function () { return err(function () { function f(x = typeof y, y) {} f(); }); }],
+  ['close on return', function () {
+    var log = [];
+    var it = { [Symbol.iterator]() { return this; }, next() { log.push('next'); return { done: false }; }, return() { log.push('return:' + arguments.length); return {}; } };
+    function* g() { var a; [a = yield] = it; log.push('after'); }
+    var gen = g(); gen.next(); var r = gen.return(5);
+    return log.join() + ' ' + JSON.stringify(r);
+  }],
+  ['close on return null', function () {
+    var it = { [Symbol.iterator]() { return this; }, next() { return { done: false }; }, return() { return null; } };
+    function* g() { [{}[yield]] = it; }
+    var gen = g(); gen.next();
+    return err(function () { return JSON.stringify(gen.return(5)); });
+  }],
+  ['close on return throws', function () {
+    var it = { [Symbol.iterator]() { return this; }, next() { return { done: false }; }, return() { throw new RangeError('r'); } };
+    function* g() { [...{}[yield]] = it; }
+    var gen = g(); gen.next();
+    return err(function () { return JSON.stringify(gen.return(5)); });
+  }],
+  ['done iterator not closed', function () {
+    var n = 0;
+    var it = { [Symbol.iterator]() { return this; }, next() { return { done: true }; }, return() { n++; return {}; } };
+    function* g() { var a, b; [a, b = yield] = it; }
+    var gen = g(); gen.next(); gen.return(1);
+    return n;
+  }],
+  ['finally then close', function () {
+    var log = [];
+    var it = { [Symbol.iterator]() { return this; }, next() { return { done: false }; }, return() { log.push('close'); return {}; } };
+    function* g() { try { [{}[yield]] = it; } finally { log.push('finally'); } }
+    var gen = g(); gen.next(); gen.return(1);
+    return log.join();
+  }]
+];
+function run() { return cases.map(function (c) { var r; try { r = c[1](); } catch (e) { r = 'threw ' + e; } return c[0] + ': ' + r; }); }
+run().join('\n')"#;
+
+#[test]
+fn parameters_and_patterns_read_as_the_reference_browser_gives_them() {
+    let want = [
+        r#"ref later: ReferenceError: Cannot access 'y' before initialization"#,
+        r#"ref self: ReferenceError: Cannot access 'x' before initialization"#,
+        r#"ref later given: no throw: 1"#,
+        r#"ref earlier: no throw: 7"#,
+        r#"closure called early: ReferenceError: Cannot access 'b' before initialization"#,
+        r#"closure called late: no throw: 2"#,
+        r#"assign later: ReferenceError: Cannot access 'b' before initialization"#,
+        r#"pattern ref later: ReferenceError: Cannot access 'q' before initialization"#,
+        r#"rest after default: no throw: 3"#,
+        r#"arrow ref later: ReferenceError: Cannot access 'y' before initialization"#,
+        r#"typeof later: ReferenceError: Cannot access 'y' before initialization"#,
+        r#"close on return: next,return:0 {"value":5,"done":true}"#,
+        r#"close on return null: TypeError: Iterator result null is not an object"#,
+        r#"close on return throws: RangeError: r"#,
+        r#"done iterator not closed: 0"#,
+        r#"finally then close: close,finally"#,
+    ];
+    let got = run(PARAMS_PROBE);
+    let got: Vec<&str> = got.split('\n').collect();
+    assert_eq!(got, want);
+}
