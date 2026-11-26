@@ -3,8 +3,6 @@
 # Test262 revision 2e58f87d8350ad51224617a041c6e041d52f8444.
 test/annexB/built-ins/Array/from/iterator-method-emulates-undefined.js throws
 test/annexB/built-ins/Object/is/emulates-undefined.js throws
-test/annexB/built-ins/RegExp/RegExp-leading-escape-BMP.js throws
-test/annexB/built-ins/RegExp/RegExp-trailing-escape-BMP.js throws
 test/annexB/built-ins/RegExp/legacy-accessors/index/prop-desc.js chrome-surface
 test/annexB/built-ins/RegExp/legacy-accessors/index/this-cross-realm-constructor.js chrome-surface
 test/annexB/built-ins/RegExp/legacy-accessors/index/this-not-regexp-constructor.js chrome-surface
@@ -5653,10 +5651,6 @@ test/language/import/import-attributes/text-javascript.js modules
 test/language/import/import-attributes/text-self.js modules
 test/language/import/import-attributes/text-string.js modules
 test/language/import/import-attributes/text-via-namespace.js modules
-test/language/literals/regexp/S7.8.5_A1.1_T2.js throws
-test/language/literals/regexp/S7.8.5_A1.4_T2.js throws
-test/language/literals/regexp/S7.8.5_A2.1_T2.js throws
-test/language/literals/regexp/S7.8.5_A2.4_T2.js throws
 test/language/module-code/ambiguous-export-bindings/error-export-from-named-as.js modules
 test/language/module-code/ambiguous-export-bindings/error-export-from-named.js modules
 test/language/module-code/ambiguous-export-bindings/error-import-named-as.js modules

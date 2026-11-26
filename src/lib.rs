@@ -34,6 +34,7 @@ mod number;
 mod object;
 pub mod parser;
 mod regexp;
+mod source_units;
 mod stack;
 mod string;
 mod table;

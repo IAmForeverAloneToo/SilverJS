@@ -321,12 +321,26 @@ pub struct Lexer<'s> {
     /// A module's source, where Annex B's HTML-like comments are not
     /// comments (section B.1.1).
     module: bool,
+    /// The window of the lone surrogates' stand-ins in a source made
+    /// from a JavaScript string (`source_units`).
+    stand_ins: Option<u32>,
 }
 
 impl<'s> Lexer<'s> {
     /// A lexer at the start of `source`, past its hashbang comment if it
     /// has one (section 12.5). `module` for a module's source.
     pub fn new(source: &'s str, module: bool) -> Result<Lexer<'s>, SyntaxError> {
+        Lexer::with_stand_ins(source, module, None)
+    }
+
+    /// A lexer as [`Lexer::new`] makes, whose string literals, templates
+    /// and identity escapes write `stand_ins`' code points back as the
+    /// lone surrogates they stand for.
+    pub(crate) fn with_stand_ins(
+        source: &'s str,
+        module: bool,
+        stand_ins: Option<u32>,
+    ) -> Result<Lexer<'s>, SyntaxError> {
         if source.len() > MAX_SOURCE_BYTES {
             return Err(SyntaxError::new("Source is too long", 0, 0));
         }
@@ -335,12 +349,18 @@ impl<'s> Lexer<'s> {
             bytes: source.as_bytes(),
             pos: 0,
             module,
+            stand_ins,
         };
         if source.starts_with("#!") {
             lexer.pos = 2;
             lexer.skip_line();
         }
         Ok(lexer)
+    }
+
+    /// The window of the source's stand-ins, if it has one.
+    pub(crate) fn stand_ins(&self) -> Option<u32> {
+        self.stand_ins
     }
 
     /// Where the lexer is: the byte after the last token read.
@@ -1115,7 +1135,7 @@ impl<'s> Lexer<'s> {
                 let c = self.char_at(self.pos).unwrap_or('\u{FFFD}');
                 self.pos += c.len_utf8();
                 if c != LS && c != PS {
-                    push_code_point(out, u32::from(c));
+                    crate::source_units::push_char(out, c, self.stand_ins);
                 }
             }
         }
@@ -1147,7 +1167,7 @@ impl<'s> Lexer<'s> {
                     // LS and PS may stand in a string (section 12.9.4).
                     let c = self.char_at(self.pos).unwrap_or('\u{FFFD}');
                     self.pos += c.len_utf8();
-                    push_code_point(&mut value, u32::from(c));
+                    crate::source_units::push_char(&mut value, c, self.stand_ins);
                 }
             }
         }
@@ -1202,7 +1222,7 @@ impl<'s> Lexer<'s> {
                 Some(_) => {
                     let c = self.char_at(self.pos).unwrap_or('\u{FFFD}');
                     self.pos += c.len_utf8();
-                    push_code_point(&mut cooked, u32::from(c));
+                    crate::source_units::push_char(&mut cooked, c, self.stand_ins);
                 }
             }
         };

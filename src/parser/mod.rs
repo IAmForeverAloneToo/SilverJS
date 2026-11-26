@@ -81,6 +81,9 @@ pub struct EvalContext {
     pub class_field: bool,
     /// The private names of the classes around it, without their `#`.
     pub privates: Vec<String>,
+    /// The window of the eval code's lone surrogates' stand-ins, when
+    /// its text has one (`source_units`).
+    pub stand_ins: Option<u32>,
 }
 
 /// Parses `source` as eval code (ECMA-262 section 19.2.1.1): a script,
@@ -92,7 +95,7 @@ pub fn parse_eval(
     cx: &EvalContext,
     stack_budget: usize,
 ) -> Result<Program, SyntaxError> {
-    let mut parser = Parser::new(source, Goal::Script)?;
+    let mut parser = Parser::with_stand_ins(source, Goal::Script, cx.stand_ins)?;
     parser.cx.strict = strict;
     parser.cx.new_target = cx.new_target;
     parser.cx.super_prop = cx.super_prop;
@@ -136,6 +139,19 @@ pub fn parse_eval(
 pub struct ParseStats {
     pub max_depth: u32,
     pub peak_stack: usize,
+}
+
+/// Parses source made from a JavaScript string, with the window of its
+/// lone surrogates' stand-ins (`source_units`).
+pub(crate) fn parse_text(
+    source: &str,
+    goal: Goal,
+    stack_budget: usize,
+    stand_ins: Option<u32>,
+) -> Result<Program, SyntaxError> {
+    let mut parser = Parser::with_stand_ins(source, goal, stand_ins)?;
+    parser.stack = StackGuard::new(stack_budget);
+    parser.program()
 }
 
 /// Parses as [`parse_with_stack`] does, and says what the parse used.
@@ -258,8 +274,16 @@ const UNEXPECTED_END: &str = "Unexpected end of input";
 
 impl<'s> Parser<'s> {
     pub(crate) fn new(source: &'s str, goal: Goal) -> Result<Parser<'s>, SyntaxError> {
+        Parser::with_stand_ins(source, goal, None)
+    }
+
+    pub(crate) fn with_stand_ins(
+        source: &'s str,
+        goal: Goal,
+        stand_ins: Option<u32>,
+    ) -> Result<Parser<'s>, SyntaxError> {
         let module = goal == Goal::Module;
-        let mut lexer = Lexer::new(source, module)?;
+        let mut lexer = Lexer::with_stand_ins(source, module, stand_ins)?;
         let tok = lexer.next_token()?;
         let cx = Context {
             strict: module,
@@ -308,6 +332,7 @@ impl<'s> Parser<'s> {
             module: self.module,
             strict: self.cx.strict,
             span: Span::new(start, self.prev_end.max(start)),
+            stand_ins: self.lexer.stand_ins(),
         })
     }
 

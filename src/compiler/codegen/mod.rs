@@ -113,6 +113,7 @@ pub(super) fn generate_with_stats(
             globals,
             source: source.into(),
             eval: a.scopes.first().is_some_and(|s| s.kind == ScopeKind::Eval),
+            stand_ins: program.stand_ins,
         },
         peak,
     ))

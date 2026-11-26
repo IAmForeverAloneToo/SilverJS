@@ -27,8 +27,14 @@ impl Agent {
         strict: bool,
         cx: &crate::parser::EvalContext,
     ) -> Res<crate::compiler::CompiledUnit> {
-        let text = String::from_utf16_lossy(&self.string_units(source).unwrap_or_default());
-        match crate::compiler::compile_eval(&text, strict, cx) {
+        // Its lone surrogates kept, in stand-ins the lexer writes back.
+        let units = self.string_units(source).unwrap_or_default();
+        let (text, stand_ins) = crate::source_units::text_of(&units);
+        let cx = crate::parser::EvalContext {
+            stand_ins,
+            ..cx.clone()
+        };
+        match crate::compiler::compile_eval(&text, strict, &cx) {
             Ok(u) => Ok(u),
             Err(CompileError::Syntax(e)) => {
                 Err(self.throw_error(ErrorType::SyntaxError, e.message))
@@ -310,6 +316,7 @@ impl Agent {
                 .is_some_and(|h| h.as_object().is_some()),
             class_field: self.slot_named(frame.context, "%field").is_some(),
             privates: self.private_names_around(frame.context),
+            stand_ins: None,
         };
         let unit = self.compile_eval_code(source, strict, &cx)?;
         let sloppy = unit.functions.first().is_some_and(|f| !f.strict);

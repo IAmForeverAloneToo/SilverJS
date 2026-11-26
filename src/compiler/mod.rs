@@ -203,6 +203,9 @@ pub struct CompiledUnit {
     pub source: Box<str>,
     /// Eval code ([`compile_eval`]).
     pub eval: bool,
+    /// The window of the source's lone surrogates' stand-ins, when it was
+    /// made from a JavaScript string that has some (`source_units`).
+    pub stand_ins: Option<u32>,
 }
 
 /// Parses and compiles `source` within [`DEFAULT_STACK_BUDGET`] of the
@@ -224,6 +227,16 @@ pub fn compile_eval(
     let program = crate::parser::parse_eval(source, strict, cx, DEFAULT_STACK_BUDGET)?;
     let analysis = scope::analyze_eval(&program);
     codegen::generate(&program, &analysis, source, DEFAULT_STACK_BUDGET)
+}
+
+/// Compiles a script made from a JavaScript string (`Function`'s), its
+/// lone surrogates kept through `stand_ins` (`source_units`).
+pub(crate) fn compile_text(
+    source: &str,
+    stand_ins: Option<u32>,
+) -> Result<CompiledUnit, CompileError> {
+    let program = crate::parser::parse_text(source, Goal::Script, DEFAULT_STACK_BUDGET, stand_ins)?;
+    compile_program(&program, source, DEFAULT_STACK_BUDGET)
 }
 
 /// Parses with `stack_budget`, then compiles with the same budget, from

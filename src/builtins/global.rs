@@ -1119,7 +1119,23 @@ impl Agent {
         source: &str,
         origin: crate::interp::Origin,
     ) -> Res<Value> {
-        let unit = match crate::compiler::compile(source, crate::parser::Goal::Script) {
+        self.eval_script_text(source, None, origin)
+    }
+
+    /// Runs `source` as [`Agent::eval_script`] does, made from a
+    /// JavaScript string whose lone surrogates stand in `stand_ins`
+    /// (`source_units`).
+    pub(crate) fn eval_script_text(
+        &mut self,
+        source: &str,
+        stand_ins: Option<u32>,
+        origin: crate::interp::Origin,
+    ) -> Res<Value> {
+        let compiled = match stand_ins {
+            None => crate::compiler::compile(source, crate::parser::Goal::Script),
+            Some(_) => crate::compiler::compile_text(source, stand_ins),
+        };
+        let unit = match compiled {
             Ok(u) => u,
             Err(crate::compiler::CompileError::Syntax(e)) => {
                 return Err(self.throw_error(ErrorType::SyntaxError, e.message));

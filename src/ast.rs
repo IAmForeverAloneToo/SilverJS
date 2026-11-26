@@ -177,6 +177,9 @@ pub struct Program {
     /// A module, or a script whose directive prologue says "use strict".
     pub strict: bool,
     pub span: Span,
+    /// The window of the lone surrogates' stand-ins of a source made
+    /// from a JavaScript string (`source_units`), for the code generator.
+    pub stand_ins: Option<u32>,
 }
 
 /// A template's literal piece.

@@ -116,7 +116,10 @@ impl Gen<'_, '_> {
                 self.emit(Op::LdaConst, &[c]);
             }
             Expr::RegExp { body, flags } => {
-                let b = self.name(body);
+                let b = self.string(&crate::source_units::units_of(
+                    body,
+                    self.sh.program.stand_ins,
+                ));
                 let f = self.name(flags);
                 self.pos(span);
                 self.emit(Op::CreateRegExp, &[b, f]);
@@ -1226,7 +1229,10 @@ impl Gen<'_, '_> {
         self.reg_op(Op::Star, f);
         let c = self.constant(Constant::Template {
             cooked: quasis.iter().map(|q| q.cooked.clone()).collect(),
-            raw: quasis.iter().map(|q| units(&q.raw)).collect(),
+            raw: quasis
+                .iter()
+                .map(|q| crate::source_units::units_of(&q.raw, self.sh.program.stand_ins).into())
+                .collect(),
         });
         let n = u32::try_from(exprs.len() + 1).unwrap_or(u32::MAX);
         let first = self.alloc_n(n);

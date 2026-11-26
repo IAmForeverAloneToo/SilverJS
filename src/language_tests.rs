@@ -46,3 +46,31 @@ fn a_sloppy_blocks_function_is_also_a_var() {
         "undefined,function,inner,undefined,function,undefined/function,number,sw,number"
     );
 }
+
+/// J4.6: a lone surrogate in source made from a JavaScript string (`eval`,
+/// `Function`) stays one in a string literal, a template (cooked and
+/// raw), a regexp literal and `toString`'s text, beside a real U+FFFD or
+/// a sixteenth-plane character; as an identifier it is refused (the J4.6
+/// probe, Chrome 158).
+#[test]
+fn lone_surrogates_survive_eval_and_function() {
+    assert_eq!(
+        run(
+            r#"var d = String.fromCharCode(0xD800), e = String.fromCharCode(0xDC00), r = String.fromCharCode(0xFFFD);
+var out = [];
+out.push(eval("'" + d + "'").charCodeAt(0).toString(16));
+out.push((0, eval)("'a" + e + "b'").length + ',' + (0, eval)("'a" + e + "b'").charCodeAt(1).toString(16));
+out.push(eval("`" + d + "`").charCodeAt(0).toString(16));
+out.push(eval("String.raw`" + d + "`").charCodeAt(0).toString(16));
+out.push(eval("/" + d + "/").source.charCodeAt(0).toString(16));
+out.push(eval("/" + d + "/").test(d));
+out.push(Function("return '" + e + "'")().charCodeAt(0).toString(16));
+out.push(Function("return '" + e + "'").toString().indexOf(e) >= 0);
+out.push(eval("'" + r + d + "'").charCodeAt(0).toString(16) + ',' + eval("'" + r + d + "'").charCodeAt(1).toString(16));
+out.push(eval("'" + String.fromCodePoint(0x10FFFF) + d + "'").codePointAt(0).toString(16));
+try { eval("var " + d + " = 1"); out.push('no error'); } catch (x) { out.push(x.name + ": " + x.message); }
+out.join(' | ')"#
+        ),
+        r#"d800 | 3,dc00 | d800 | d800 | d800 | true | dc00 | true | fffd,d800 | 10ffff | SyntaxError: Invalid or unexpected token"#
+    );
+}

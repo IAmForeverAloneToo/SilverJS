@@ -134,18 +134,24 @@ fn dynamic_function(
     keyword: &str,
     default_proto: fn(&crate::interp::Realm) -> Value,
 ) -> Res<Value> {
-    let mut params = Vec::new();
+    // The parts as UTF-16, kept whole for the source; as text (lone
+    // surrogates U+FFFD) for the checks that each part is one function.
+    let mut param_units: Vec<u16> = Vec::new();
     for i in 0..c.argc.saturating_sub(1) {
         let v = agent.arg(c, i);
-        params.push(String::from_utf16_lossy(&agent.text_units(v)?));
+        if i > 0 {
+            param_units.push(u16::from(b','));
+        }
+        param_units.extend(agent.text_units(v)?);
     }
-    let body = if c.argc == 0 {
-        String::new()
+    let body_units = if c.argc == 0 {
+        Vec::new()
     } else {
         let v = agent.arg(c, c.argc - 1);
-        String::from_utf16_lossy(&agent.text_units(v)?)
+        agent.text_units(v)?
     };
-    let params = params.join(",");
+    let params = String::from_utf16_lossy(&param_units);
+    let body = String::from_utf16_lossy(&body_units);
     let syntax = |agent: &mut Agent| {
         agent.throw_error(
             crate::interp::ErrorType::SyntaxError,
@@ -171,13 +177,18 @@ fn dynamic_function(
             }
         }
     }
-    let source = format!("({keyword} anonymous({params}\n) {{\n{body}\n}})");
+    let mut units: Vec<u16> = format!("({keyword} anonymous(").encode_utf16().collect();
+    units.extend(param_units);
+    units.extend("\n) {\n".encode_utf16());
+    units.extend(body_units);
+    units.extend("\n})".encode_utf16());
+    let (source, stand_ins) = crate::source_units::text_of(&units);
     let origin = crate::interp::Origin::Eval {
         caller: agent.caller_position(),
         caller_name: "<anonymous>".into(),
         function: true,
     };
-    let f = agent.eval_script(&source, origin)?;
+    let f = agent.eval_script_text(&source, stand_ins, origin)?;
     if !c.new_target.is_undefined()
         && c.new_target != c.callee
         && let Some(o) = f.as_object()
@@ -308,7 +319,17 @@ fn to_string(agent: &mut Agent, c: Call) -> Res<Value> {
             agent.type_error("Function.prototype.toString requires that 'this' be a Function")
         );
     };
-    agent.new_string(&text)
+    // A function of source made from a JavaScript string gives its lone
+    // surrogates back.
+    let stand_ins = match agent.callable(c.this) {
+        Some(Callable::Code { unit, .. }) => agent
+            .vm
+            .units
+            .get(unit as usize)
+            .and_then(|u| u.code.stand_ins),
+        _ => None,
+    };
+    agent.new_string_units(&crate::source_units::units_of(&text, stand_ins))
 }
 
 fn has_instance(agent: &mut Agent, c: Call) -> Res<Value> {
