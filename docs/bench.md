@@ -81,3 +81,14 @@ Silver Browser switches from QuickJS-ng: lexing, parsing and code
 generation at or below 1.0 of QuickJS-ng's compile on each file, with
 9351ac9f (601 ms against 348, the widest gap) as the reference file.
 No work on it before then.
+
+## Eval setup cost (2026-11-26)
+
+Test262's S7.8.5_A1.1_T2 runs a direct `eval` of a one-character
+regexp literal for each of about 65,500 code units. Its loop, run whole
+on both engines in seven alternating rounds (the micro-benches' harness
+and build): SilverJS 1,348 ms, QuickJS-ng 261 ms, 5.18 (spread 4.66 to
+5.29), about 20.6 microseconds an eval against 4.0. A speed-phase item
+(the lead's, 2026-11-26), with no work on it before then. The regexp
+is one character, so the cost is most likely a direct eval's setup
+(its source, its context, its compiled unit); not yet profiled.

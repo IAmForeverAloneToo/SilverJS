@@ -1038,7 +1038,15 @@ impl Gen<'_, '_> {
                 self.emit(Op::SetKeyed, &[i64::from(o), i64::from(kr), ic]);
                 self.free(kr);
             }
-            crate::ast::MemberProp::Private(i) => return Err(unsupported("private names", i.span)),
+            crate::ast::MemberProp::Private(i) => {
+                self.load_name(&format!("#{}", i.name), i.span, false)?;
+                let kr = self.alloc();
+                self.reg_op(Op::Star, kr);
+                self.reg_op(Op::Ldar, v);
+                self.pos(node.span);
+                self.emit(Op::SetPrivate, &[i64::from(o), i64::from(kr)]);
+                self.free(kr);
+            }
         }
         self.free(o);
         self.free(v);

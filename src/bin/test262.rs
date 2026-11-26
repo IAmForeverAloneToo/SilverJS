@@ -76,6 +76,11 @@ const NOT_APPLICABLE: &[&str] = &[
     // each new major version these are probed again.
     "iterator-chunking",
     "await-dictionary",
+    // Chrome 158 doesn't ship it: a private name is added to an object
+    // that is not extensible (sealed, frozen, an array, a proxy of
+    // one) without a TypeError (the J4.6 private probe, and these
+    // tests run there with their harness).
+    "nonextensible-applies-to-private",
 ];
 
 /// Features the reference browser does not implement, though ECMA-262
@@ -231,6 +236,25 @@ const CHROME_CHOICES: &[&str] = &[
 /// How long one test may take before it is reported as a failure
 /// ("timeout") and left behind: a parser that loops must not hang the run.
 const TIME_LIMIT: Duration = Duration::from_secs(10);
+
+/// Tests that take [`LONG_TIME_LIMIT`] instead, each with its reason
+/// (the lead, 2026-11-26): ones near the limit by the work they do,
+/// which a loaded host can push past it.
+const LONG_LIMIT: &[(&str, &str)] = &[(
+    "test/language/literals/regexp/S7.8.5_A1.1_T2.js",
+    "65k evals; host load",
+)];
+
+const LONG_TIME_LIMIT: Duration = Duration::from_secs(30);
+
+/// Test `test`'s time limit.
+fn time_limit(test: &str) -> Duration {
+    if LONG_LIMIT.iter().any(|(t, _)| *t == test) {
+        LONG_TIME_LIMIT
+    } else {
+        TIME_LIMIT
+    }
+}
 
 /// A stack for the parsing threads: the parser bounds its own nesting,
 /// and debug builds use large frames.
@@ -481,10 +505,16 @@ fn install_host<'s>(
 }
 
 /// Runs a test in one mode: a fresh agent, the harness, then the test.
-fn run_mode(root: &Path, fm: &FrontMatter, source: &str, strict: bool) -> Result<(), String> {
+fn run_mode(
+    root: &Path,
+    fm: &FrontMatter,
+    source: &str,
+    strict: bool,
+    limit: Duration,
+) -> Result<(), String> {
     let has = |flag: &str| fm.flags.iter().any(|f| f == flag);
     let mut agent = Agent::new(AgentOptions::default());
-    let deadline = Instant::now() + TIME_LIMIT;
+    let deadline = Instant::now() + limit;
     agent.set_interrupt(Some(Box::new(move || Instant::now() > deadline)));
     let printed = Rc::new(RefCell::new(Vec::new()));
     let negative = fm.negative_phase.as_deref();
@@ -558,7 +588,7 @@ fn run_mode(root: &Path, fm: &FrontMatter, source: &str, strict: bool) -> Result
 }
 
 /// Runs a test, in each mode its flags ask for.
-fn run_exec(root: &Path, source: &str) -> (Outcome, Option<String>) {
+fn run_exec(root: &Path, source: &str, limit: Duration) -> (Outcome, Option<String>) {
     let fm = front_matter(source);
     if fm
         .features
@@ -579,7 +609,7 @@ fn run_exec(root: &Path, source: &str) -> (Outcome, Option<String>) {
         modes.push(true);
     }
     for strict in modes {
-        if let Err(e) = run_mode(root, &fm, source, strict) {
+        if let Err(e) = run_mode(root, &fm, source, strict, limit) {
             let mode = if strict { "strict" } else { "sloppy" };
             return (Outcome::Fail, Some(format!("{mode}: {e}")));
         }
@@ -665,7 +695,8 @@ fn run_all(root: &Path, tests: Vec<String>, threads: usize, execute: bool) -> Ve
             for (i, began) in running.iter().flatten() {
                 // A run's own interrupt hook stops script at the limit; a
                 // worker past twice it is stuck in Rust.
-                if began.elapsed() > TIME_LIMIT * 2 && !timed_out.contains(i) {
+                let limit = shared.tests.get(*i).map_or(TIME_LIMIT, |t| time_limit(t));
+                if began.elapsed() > limit * 2 && !timed_out.contains(i) {
                     timed_out.push(*i);
                     replacements += 1;
                     if let Some(test) = shared.tests.get(*i) {
@@ -722,7 +753,7 @@ fn work(shared: &Shared, worker: usize) {
             *slot = Some((i, Instant::now()));
         }
         let (outcome, detail) = match std::fs::read_to_string(shared.root.join(test)) {
-            Ok(source) if shared.execute => run_exec(&shared.root, &source),
+            Ok(source) if shared.execute => run_exec(&shared.root, &source, time_limit(test)),
             Ok(source) => run_test(&source),
             Err(e) => (Outcome::Fail, Some(format!("unreadable: {e}"))),
         };

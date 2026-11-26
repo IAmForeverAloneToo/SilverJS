@@ -499,3 +499,120 @@ fn references_read_as_the_reference_browser_gives_them() {
     let got: Vec<&str> = got.split('\n').collect();
     assert_eq!(got, want);
 }
+
+/// J4.6d (the J4.6 private probe, Chrome 158): assignments to private
+/// names, compound, logical, destructuring and for-in/of targets, and
+/// private names added to an object that is not extensible, which the
+/// reference browser allows.
+const PRIVATE_PROBE: &str = r#"// SilverJS's J4.6d probe: assignments to private names (compound,
+// logical, destructuring and for-in/of targets) and private names added
+// to non-extensible objects. Each is [label, function]; the page and
+// SilverJS's shell run the same list.
+function err(f) { try { return 'no throw: ' + String(f()); } catch (e) { return e.constructor.name + ': ' + e.message; } }
+class Acc {
+  #log = [];
+  get #f() { this.#log.push('get'); return 1; }
+  set #f(v) { this.#log.push('set:' + v); return 'setter result'; }
+  compound() { return this.#f += 2; }
+  mult() { return this.#f *= 5; }
+  and() { return this.#f &&= 7; }
+  or() { return this.#f ||= 7; }
+  nullish() { return this.#f ??= 7; }
+  simple() { return this.#f = 9; }
+  inc() { return this.#f++; }
+  pre() { return ++this.#f; }
+  log() { var l = this.#log.join(); this.#log = []; return l; }
+}
+class Field {
+  #x = 1;
+  static obj(o) { return o.#x; }
+  destructure(o) { [this.#x] = o; return this.#x; }
+  destructureObj(o) { ({ a: this.#x } = o); return this.#x; }
+  forOf(list) { for (this.#x of list); return this.#x; }
+  forIn(o) { for (this.#x in o); return this.#x; }
+  static destructureOther(o) { [o.#x] = [2]; }
+  static forOfOther(o) { for (o.#x of [1]); }
+  static forInOther(o) { for (o.#x in { k: 1 }); }
+  static compoundOther(o) { return o.#x += 1; }
+}
+class Base { constructor(o) { return o; } }
+class AddField extends Base { #y = 1; static has(o) { return #y in o; } }
+class AddMethod extends Base { #m() {} static has(o) { return #m in o; } }
+class AddAccessor extends Base { get #a() { return 1; } static has(o) { return #a in o; } }
+class AddStatic extends Base { static #s = 1; }
+var cases = [
+  ['accessor compound', function () { var a = new Acc(); return a.compound() + ' ' + a.log(); }],
+  ['accessor mult', function () { var a = new Acc(); return a.mult() + ' ' + a.log(); }],
+  ['accessor and', function () { var a = new Acc(); return a.and() + ' ' + a.log(); }],
+  ['accessor or', function () { var a = new Acc(); return a.or() + ' ' + a.log(); }],
+  ['accessor nullish', function () { var a = new Acc(); return a.nullish() + ' ' + a.log(); }],
+  ['accessor simple', function () { var a = new Acc(); return a.simple() + ' ' + a.log(); }],
+  ['accessor postfix', function () { var a = new Acc(); return a.inc() + ' ' + a.log(); }],
+  ['accessor prefix', function () { var a = new Acc(); return a.pre() + ' ' + a.log(); }],
+  ['destructure array', function () { return new Field().destructure([5]); }],
+  ['destructure object', function () { return new Field().destructureObj({ a: 6 }); }],
+  ['for of', function () { return new Field().forOf([1, 2, 3]); }],
+  ['for in', function () { return new Field().forIn({ p: 1, q: 2 }); }],
+  ['destructure other', function () { return err(function () { Field.destructureOther({}); }); }],
+  ['for of other', function () { return err(function () { Field.forOfOther({}); }); }],
+  ['for in other', function () { return err(function () { Field.forInOther({}); }); }],
+  ['compound other', function () { return err(function () { return Field.compoundOther({}); }); }],
+  ['this before super in pattern', function () {
+    var log = [];
+    class C extends class {} {
+      #field;
+      constructor() {
+        var init = () => super();
+        var object = { get a() { log.push('getter'); init(); } };
+        ({ a: this.#field } = object);
+      }
+    }
+    return err(function () { new C(); }) + ' [' + log + ']';
+  }],
+  ['field on non-extensible', function () { return err(function () { var o = Object.preventExtensions({}); new AddField(o); return AddField.has(o); }); }],
+  ['field on sealed', function () { return err(function () { var o = Object.seal({}); new AddField(o); return AddField.has(o); }); }],
+  ['field on frozen', function () { return err(function () { var o = Object.freeze({}); new AddField(o); return AddField.has(o); }); }],
+  ['method on non-extensible', function () { return err(function () { var o = Object.preventExtensions({}); new AddMethod(o); return AddMethod.has(o); }); }],
+  ['accessor on non-extensible', function () { return err(function () { var o = Object.preventExtensions({}); new AddAccessor(o); return AddAccessor.has(o); }); }],
+  ['field on non-extensible array', function () { return err(function () { var o = Object.preventExtensions([]); new AddField(o); return AddField.has(o); }); }],
+  ['field on non-extensible function', function () { return err(function () { var o = Object.preventExtensions(function () {}); new AddField(o); return AddField.has(o); }); }],
+  ['field on proxy of non-extensible', function () { return err(function () { var o = new Proxy(Object.preventExtensions({}), {}); new AddField(o); return AddField.has(o); }); }],
+  ['field twice', function () { return err(function () { var o = {}; new AddField(o); new AddField(o); }); }]
+];
+function run() { return cases.map(function (c) { var r; try { r = c[1](); } catch (e) { r = 'threw ' + e; } return c[0] + ': ' + r; }); }
+run().join('\n')"#;
+
+#[test]
+fn private_names_read_as_the_reference_browser_gives_them() {
+    let want = [
+        r#"accessor compound: 3 get,set:3"#,
+        r#"accessor mult: 5 get,set:5"#,
+        r#"accessor and: 7 get,set:7"#,
+        r#"accessor or: 1 get"#,
+        r#"accessor nullish: 1 get"#,
+        r#"accessor simple: 9 set:9"#,
+        r#"accessor postfix: 1 get,set:2"#,
+        r#"accessor prefix: 2 get,set:2"#,
+        r#"destructure array: 5"#,
+        r#"destructure object: 6"#,
+        r#"for of: 3"#,
+        r#"for in: q"#,
+        r#"destructure other: TypeError: Cannot write private member #x to an object whose class did not declare it"#,
+        r#"for of other: TypeError: Cannot write private member #x to an object whose class did not declare it"#,
+        r#"for in other: TypeError: Cannot write private member #x to an object whose class did not declare it"#,
+        r#"compound other: TypeError: Cannot read private member #x from an object whose class did not declare it"#,
+        r#"this before super in pattern: ReferenceError: Must call super constructor in derived class before accessing 'this' or returning from derived constructor []"#,
+        r#"field on non-extensible: no throw: true"#,
+        r#"field on sealed: no throw: true"#,
+        r#"field on frozen: no throw: true"#,
+        r#"method on non-extensible: no throw: true"#,
+        r#"accessor on non-extensible: no throw: true"#,
+        r#"field on non-extensible array: no throw: true"#,
+        r#"field on non-extensible function: no throw: true"#,
+        r#"field on proxy of non-extensible: no throw: true"#,
+        r#"field twice: TypeError: Cannot initialize #y twice on the same object"#,
+    ];
+    let got = run(PRIVATE_PROBE);
+    let got: Vec<&str> = got.split('\n').collect();
+    assert_eq!(got, want);
+}

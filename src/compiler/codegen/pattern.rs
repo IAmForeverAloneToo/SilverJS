@@ -34,6 +34,11 @@ enum Target {
         object: u32,
         key: u32,
     },
+    /// `object.#x`, the private name in `name`.
+    Private {
+        object: u32,
+        name: u32,
+    },
 }
 
 impl Gen<'_, '_> {
@@ -81,7 +86,12 @@ impl Gen<'_, '_> {
                 self.reg_op(Op::Star, key);
                 Ok(Target::Keyed { object: o, key })
             }
-            MemberProp::Private(i) => Err(unsupported("private names", i.span)),
+            MemberProp::Private(i) => {
+                self.load_name(&format!("#{}", i.name), i.span, false)?;
+                let name = self.alloc();
+                self.reg_op(Op::Star, name);
+                Ok(Target::Private { object: o, name })
+            }
         }
     }
 
@@ -102,6 +112,13 @@ impl Gen<'_, '_> {
                 self.pos(span);
                 self.emit(Op::SetKeyed, &[i64::from(object), i64::from(key), ic]);
                 self.free(key);
+                self.free(object);
+                Ok(())
+            }
+            Target::Private { object, name } => {
+                self.pos(span);
+                self.emit(Op::SetPrivate, &[i64::from(object), i64::from(name)]);
+                self.free(name);
                 self.free(object);
                 Ok(())
             }

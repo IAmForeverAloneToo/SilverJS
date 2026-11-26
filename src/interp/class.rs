@@ -701,6 +701,9 @@ impl Agent {
                 let (o, n) = (r.u(), r.u());
                 let (obj, name, v) = (self.reg(base, o), self.reg(base, n), self.vm.acc);
                 self.set_private(obj, name, v)?;
+                // A setter's call left its own value: the assignment's is
+                // the value assigned.
+                self.vm.acc = v;
             }
             Op::HasPrivate => {
                 let n = r.u();
