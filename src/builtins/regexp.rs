@@ -26,12 +26,36 @@ pub(crate) struct Cache {
     index: HashMap<(Vec<u16>, u8), u32>,
 }
 
-/// `RegExp`.
-pub(crate) const REGEXP: &[Entry] = &[entry(
-    Name::Sym(Wk::Species),
-    What::Getter(species),
-    CONFIGURABLE,
-)];
+/// `RegExp`, in the reference browser's order: Annex B's legacy statics
+/// (each an accessor of its own, a no-op setter but `input`'s), `escape`
+/// and `@@species`.
+pub(crate) const REGEXP: &[Entry] = &[
+    legacy("input", legacy_input, set_legacy_input),
+    legacy("$_", legacy_input, set_legacy_input),
+    legacy("lastMatch", legacy_last_match, set_legacy_none),
+    legacy("$&", legacy_last_match, set_legacy_none),
+    legacy("lastParen", legacy_last_paren, set_legacy_none),
+    legacy("$+", legacy_last_paren, set_legacy_none),
+    legacy("leftContext", legacy_left, set_legacy_none),
+    legacy("$`", legacy_left, set_legacy_none),
+    legacy("rightContext", legacy_right, set_legacy_none),
+    legacy("$'", legacy_right, set_legacy_none),
+    legacy("$1", legacy_1, set_legacy_none),
+    legacy("$2", legacy_2, set_legacy_none),
+    legacy("$3", legacy_3, set_legacy_none),
+    legacy("$4", legacy_4, set_legacy_none),
+    legacy("$5", legacy_5, set_legacy_none),
+    legacy("$6", legacy_6, set_legacy_none),
+    legacy("$7", legacy_7, set_legacy_none),
+    legacy("$8", legacy_8, set_legacy_none),
+    legacy("$9", legacy_9, set_legacy_none),
+    method("escape", 1, escape),
+    entry(Name::Sym(Wk::Species), What::Getter(species), CONFIGURABLE),
+];
+
+const fn legacy(name: &'static str, get: super::Native, set: super::Native) -> Entry {
+    entry(Name::Str(name), What::Accessor(get, set), CONFIGURABLE)
+}
 
 /// `RegExp.prototype`, in the reference browser's order.
 pub(crate) const REGEXP_PROTO: &[Entry] = &[
@@ -47,8 +71,9 @@ pub(crate) const REGEXP_PROTO: &[Entry] = &[
     getter("sticky", sticky),
     getter("unicode", unicode),
     getter("unicodeSets", unicode_sets),
-    method("test", 1, test),
+    method("compile", 2, compile_method),
     method("toString", 0, to_string),
+    method("test", 1, test),
     entry(Name::Sym(Wk::Match), What::Method(1, symbol_match), HIDDEN),
     entry(
         Name::Sym(Wk::MatchAll),
@@ -384,6 +409,7 @@ impl Agent {
         if global || sticky {
             self.set_last_index(r, m_end as f64)?;
         }
+        self.record_last_match(s, &caps);
         self.match_array(&program, &text, s, &caps, m_start, has_indices)
     }
 
@@ -612,6 +638,245 @@ pub(crate) fn construct(agent: &mut Agent, c: Call) -> Res<Value> {
     })();
     agent.vm.temps.truncate(base);
     r
+}
+
+/// What a legacy static's getter reads of the last match.
+#[derive(Clone, Copy)]
+enum Legacy {
+    Group(usize),
+    LastMatch,
+    LastParen,
+    Left,
+    Right,
+}
+
+// The legacy statics holder's internal slots: the input, the string of
+// the last successful match, then each capture's start and end (-1 when
+// it took no part), the whole match's first.
+const L_INPUT: usize = 0;
+const L_SUBJECT: usize = 1;
+const L_SPANS: usize = 2;
+
+impl Agent {
+    /// Records a successful builtin exec on `s` in the running realm's
+    /// legacy statics: every regexp's, a subclass's or another realm's
+    /// object's alike, as the reference browser does (the J4.5c probe).
+    fn record_last_match(&mut self, s: Value, caps: &[i64]) {
+        let Some(o) = self.realm().intrinsics.regexp_statics.as_object() else {
+            return;
+        };
+        // Through the heap, which counts the slots' bytes as they grow.
+        self.heap.with_internal_slots(o, |slots| {
+            slots.clear();
+            slots.extend([s, s]);
+            slots.extend(
+                caps.iter()
+                    .map(|&c| Value::int(i32::try_from(c).unwrap_or(-1))),
+            );
+        });
+    }
+
+    fn legacy_slots(&self) -> Vec<Value> {
+        self.realm()
+            .intrinsics
+            .regexp_statics
+            .as_object()
+            .and_then(|o| self.heap.objects.get(o))
+            .map(|c| c.internal().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// A legacy static's value: a part of the last match's string; the
+    /// empty string before any match, past the last group or for a group
+    /// that took no part.
+    fn legacy_value(&mut self, which: Legacy) -> Res<Value> {
+        let slots = self.legacy_slots();
+        let text = slots
+            .get(L_SUBJECT)
+            .and_then(|&s| self.string_units(s))
+            .unwrap_or_default();
+        let spans: Vec<i32> = slots
+            .get(L_SPANS..)
+            .unwrap_or(&[])
+            .iter()
+            .map(|v| v.as_int().unwrap_or(-1))
+            .collect();
+        let span = |g: usize| -> Option<(usize, usize)> {
+            let (s, e) = (*spans.get(g * 2)?, *spans.get(g * 2 + 1)?);
+            (s >= 0 && e >= s).then_some((s as usize, e as usize))
+        };
+        let groups = (spans.len() / 2).saturating_sub(1);
+        let part = match which {
+            Legacy::Group(n) if n <= groups => span(n),
+            Legacy::Group(_) => None,
+            Legacy::LastMatch => span(0),
+            // The highest-numbered group, whether or not it took part.
+            Legacy::LastParen if groups > 0 => span(groups),
+            Legacy::LastParen => None,
+            Legacy::Left => span(0).map(|(s, _)| (0, s)),
+            Legacy::Right => span(0).map(|(_, e)| (e, text.len())),
+        };
+        let units = part.and_then(|(s, e)| text.get(s..e)).unwrap_or(&[]);
+        self.new_string_units(units)
+    }
+}
+
+// The legacy statics' getters and setters (Annex B, as the reference
+// browser has them: no check of the receiver).
+fn legacy_input(agent: &mut Agent, _: Call) -> Res<Value> {
+    match agent.legacy_slots().get(L_INPUT) {
+        Some(&v) => Ok(v),
+        None => agent.new_string_units(&[]),
+    }
+}
+
+/// `RegExp.input = v`: the input becomes ToString(v) until the next match.
+fn set_legacy_input(agent: &mut Agent, c: Call) -> Res<Value> {
+    let v = agent.arg(c, 0);
+    let units = agent.text_units(v)?;
+    let s = agent.new_string_units(&units)?;
+    if let Some(o) = agent.realm().intrinsics.regexp_statics.as_object() {
+        agent
+            .heap
+            .with_internal_slots(o, |slots| match slots.get_mut(L_INPUT) {
+                Some(slot) => *slot = s,
+                None => slots.push(s),
+            });
+    }
+    Ok(Value::UNDEFINED)
+}
+
+/// The setter of every legacy static but `input`: it does nothing.
+fn set_legacy_none(_: &mut Agent, _: Call) -> Res<Value> {
+    Ok(Value::UNDEFINED)
+}
+
+fn legacy_last_match(agent: &mut Agent, _: Call) -> Res<Value> {
+    agent.legacy_value(Legacy::LastMatch)
+}
+
+fn legacy_last_paren(agent: &mut Agent, _: Call) -> Res<Value> {
+    agent.legacy_value(Legacy::LastParen)
+}
+
+fn legacy_left(agent: &mut Agent, _: Call) -> Res<Value> {
+    agent.legacy_value(Legacy::Left)
+}
+
+fn legacy_right(agent: &mut Agent, _: Call) -> Res<Value> {
+    agent.legacy_value(Legacy::Right)
+}
+
+macro_rules! legacy_groups {
+    ($($name:ident = $n:literal),*) => {
+        $(fn $name(agent: &mut Agent, _: Call) -> Res<Value> {
+            agent.legacy_value(Legacy::Group($n))
+        })*
+    };
+}
+
+legacy_groups!(
+    legacy_1 = 1,
+    legacy_2 = 2,
+    legacy_3 = 3,
+    legacy_4 = 4,
+    legacy_5 = 5,
+    legacy_6 = 6,
+    legacy_7 = 7,
+    legacy_8 = 8,
+    legacy_9 = 9
+);
+
+/// `RegExp.prototype.compile` (Annex B): `this` made anew from a pattern
+/// and flags, its `lastIndex` then set to 0. As in the reference browser,
+/// a subclass's or another realm's regexp may be compiled.
+fn compile_method(agent: &mut Agent, c: Call) -> Res<Value> {
+    let o = c.this;
+    if !agent.is_regexp_object(o) {
+        return Err(agent.incompatible("RegExp.prototype.compile", o));
+    }
+    let (pattern, flags) = (agent.arg(c, 0), agent.arg(c, 1));
+    let base = agent.vm.temps.len();
+    let r = (|| {
+        let (p, f) = if agent.is_regexp_object(pattern) {
+            if !flags.is_undefined() {
+                return Err(agent
+                    .type_error("Cannot supply flags when constructing one RegExp from another"));
+            }
+            let bits = agent.regexp_bits(pattern);
+            let letters: Vec<u16> = LETTERS
+                .iter()
+                .filter(|(_, b)| bits & b != 0)
+                .map(|(l, _)| *l)
+                .collect();
+            let f = agent.new_string_units(&letters)?;
+            (agent.rslot(pattern, S_SOURCE), f)
+        } else {
+            (pattern, flags)
+        };
+        agent.vm.temps.extend([p, f]);
+        agent.regexp_initialize(o, p, f)
+    })();
+    agent.vm.temps.truncate(base);
+    r
+}
+
+/// `RegExp.escape` (section 22.2.5.1): a string's every character that
+/// could mean something in a pattern escaped, hexadecimal in lower case
+/// as the reference browser writes it.
+fn escape(agent: &mut Agent, c: Call) -> Res<Value> {
+    let Some(units) = agent.string_units(agent.arg(c, 0)) else {
+        return Err(agent.type_error("input argument must be a string"));
+    };
+    let mut out: Vec<u16> = Vec::with_capacity(units.len());
+    let push = |out: &mut Vec<u16>, s: String| out.extend(s.encode_utf16());
+    let mut i = 0;
+    while let Some(&u) = units.get(i) {
+        let pair = units
+            .get(i + 1)
+            .filter(|&&t| (0xD800..0xDC00).contains(&u) && (0xDC00..0xE000).contains(&t));
+        let (cp, n) = match pair {
+            Some(&t) => (
+                0x10000 + ((u32::from(u) - 0xD800) << 10) + (u32::from(t) - 0xDC00),
+                2,
+            ),
+            None => (u32::from(u), 1),
+        };
+        let ch = char::from_u32(cp);
+        let ascii = |s: &str| ch.is_some_and(|c| c.is_ascii() && s.contains(c));
+        let control = match cp {
+            0x09 => Some('t'),
+            0x0A => Some('n'),
+            0x0B => Some('v'),
+            0x0C => Some('f'),
+            0x0D => Some('r'),
+            _ => None,
+        };
+        if i == 0 && ch.is_some_and(|c| c.is_ascii_alphanumeric()) {
+            push(&mut out, format!("\\x{cp:02x}"));
+        } else if ascii("^$\\.*+?()[]{}|/") {
+            out.push(u16::from(b'\\'));
+            out.push(u);
+        } else if let Some(e) = control {
+            push(&mut out, format!("\\{e}"));
+        } else if ascii(",-=<>#&!%:;@~'`\"")
+            || ch.is_none_or(|c| {
+                crate::unicode::is_white_space(c) || crate::unicode::is_line_terminator(c)
+            })
+        {
+            if cp <= 0xFF {
+                push(&mut out, format!("\\x{cp:02x}"));
+            } else {
+                for &cu in units.get(i..i + n).unwrap_or(&[]) {
+                    push(&mut out, format!("\\u{cu:04x}"));
+                }
+            }
+        } else {
+            out.extend_from_slice(units.get(i..i + n).unwrap_or(&[]));
+        }
+        i += n;
+    }
+    agent.new_string_units(&out)
 }
 
 fn species(_: &mut Agent, c: Call) -> Res<Value> {

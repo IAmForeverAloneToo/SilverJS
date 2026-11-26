@@ -161,6 +161,9 @@ pub(crate) struct Intrinsics {
     pub regexp: Value,
     pub regexp_prototype: Value,
     pub regexp_string_iterator_prototype: Value,
+    /// Annex B's legacy statics (`RegExp.$1` and the rest): an object
+    /// whose internal slots hold the last match (see `regexp.rs`).
+    pub regexp_statics: Value,
 }
 
 impl Intrinsics {
@@ -239,6 +242,7 @@ impl Intrinsics {
         regexp: Value::UNDEFINED,
         regexp_prototype: Value::UNDEFINED,
         regexp_string_iterator_prototype: Value::UNDEFINED,
+        regexp_statics: Value::UNDEFINED,
     };
 
     /// The typed array constructor of `elem`.
@@ -330,6 +334,7 @@ impl Intrinsics {
             self.regexp,
             self.regexp_prototype,
             self.regexp_string_iterator_prototype,
+            self.regexp_statics,
         ]);
         out.extend_from_slice(&self.typed);
         out.extend_from_slice(&self.typed_prototypes);
@@ -827,6 +832,8 @@ impl Agent {
         let ip = self.realm().intrinsics.iterator_prototype;
         let rsip = self.alloc_object(ObjectCell::new(ip, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.regexp_string_iterator_prototype = rsip);
+        let statics = self.alloc_object(ObjectCell::new(Value::NULL, ObjectKind::Ordinary))?;
+        self.set_intrinsics(|i| i.regexp_statics = statics);
         let json = self.alloc_object(ObjectCell::new(op, ObjectKind::Ordinary))?;
         self.set_intrinsics(|i| i.json = json);
         let ip = self.realm().intrinsics.iterator_prototype;

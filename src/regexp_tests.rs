@@ -342,3 +342,117 @@ fn property_escapes_and_sets_read_as_the_reference_browser_gives_them() {
     let got: Vec<&str> = got.split('\n').collect();
     assert_eq!(got, want);
 }
+
+/// The J4.5c probe (Chrome 158): Annex B's legacy statics of RegExp, `compile`
+/// and `RegExp.escape`, with another realm's RegExp for the cases that
+/// cross realms.
+const LEGACY_PROBE: &str = r#"// SilverJS's J4.5c probe cases: Annex B's legacy static properties of
+// RegExp, RegExp.prototype.compile and RegExp.escape. Each is [label,
+// source of an expression]; the page and SilverJS's shell run the same
+// list, in order (the statics carry state from case to case). `other`
+// is a RegExp of another realm, or null where there is none.
+var NAMES = ['$1', '$2', '$3', '$4', '$5', '$6', '$7', '$8', '$9', 'input', '$_', 'lastMatch', '$&',
+  'lastParen', '$+', 'leftContext', '$`', 'rightContext', "$'"];
+function desc(n) {
+  var d = Object.getOwnPropertyDescriptor(RegExp, n);
+  if (!d) return n + ' none';
+  return n + ' ' + ('value' in d ? 'value' : 'get=' + typeof d.get + ' set=' + typeof d.set) +
+    (d.enumerable ? ' e' : '') + (d.configurable ? ' c' : '') + (d.writable ? ' w' : '') +
+    (d.get ? ' ' + d.get.name + '/' + d.get.length : '') + (d.set ? ' ' + d.set.name + '/' + d.set.length : '');
+}
+function all() { return NAMES.map(function (n) { return n + '=' + JSON.stringify(RegExp[n]); }).join(' '); }
+function err(f) { try { return 'no throw: ' + JSON.stringify(f()); } catch (e) { return e.constructor.name + ': ' + e.message; } }
+var cases = [
+  ['keys', "Reflect.ownKeys(RegExp).map(String).join(' ')"],
+  ['descriptors', "NAMES.map(desc).join(' | ')"],
+  ['accessor source', "['$&', '$1'].map(function (k) { var d = Object.getOwnPropertyDescriptor(RegExp, k); return String(d.get) + ' ' + String(d.set); }).join(' | ')"],
+  ['same getter',"Object.getOwnPropertyDescriptor(RegExp, 'input').get === Object.getOwnPropertyDescriptor(RegExp, '$_').get"],
+  ['before any match', "all()"],
+  ['after exec', "(/(a)(b)?(c)/.exec('xyacz!'), all())"],
+  ['failed match keeps', "(/q/.exec('abc'), all())"],
+  ['test and replace', "('k1m2'.replace(/(\\d)/g, '#'), all())"],
+  ['set input', "(RegExp.input = 'set', RegExp.$_ = 'again', all())"],
+  ['set input to number', "(RegExp.input = 5, typeof RegExp.input)"],
+  ['set $1', "(RegExp.$1 = 'z', RegExp.lastMatch = 'w', RegExp.$1 + ' ' + RegExp.lastMatch)"],
+  ['strict set $1', "(function () { 'use strict'; return err(function () { RegExp.$1 = 'z'; return RegExp.$1; }); })()"],
+  ['10 groups', "(/(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)/.exec('abcdefghij'), RegExp.$9 + ' ' + RegExp.$10 + ' ' + RegExp.lastParen)"],
+  ['sticky and lastIndex', "(function () { var r = /b/y; r.lastIndex = 1; r.exec('abc'); return all(); })()"],
+  ['subclass receiver', "(function () { class My extends RegExp {} return err(function () { return My.$1; }) + ' ; ' + err(function () { return My.input; }) + ' ; ' + err(function () { My.input = 'x'; return 1; }); })()"],
+  ['other receiver', "err(function () { return Reflect.get(RegExp, '$1', {}); }) + ' ; ' + err(function () { return Reflect.get(RegExp, 'lastMatch', function () {}); })"],
+  ['getter on undefined', "err(function () { return Object.getOwnPropertyDescriptor(RegExp, 'lastMatch').get.call(undefined); })"],
+  ['subclass exec', "(function () { class My extends RegExp {} new My('(s)').exec('xs'); return err(function () { return RegExp.$1; }) + ' ; ' + err(function () { return RegExp.lastMatch; }); })()"],
+  ['after subclass, plain exec', "(/(p)/.exec('p'), err(function () { return RegExp.$1; }))"],
+  ['cross-realm receiver', "other ? err(function () { return Reflect.get(RegExp, '$1', other); }) : 'no realm'"],
+  ['cross-realm exec', "other ? (new other('(r)').exec('r'), /(t)/.exec('t'), err(function () { return RegExp.$1; }) + ' ; ' + err(function () { return other.$1; })) : 'no realm'"],
+  ['compile descriptor', "desc.call(null, 'x') && (function () { var d = Object.getOwnPropertyDescriptor(RegExp.prototype, 'compile'); return typeof d.value + ' ' + d.writable + d.enumerable + d.configurable + ' ' + d.value.name + '/' + d.value.length; })()"],
+  ['compile basics', "(function () { var r = /a/g; r.lastIndex = 3; var s = r.compile('b+', 'im'); return [s === r, r.source, r.flags, r.lastIndex, r.test('BB')].join(); })()"],
+  ['compile from regexp', "(function () { var r = /a/; var q = /x(y)/gi; r.compile(q); return [r.source, r.flags, r.compile() === r, r.source, r.flags].join(); })()"],
+  ['compile errors', "[err(function () { /a/.compile(/b/, 'g'); }), err(function () { /a/.compile('(', ''); }), err(function () { /a/.compile('a', 'gg'); }), err(function () { RegExp.prototype.compile.call({}, 'a'); }), err(function () { RegExp.prototype.compile.call(1, 'a'); })].join(' ; ')"],
+  ['compile subclass instance', "(function () { class My extends RegExp {} var m = new My('a'); return err(function () { return m.compile('b').source; }); })()"],
+  ['compile cross-realm instance', "other ? err(function () { return RegExp.prototype.compile.call(new other('a'), 'b').source; }) : 'no realm'"],
+  ['compile frozen lastIndex', "(function () { var r = /a/; Object.defineProperty(r, 'lastIndex', { writable: false }); return err(function () { r.compile('b'); }) + ' ' + r.source; })()"],
+  ['compile flags order', "(function () { var r = /a/; r.compile('a', 'dgimsuy'); return r.flags; })()"],
+  ['escape basics', "['abc', '1abc', '_a', 'a_b', ' a', 'z9'].map(function (s) { return JSON.stringify(RegExp.escape(s)); }).join(' ')"],
+  ['escape syntax', "JSON.stringify(RegExp.escape('^$\\\\.*+?()[]{}|/'))"],
+  ['escape punctuators', "JSON.stringify(RegExp.escape(',-=<>#&!%:;@~\\'`\"'))"],
+  ['escape spaces', "JSON.stringify(RegExp.escape('\\t\\n\\v\\f\\r \\u00A0\\u2028\\u2029\\uFEFF\\u3000'))"],
+  ['escape surrogates', "JSON.stringify(RegExp.escape('\\uD800a\\uDC00\\uD83D\\uDE00'))"],
+  ['escape other', "JSON.stringify(RegExp.escape('\\u00E9\\u0000\\u0007'))"],
+  ['escape errors', "[err(function () { return RegExp.escape(1); }), err(function () { return RegExp.escape(); }), err(function () { return new RegExp.escape('a'); })].join(' ; ')"],
+  ['escape descriptor', "(function () { var d = Object.getOwnPropertyDescriptor(RegExp, 'escape'); return typeof d.value + ' ' + d.writable + d.enumerable + d.configurable + ' ' + d.value.name + '/' + d.value.length; })()"]
+];
+function run(otherRealm) {
+  other = otherRealm;
+  return cases.map(function (c) {
+    try { return c[0] + ': ' + String(new Function('return ' + c[1])()); }
+    catch (e) { return c[0] + ': ' + e.constructor.name + ': ' + e.message; }
+  });
+}
+var other = null;
+run(createRealm().RegExp).join('\n')"#;
+
+#[test]
+fn legacy_statics_compile_and_escape_read_as_the_reference_browser_gives_them() {
+    let want = [
+        "keys: length name prototype input $_ lastMatch $& lastParen $+ leftContext $` rightContext $' $1 $2 $3 $4 $5 $6 $7 $8 $9 escape Symbol(Symbol.species)",
+        "descriptors: $1 get=function set=function c get $1/0 set $1/1 | $2 get=function set=function c get $2/0 set $2/1 | $3 get=function set=function c get $3/0 set $3/1 | $4 get=function set=function c get $4/0 set $4/1 | $5 get=function set=function c get $5/0 set $5/1 | $6 get=function set=function c get $6/0 set $6/1 | $7 get=function set=function c get $7/0 set $7/1 | $8 get=function set=function c get $8/0 set $8/1 | $9 get=function set=function c get $9/0 set $9/1 | input get=function set=function c get input/0 set input/1 | $_ get=function set=function c get $_/0 set $_/1 | lastMatch get=function set=function c get lastMatch/0 set lastMatch/1 | $& get=function set=function c get $&/0 set $&/1 | lastParen get=function set=function c get lastParen/0 set lastParen/1 | $+ get=function set=function c get $+/0 set $+/1 | leftContext get=function set=function c get leftContext/0 set leftContext/1 | $` get=function set=function c get $`/0 set $`/1 | rightContext get=function set=function c get rightContext/0 set rightContext/1 | $' get=function set=function c get $'/0 set $'/1",
+        "accessor source: function get $&() { [native code] } function set $&() { [native code] } | function get $1() { [native code] } function set $1() { [native code] }",
+        "same getter: false",
+        "before any match: $1=\"\" $2=\"\" $3=\"\" $4=\"\" $5=\"\" $6=\"\" $7=\"\" $8=\"\" $9=\"\" input=\"\" $_=\"\" lastMatch=\"\" $&=\"\" lastParen=\"\" $+=\"\" leftContext=\"\" $`=\"\" rightContext=\"\" $'=\"\"",
+        "after exec: $1=\"a\" $2=\"\" $3=\"c\" $4=\"\" $5=\"\" $6=\"\" $7=\"\" $8=\"\" $9=\"\" input=\"xyacz!\" $_=\"xyacz!\" lastMatch=\"ac\" $&=\"ac\" lastParen=\"c\" $+=\"c\" leftContext=\"xy\" $`=\"xy\" rightContext=\"z!\" $'=\"z!\"",
+        "failed match keeps: $1=\"a\" $2=\"\" $3=\"c\" $4=\"\" $5=\"\" $6=\"\" $7=\"\" $8=\"\" $9=\"\" input=\"xyacz!\" $_=\"xyacz!\" lastMatch=\"ac\" $&=\"ac\" lastParen=\"c\" $+=\"c\" leftContext=\"xy\" $`=\"xy\" rightContext=\"z!\" $'=\"z!\"",
+        "test and replace: $1=\"2\" $2=\"\" $3=\"\" $4=\"\" $5=\"\" $6=\"\" $7=\"\" $8=\"\" $9=\"\" input=\"k1m2\" $_=\"k1m2\" lastMatch=\"2\" $&=\"2\" lastParen=\"2\" $+=\"2\" leftContext=\"k1m\" $`=\"k1m\" rightContext=\"\" $'=\"\"",
+        "set input: $1=\"2\" $2=\"\" $3=\"\" $4=\"\" $5=\"\" $6=\"\" $7=\"\" $8=\"\" $9=\"\" input=\"again\" $_=\"again\" lastMatch=\"2\" $&=\"2\" lastParen=\"2\" $+=\"2\" leftContext=\"k1m\" $`=\"k1m\" rightContext=\"\" $'=\"\"",
+        "set input to number: string",
+        "set $1: 2 2",
+        "strict set $1: no throw: \"2\"",
+        "10 groups: i undefined j",
+        "sticky and lastIndex: $1=\"\" $2=\"\" $3=\"\" $4=\"\" $5=\"\" $6=\"\" $7=\"\" $8=\"\" $9=\"\" input=\"abc\" $_=\"abc\" lastMatch=\"b\" $&=\"b\" lastParen=\"\" $+=\"\" leftContext=\"a\" $`=\"a\" rightContext=\"c\" $'=\"c\"",
+        "subclass receiver: no throw: \"\" ; no throw: \"abc\" ; no throw: 1",
+        "other receiver: no throw: \"\" ; no throw: \"b\"",
+        "getter on undefined: no throw: \"b\"",
+        "subclass exec: no throw: \"s\" ; no throw: \"s\"",
+        "after subclass, plain exec: no throw: \"p\"",
+        "cross-realm receiver: no throw: \"p\"",
+        "cross-realm exec: no throw: \"t\" ; no throw: \"r\"",
+        "compile descriptor: function truefalsetrue compile/2",
+        "compile basics: true,b+,im,0,true",
+        "compile from regexp: x(y),gi,true,(?:),",
+        "compile errors: TypeError: Cannot supply flags when constructing one RegExp from another ; SyntaxError: Invalid regular expression: /(/: Unterminated group ; SyntaxError: Invalid flags supplied to RegExp constructor 'gg' ; TypeError: Method RegExp.prototype.compile called on incompatible receiver #<Object> ; TypeError: Method RegExp.prototype.compile called on incompatible receiver 1",
+        "compile subclass instance: no throw: \"b\"",
+        "compile cross-realm instance: no throw: \"b\"",
+        "compile frozen lastIndex: TypeError: Cannot assign to read only property 'lastIndex' of object '[object RegExp]' b",
+        "compile flags order: dgimsuy",
+        "escape basics: \"\\\\x61bc\" \"\\\\x31abc\" \"_a\" \"\\\\x61_b\" \"\\\\x20a\" \"\\\\x7a9\"",
+        "escape syntax: \"\\\\^\\\\$\\\\\\\\\\\\.\\\\*\\\\+\\\\?\\\\(\\\\)\\\\[\\\\]\\\\{\\\\}\\\\|\\\\/\"",
+        "escape punctuators: \"\\\\x2c\\\\x2d\\\\x3d\\\\x3c\\\\x3e\\\\x23\\\\x26\\\\x21\\\\x25\\\\x3a\\\\x3b\\\\x40\\\\x7e\\\\x27\\\\x60\\\\x22\"",
+        "escape spaces: \"\\\\t\\\\n\\\\v\\\\f\\\\r\\\\x20\\\\xa0\\\\u2028\\\\u2029\\\\ufeff\\\\u3000\"",
+        "escape surrogates: \"\\\\ud800a\\\\udc00\u{1f600}\"",
+        "escape other: \"\u{e9}\\u0000\\u0007\"",
+        "escape errors: TypeError: input argument must be a string ; TypeError: input argument must be a string ; TypeError: RegExp.escape is not a constructor",
+        "escape descriptor: function truefalsetrue escape/1",
+    ];
+    let got = crate::realm_tests::run(LEGACY_PROBE);
+    let got: Vec<&str> = got.split('\n').collect();
+    assert_eq!(got, want);
+}

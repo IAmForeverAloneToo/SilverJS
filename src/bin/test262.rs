@@ -90,7 +90,12 @@ const NOT_RUN: &[&str] = &["tail-call-optimization", "error-stack-accessor"];
 /// `caller` and `arguments` accessors on `Function.prototype`, not
 /// `%ThrowTypeError%`; a `DataView`'s `byteLength` and `byteOffset`
 /// throwing once it is detached or out of bounds, where these tests
-/// want 0.
+/// want 0; RegExp's legacy statics with a setter each and no check of
+/// their receiver, and `compile` on a subclass's or another realm's
+/// regexp, where these tests (the legacy-features proposal) want a
+/// TypeError or no setter; and the statics' accessors' source text
+/// (`function get $&() { [native code] }`), which NativeFunction's
+/// grammar refuses.
 const CHROME_CHOICES: &[&str] = &[
     "test/built-ins/Function/prototype/arguments/prop-desc.js",
     "test/built-ins/Function/prototype/caller-arguments/accessor-properties.js",
@@ -102,6 +107,32 @@ const CHROME_CHOICES: &[&str] = &[
     "test/built-ins/DataView/prototype/byteOffset/detached-buffer.js",
     "test/built-ins/DataView/prototype/byteOffset/resizable-array-buffer-auto.js",
     "test/built-ins/DataView/prototype/byteOffset/resizable-array-buffer-fixed.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/index/prop-desc.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/index/this-cross-realm-constructor.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/index/this-not-regexp-constructor.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/index/this-subclass-constructor.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/input/this-cross-realm-constructor.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/input/this-not-regexp-constructor.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/input/this-subclass-constructor.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/lastMatch/prop-desc.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/lastMatch/this-cross-realm-constructor.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/lastMatch/this-not-regexp-constructor.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/lastMatch/this-subclass-constructor.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/lastParen/prop-desc.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/lastParen/this-cross-realm-constructor.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/lastParen/this-not-regexp-constructor.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/lastParen/this-subclass-constructor.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/leftContext/prop-desc.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/leftContext/this-cross-realm-constructor.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/leftContext/this-not-regexp-constructor.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/leftContext/this-subclass-constructor.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/rightContext/prop-desc.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/rightContext/this-cross-realm-constructor.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/rightContext/this-not-regexp-constructor.js",
+    "test/annexB/built-ins/RegExp/legacy-accessors/rightContext/this-subclass-constructor.js",
+    "test/annexB/built-ins/RegExp/prototype/compile/this-cross-realm-instance.js",
+    "test/annexB/built-ins/RegExp/prototype/compile/this-subclass-instance.js",
+    "test/built-ins/Function/prototype/toString/built-in-function-object.js",
 ];
 
 /// How long one test may take before it is reported as a failure

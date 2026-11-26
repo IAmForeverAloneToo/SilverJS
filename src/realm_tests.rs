@@ -25,7 +25,7 @@ fn install<'s>(scope: &mut Scope<'s>) -> JsResult<'s, ()> {
 
 /// What a script came to, `createRealm` given: its value's ToString, or
 /// `throw ...`.
-fn run(src: &str) -> String {
+pub(crate) fn run(src: &str) -> String {
     let mut agent = Agent::new(AgentOptions::default());
     agent.scope(|scope| {
         if install(scope).is_err() {
