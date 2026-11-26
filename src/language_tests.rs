@@ -182,3 +182,320 @@ fn parameters_and_patterns_read_as_the_reference_browser_gives_them() {
     let got: Vec<&str> = got.split('\n').collect();
     assert_eq!(got, want);
 }
+
+/// J4.6c (the J4.6 refs probe, Chrome 158): the order in which an
+/// assignment, a compound assignment and an update evaluate their
+/// reference, in and out of a `with` scope, as the reference browser
+/// does it rather than as the specification says.
+const REFS_PROBE: &str = r#"// SilverJS's J4.6c probe: the order of a reference's evaluation in an
+// assignment, a compound assignment and an update, in and out of a
+// `with` scope. Each is [label, function]; the page and SilverJS's shell
+// run the same list. Sloppy script code, as `with` needs.
+function err(f) { try { return 'no throw: ' + String(f()); } catch (e) { return e.constructor.name + ': ' + e.message; } }
+function show(v) { return v === undefined ? 'undefined' : JSON.stringify(v); }
+var cases = [
+  ['with getter deletes, compound', function () {
+    var x = 0;
+    var scope = { get x() { delete this.x; return 2; } };
+    with (scope) { x *= 3; }
+    return show(scope.x) + ' ' + x;
+  }],
+  ['with delete in rhs, simple', function () {
+    var x = 0;
+    var scope = { x: 1 };
+    with (scope) { x = (delete scope.x, 2); }
+    return show(scope.x) + ' ' + x;
+  }],
+  ['with delete in rhs, compound', function () {
+    var x = 0;
+    var scope = { x: 1 };
+    with (scope) { x += (delete scope.x, 2); }
+    return show(scope.x) + ' ' + x;
+  }],
+  ['with delete in rhs, strict function', function () {
+    var scope = { x: 1 };
+    var r;
+    with (scope) { r = err(function () { 'use strict'; x = (delete scope.x, 2); }); }
+    return r + ' ' + show(scope.x);
+  }],
+  ['eval var in rhs, compound', function () {
+    var x = 3;
+    var inner = (function () { x *= (eval('var x = 2;'), 4); return x; })();
+    return inner + ' ' + x;
+  }],
+  ['eval var in rhs, simple', function () {
+    var x = 3;
+    var inner = (function () { x = (eval('var x = 2;'), 4); return x; })();
+    return inner + ' ' + x;
+  }],
+  ['eval var in rhs, update', function () {
+    var log = [];
+    var x = 3;
+    var inner = (function () { x += (eval('var x = 2;'), 1); log.push(x); x++; return x; })();
+    return inner + ' ' + x + ' ' + log;
+  }],
+  ['null base key throws first', function () {
+    var base = null;
+    return err(function () { base[(function () { throw new RangeError('key'); })()] *= (function () { throw new Error('rhs'); })(); });
+  }],
+  ['null base key not converted', function () {
+    var base = null;
+    var log = [];
+    var r = err(function () { base[{ toString: function () { log.push('key'); return 'p'; } }] *= (function () { log.push('rhs'); return 1; })(); });
+    return r + ' [' + log + ']';
+  }],
+  ['null base simple assignment', function () {
+    var base = null;
+    var log = [];
+    var r = err(function () { base[{ toString: function () { log.push('key'); return 'p'; } }] = (function () { log.push('rhs'); return 1; })(); });
+    return r + ' [' + log + ']';
+  }],
+  ['key converted once, compound', function () {
+    var n = 0;
+    var base = { p: 2 };
+    base[{ toString: function () { n++; return 'p'; } }] += 3;
+    return n + ' ' + base.p;
+  }],
+  ['key converted once, update', function () {
+    var n = 0;
+    var base = { p: 2 };
+    base[{ toString: function () { n++; return 'p'; } }]++;
+    return n + ' ' + base.p;
+  }],
+  ['key converted once, logical', function () {
+    var n = 0;
+    var base = { p: 0 };
+    base[{ toString: function () { n++; return 'p'; } }] ||= 3;
+    return n + ' ' + base.p;
+  }],
+  ['key order against rhs, simple', function () {
+    var log = [];
+    var base = {};
+    base[{ toString: function () { log.push('key'); return 'p'; } }] = (log.push('rhs'), 1);
+    return log.join();
+  }],
+  ['key order against rhs, compound', function () {
+    var log = [];
+    var base = { p: 1 };
+    base[{ toString: function () { log.push('key'); return 'p'; } }] += (log.push('rhs'), 1);
+    return log.join();
+  }],
+  ['unscopables once, update', function () {
+    var n = 0, flag = true, a, b;
+    with (a = { x: 7 }) {
+      with (b = { x: 4, get [Symbol.unscopables]() { n++; return { x: flag = !flag }; } }) { x++; }
+    }
+    return n + ' ' + a.x + ' ' + b.x;
+  }],
+  ['unscopables once, compound', function () {
+    var n = 0, flag = true, a, b;
+    with (a = { x: 7 }) {
+      with (b = { x: 4, get [Symbol.unscopables]() { n++; return { x: flag = !flag }; } }) { x += 1; }
+    }
+    return n + ' ' + a.x + ' ' + b.x;
+  }],
+  ['unscopables getter deletes, strict set', function () {
+    var n = 0;
+    var env = { binding: 0, get [Symbol.unscopables]() { n++; delete env.binding; return null; } };
+    var r;
+    with (env) { r = err(function () { 'use strict'; binding = 123; }); }
+    return r + ' ' + n + ' ' + show(Object.getOwnPropertyDescriptor(env, 'binding'));
+  }],
+  ['unscopables getter deletes, sloppy set', function () {
+    var n = 0;
+    var env = { binding: 0, get [Symbol.unscopables]() { n++; delete env.binding; return null; } };
+    with (env) { binding = 123; }
+    return n + ' ' + show(env.binding);
+  }],
+  ['unscopables getter deletes, get', function () {
+    var n = 0;
+    var env = { binding: 5, get [Symbol.unscopables]() { n++; delete env.binding; return null; } };
+    var r;
+    with (env) { r = err(function () { return binding; }); }
+    return r + ' ' + n;
+  }],
+  ['unscopables getter throws', function () {
+    var env = { x: 1, get [Symbol.unscopables]() { throw new RangeError('u'); } };
+    with (env) { return err(function () { return x; }); }
+  }],
+  ['with call this', function () {
+    var o = { f: function () { return this === o; } };
+    with (o) { return f() + ' ' + (0, f)(); }
+  }],
+  ['with call this, nested function', function () {
+    var o = { f: function () { return this === o; } };
+    with (o) { return (function () { return f(); })(); }
+  }],
+  ['with getter receiver', function () {
+    var o = { get g() { return this === o; } };
+    with (o) { return g; }
+  }],
+  ['unscopables blocks', function () {
+    var x = 'outer';
+    var o = { x: 'inner', [Symbol.unscopables]: { x: true } };
+    with (o) { return x; }
+  }],
+  ['unscopables not an object', function () {
+    var x = 'outer';
+    var o = { x: 'inner', [Symbol.unscopables]: true };
+    with (o) { return x; }
+  }],
+  ['unscopables from prototype', function () {
+    var keys = 'outer';
+    with ([]) { return keys; }
+  }],
+  ['unscopables truthy value', function () {
+    var x = 'outer';
+    var o = { x: 'inner', [Symbol.unscopables]: { x: 'yes' } };
+    with (o) { x = 'set'; }
+    return x + ' ' + o.x;
+  }],
+  ['unscopables typeof and delete', function () {
+    var o = { x: 1, [Symbol.unscopables]: { x: true } };
+    with (o) { return typeof x + ' ' + delete x + ' ' + o.x; }
+  }],
+  ['null base string key read', function () { var b = null; return err(function () { return b['p']; }); }],
+  ['null base number key read', function () { var b = null; return err(function () { return b[1]; }); }],
+  ['null base symbol key read', function () { var b = null; return err(function () { return b[Symbol('s')]; }); }],
+  ['null base object key read', function () { var b = null; var n = 0; return err(function () { return b[{ toString: function () { n++; return 'p'; } }]; }) + ' ' + n; }],
+  ['undefined base object key read', function () { var b; var n = 0; return err(function () { return b[{ toString: function () { n++; return 'p'; } }]; }) + ' ' + n; }],
+  ['null base string key set', function () { var b = null; return err(function () { b['p'] = 1; }); }],
+  ['null base string key compound', function () { var b = null; return err(function () { b['p'] += 1; }); }],
+  ['null base object key update', function () { var b = null; var n = 0; return err(function () { b[{ toString: function () { n++; return 'p'; } }]++; }) + ' ' + n; }],
+  ['null base object key call', function () { var b = null; var n = 0; return err(function () { b[{ toString: function () { n++; return 'p'; } }](); }) + ' ' + n; }],
+  ['null base dot read', function () { var b = null; return err(function () { return b.p; }); }],
+  ['covered name gives no name', function () {
+    var f, g, h;
+    (f) = function () {};
+    g = function () {};
+    (h) ||= function () {};
+    return JSON.stringify([f.name, g.name, h.name]);
+  }],
+  ['proxy env traps, read', function () {
+    var log = [];
+    var p = new Proxy({ x: 1 }, trap(log));
+    with (p) { x; }
+    return log.join();
+  }],
+  ['proxy env traps, missing read', function () {
+    var log = [];
+    var p = new Proxy({}, trap(log));
+    with (p) { Object; }
+    return log.join();
+  }],
+  ['proxy env traps, assign', function () {
+    var log = [];
+    var p = new Proxy({ x: 1 }, trap(log));
+    with (p) { x = 2; }
+    return log.join();
+  }],
+  ['proxy env traps, compound', function () {
+    var log = [];
+    var p = new Proxy({ x: 1 }, trap(log));
+    with (p) { x += 2; }
+    return log.join();
+  }],
+  ['proxy env traps, update', function () {
+    var log = [];
+    var p = new Proxy({ x: 1 }, trap(log));
+    with (p) { x++; }
+    return log.join();
+  }],
+  ['proxy env traps, call', function () {
+    var log = [];
+    var p = new Proxy({ f: function () { return this === p; } }, trap(log));
+    var r;
+    with (p) { r = f(); }
+    return r + ' ' + log.join();
+  }],
+  ['proxy env traps, typeof', function () {
+    var log = [];
+    var p = new Proxy({ x: 1 }, trap(log));
+    with (p) { typeof x; }
+    return log.join();
+  }],
+  ['proxy env traps, strict assign', function () {
+    var log = [];
+    var p = new Proxy({ x: 1 }, trap(log));
+    with (p) { (function () { 'use strict'; x = 2; })(); }
+    return log.join();
+  }],
+  ['proxy env traps, delete in has', function () {
+    var log = [];
+    var t = { x: 1 };
+    var h = trap(log);
+    var p = new Proxy(t, h);
+    var r;
+    with (p) { r = err(function () { 'use strict'; x = (delete t.x, 2); return t.x; }); }
+    return r + ' ' + log.join();
+  }]
+];
+function trap(log) {
+  return {
+    has: function (t, k) { log.push('has:' + String(k)); return Reflect.has(t, k); },
+    get: function (t, k, r) { log.push('get:' + String(k)); return Reflect.get(t, k, r); },
+    set: function (t, k, v, r) { log.push('set:' + String(k)); return Reflect.set(t, k, v, r); },
+    getOwnPropertyDescriptor: function (t, k) { log.push('gopd:' + String(k)); return Reflect.getOwnPropertyDescriptor(t, k); },
+    defineProperty: function (t, k, d) { log.push('define:' + String(k)); return Reflect.defineProperty(t, k, d); }
+  };
+}
+function run() { return cases.map(function (c) { var r; try { r = c[1](); } catch (e) { r = 'threw ' + e; } return c[0] + ': ' + r; }); }
+run().join('\n')"#;
+
+#[test]
+fn references_read_as_the_reference_browser_gives_them() {
+    let want = [
+        r#"with getter deletes, compound: undefined 6"#,
+        r#"with delete in rhs, simple: undefined 2"#,
+        r#"with delete in rhs, compound: undefined 3"#,
+        r#"with delete in rhs, strict function: ReferenceError: x is not defined undefined"#,
+        r#"eval var in rhs, compound: 12 3"#,
+        r#"eval var in rhs, simple: 4 3"#,
+        r#"eval var in rhs, update: 5 3 4"#,
+        r#"null base key throws first: RangeError: key"#,
+        r#"null base key not converted: TypeError: Cannot read properties of null []"#,
+        r#"null base simple assignment: TypeError: Cannot set properties of null [rhs]"#,
+        r#"key converted once, compound: 2 5"#,
+        r#"key converted once, update: 2 3"#,
+        r#"key converted once, logical: 2 3"#,
+        r#"key order against rhs, simple: rhs,key"#,
+        r#"key order against rhs, compound: key,rhs,key"#,
+        r#"unscopables once, update: 2 5 4"#,
+        r#"unscopables once, compound: 2 5 4"#,
+        r#"unscopables getter deletes, strict set: no throw: undefined 1 {"value":123,"writable":true,"enumerable":true,"configurable":true}"#,
+        r#"unscopables getter deletes, sloppy set: 1 123"#,
+        r#"unscopables getter deletes, get: no throw: undefined 1"#,
+        r#"unscopables getter throws: RangeError: u"#,
+        r#"with call this: true false"#,
+        r#"with call this, nested function: true"#,
+        r#"with getter receiver: true"#,
+        r#"unscopables blocks: outer"#,
+        r#"unscopables not an object: inner"#,
+        r#"unscopables from prototype: outer"#,
+        r#"unscopables truthy value: set inner"#,
+        r#"unscopables typeof and delete: undefined true 1"#,
+        r#"null base string key read: TypeError: Cannot read properties of null (reading 'p')"#,
+        r#"null base number key read: TypeError: Cannot read properties of null (reading '1')"#,
+        r#"null base symbol key read: TypeError: Cannot read properties of null (reading 'Symbol(s)')"#,
+        r#"null base object key read: TypeError: Cannot read properties of null 0"#,
+        r#"undefined base object key read: TypeError: Cannot read properties of undefined 0"#,
+        r#"null base string key set: TypeError: Cannot set properties of null (setting 'p')"#,
+        r#"null base string key compound: TypeError: Cannot read properties of null (reading 'p')"#,
+        r#"null base object key update: TypeError: Cannot read properties of null 0"#,
+        r#"null base object key call: TypeError: Cannot read properties of null 0"#,
+        r#"null base dot read: TypeError: Cannot read properties of null (reading 'p')"#,
+        r#"covered name gives no name: ["","g",""]"#,
+        r#"proxy env traps, read: has:x,get:Symbol(Symbol.unscopables),get:x"#,
+        r#"proxy env traps, missing read: has:Object"#,
+        r#"proxy env traps, assign: has:x,get:Symbol(Symbol.unscopables),set:x,gopd:x,define:x"#,
+        r#"proxy env traps, compound: has:x,get:Symbol(Symbol.unscopables),get:x,has:x,get:Symbol(Symbol.unscopables),set:x,gopd:x,define:x"#,
+        r#"proxy env traps, update: has:x,get:Symbol(Symbol.unscopables),get:x,has:x,get:Symbol(Symbol.unscopables),set:x,gopd:x,define:x"#,
+        r#"proxy env traps, call: true has:f,get:Symbol(Symbol.unscopables),get:f,has:r"#,
+        r#"proxy env traps, typeof: has:x,get:Symbol(Symbol.unscopables),get:x"#,
+        r#"proxy env traps, strict assign: has:x,get:Symbol(Symbol.unscopables),set:x,gopd:x,define:x"#,
+        r#"proxy env traps, delete in has: ReferenceError: x is not defined has:err,has:t,has:x,has:r"#,
+    ];
+    let got = run(REFS_PROBE);
+    let got: Vec<&str> = got.split('\n').collect();
+    assert_eq!(got, want);
+}

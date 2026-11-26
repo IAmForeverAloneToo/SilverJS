@@ -1482,7 +1482,15 @@ impl Agent {
                         let k = r.u();
                         let key = self.key_constant(u, fi, k);
                         let context = self.top().context;
-                        self.vm.acc = Value::bool(self.dynamic_delete(context, key));
+                        self.vm.acc = Value::bool(tri!(self.dynamic_delete(context, key), start));
+                    }
+                    Op::LdaDynamicCallee => {
+                        let (k, x) = (r.u(), r.u());
+                        let key = self.key_constant(u, fi, k);
+                        let context = self.top().context;
+                        let (f, this) = tri!(self.dynamic_callee(context, key), start);
+                        self.set_reg(base, x, this);
+                        self.vm.acc = f;
                     }
                     Op::PushContext => {
                         let (x, scope) = (r.u(), r.u());

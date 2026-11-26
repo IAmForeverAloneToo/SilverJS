@@ -13,6 +13,16 @@ use crate::object::{Callable, Descriptor, ObjectKind, OwnProperty, SetOutcome};
 use crate::string::PropertyKey;
 use crate::value::{RefKind, Value};
 
+/// What a lookup by name finds outside the global environment.
+enum Found {
+    /// Environment `.0`'s slot `.1`.
+    Slot(u32, usize),
+    /// A property of a `with` statement's object.
+    With(Value),
+    /// A property of the object of the `var`s a sloppy direct eval made.
+    Vars(Value),
+}
+
 pub(crate) fn configurable(p: &OwnProperty) -> bool {
     match *p {
         OwnProperty::Data { configurable, .. } | OwnProperty::Accessor { configurable, .. } => {
@@ -793,11 +803,31 @@ impl Agent {
             );
         }
         if target.is_nullish() {
+            // An object key is not converted first, and the message
+            // leaves it out, as the reference browser's (the J4.6 refs
+            // probe).
+            if k.as_object().is_some() {
+                return Err(self.nullish_keyed(target, false));
+            }
             let key = self.property_key(k)?;
             return self.get_value(target, key);
         }
         let key = self.property_key(k)?;
         self.get_value(target, key)
+    }
+
+    /// The TypeError of `null[k]` or `undefined[k]`, read or written,
+    /// for a key not yet converted.
+    #[cold]
+    #[inline(never)]
+    fn nullish_keyed(&mut self, target: Value, set: bool) -> Abrupt {
+        let of = if target.is_null() {
+            "null"
+        } else {
+            "undefined"
+        };
+        let verb = if set { "set" } else { "read" };
+        self.throw_error(ErrorType::TypeError, messages::properties_of(verb, of))
     }
 
     /// ArraySetLength's conversions (section 10.4.2.4): ToUint32 and
@@ -909,6 +939,9 @@ impl Agent {
         strict: bool,
     ) -> Res<()> {
         if target.is_nullish() {
+            if k.as_object().is_some() {
+                return Err(self.nullish_keyed(target, true));
+            }
             let key = self.property_key(k)?;
             return self.set_value(target, key, value, strict);
         }
@@ -1155,12 +1188,12 @@ impl Agent {
     }
 
     /// A binding looked up by name through the environments (`with`,
-    /// `eval`), then the global ones.
-    fn find_dynamic(
-        &self,
-        context: Value,
-        key: PropertyKey,
-    ) -> Option<(Option<(u32, usize)>, Value)> {
+    /// `eval`), then the global ones. A `with` object's binding is found
+    /// through its `[[HasProperty]]` (a proxy's `has` trap), then
+    /// unless its `@@unscopables` names it (section 9.1.1.2.1); each
+    /// lookup asks again, as the reference browser does for a compound
+    /// assignment's read and its write (the J4.6 refs probe).
+    fn find_dynamic(&mut self, context: Value, key: PropertyKey) -> Res<Option<Found>> {
         let name = match key {
             PropertyKey::Atom(a) => Some(self.heap.atoms.units(a).to_vec()),
             _ => None,
@@ -1170,11 +1203,14 @@ impl Agent {
             let Some(InternalCell::Env(e)) = self.heap.internals.get(i) else {
                 break;
             };
-            if let Some(o) = e.object.as_object() {
-                if self.heap.has_property(o, key) {
-                    return Some((None, e.object));
+            let (object, scope, vars, parent) = (e.object, e.scope, e.vars, e.parent);
+            if let Some(o) = object.as_object() {
+                // The environment stays reachable from the frame's
+                // context while the traps and getters run.
+                if self.o_has_property(o, key)? && !self.unscopable(o, key)? {
+                    return Ok(Some(Found::With(object)));
                 }
-            } else if let (Some((unit, scope)), Some(name)) = (e.scope, &name)
+            } else if let (Some((unit, scope)), Some(name)) = (scope, &name)
                 && let Some(info) = self
                     .vm
                     .units
@@ -1182,17 +1218,31 @@ impl Agent {
                     .and_then(|u| u.code.scopes.get(scope as usize))
                 && let Some(slot) = info.names.iter().position(|n| **n == **name)
             {
-                return Some((Some((i, slot)), Value::UNDEFINED));
+                return Ok(Some(Found::Slot(i, slot)));
             }
             // What a sloppy direct eval declared here.
-            if let Some(o) = e.vars.as_object()
+            if let Some(o) = vars.as_object()
                 && self.heap.has_property(o, key)
             {
-                return Some((None, e.vars));
+                return Ok(Some(Found::Vars(vars)));
             }
-            at = e.parent;
+            at = parent;
         }
-        None
+        Ok(None)
+    }
+
+    /// Whether `with` object `o`'s `@@unscopables` blocks `key`
+    /// (section 9.1.1.2.1, step 5).
+    fn unscopable(&mut self, o: u32, key: PropertyKey) -> Res<bool> {
+        let k = self.well_known_key(crate::builtins::Wk::Unscopables);
+        let u = self.o_get(o, k, Value::reference(RefKind::Object, o))?;
+        let Some(uo) = u.as_object() else {
+            return Ok(false);
+        };
+        self.vm.temps.push(u);
+        let blocked = self.o_get(uo, key, u);
+        self.vm.temps.pop();
+        Ok(self.to_boolean(blocked?))
     }
 
     pub(crate) fn dynamic_get(
@@ -1201,8 +1251,8 @@ impl Agent {
         key: PropertyKey,
         typeof_: bool,
     ) -> Res<Value> {
-        match self.find_dynamic(context, key) {
-            Some((Some((env, slot)), _)) => {
+        match self.find_dynamic(context, key)? {
+            Some(Found::Slot(env, slot)) => {
                 let v = self.slot(Some(env), slot);
                 if v == Value::UNINITIALIZED {
                     let name = self.key_display(key);
@@ -1213,8 +1263,34 @@ impl Agent {
                 }
                 Ok(v)
             }
-            Some((None, object)) => self.get_value(object, key),
+            Some(Found::With(object) | Found::Vars(object)) => self.get_value(object, key),
             None => self.global_get(key, typeof_),
+        }
+    }
+
+    /// A callee looked up by name, and its `this`: a `with` object it
+    /// was found in, otherwise undefined (WithBaseObject, section
+    /// 9.1.1.2.10).
+    pub(crate) fn dynamic_callee(
+        &mut self,
+        context: Value,
+        key: PropertyKey,
+    ) -> Res<(Value, Value)> {
+        match self.find_dynamic(context, key)? {
+            Some(Found::With(object)) => Ok((self.get_value(object, key)?, object)),
+            Some(Found::Vars(object)) => Ok((self.get_value(object, key)?, Value::UNDEFINED)),
+            Some(Found::Slot(env, slot)) => {
+                let v = self.slot(Some(env), slot);
+                if v == Value::UNINITIALIZED {
+                    let name = self.key_display(key);
+                    return Err(self.throw_error(
+                        ErrorType::ReferenceError,
+                        messages::before_initialization(&name),
+                    ));
+                }
+                Ok((v, Value::UNDEFINED))
+            }
+            None => Ok((self.global_get(key, false)?, Value::UNDEFINED)),
         }
     }
 
@@ -1225,8 +1301,13 @@ impl Agent {
         value: Value,
         strict: bool,
     ) -> Res<()> {
-        match self.find_dynamic(context, key) {
-            Some((Some((env, slot)), _)) => {
+        // The lookup may run a proxy's `has` trap or an `@@unscopables`
+        // getter, which can collect: the value is held across it.
+        self.vm.temps.push(value);
+        let found = self.find_dynamic(context, key);
+        self.vm.temps.pop();
+        match found? {
+            Some(Found::Slot(env, slot)) => {
                 if self.slot(Some(env), slot) == Value::UNINITIALIZED {
                     let name = self.key_display(key);
                     return Err(self.throw_error(
@@ -1246,7 +1327,9 @@ impl Agent {
                     }
                 }
             }
-            Some((None, object)) => self.set_value(object, key, value, strict),
+            Some(Found::With(object) | Found::Vars(object)) => {
+                self.set_value(object, key, value, strict)
+            }
             None => self.global_set(key, value, strict),
         }
     }
@@ -1272,16 +1355,19 @@ impl Agent {
             .unwrap_or(0)
     }
 
-    pub(crate) fn dynamic_delete(&mut self, context: Value, key: PropertyKey) -> bool {
-        match self.find_dynamic(context, key) {
-            Some((Some(_), _)) => false,
-            Some((None, object)) => object.as_object().is_some_and(|o| self.heap.delete(o, key)),
+    pub(crate) fn dynamic_delete(&mut self, context: Value, key: PropertyKey) -> Res<bool> {
+        match self.find_dynamic(context, key)? {
+            Some(Found::Slot(..)) => Ok(false),
+            Some(Found::With(object) | Found::Vars(object)) => match object.as_object() {
+                Some(o) => self.o_delete(o, key),
+                None => Ok(false),
+            },
             None => {
                 if self.realm().lexical.contains_key(&key) {
-                    return false;
+                    return Ok(false);
                 }
                 let g = self.realm().global.as_object().unwrap_or(0);
-                self.heap.delete(g, key)
+                Ok(self.heap.delete(g, key))
             }
         }
     }

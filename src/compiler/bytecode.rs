@@ -93,6 +93,7 @@ ops! {
     LdaDynamic(U) "acc = the binding named, looked up through the environments at run time.",
     LdaDynamicTypeof(U) "The same, undefined if none.",
     StaDynamic(U) "The binding named, looked up at run time, = acc.",
+    LdaDynamicCallee(U, R) "acc = the binding named, looked up at run time; r = the with object it is in, or undefined.",
     DeleteName(U) "acc = delete of the binding named (sloppy code).",
 
     PushContext(R, U) "r = the current environment; a new one of the scope given becomes current.",

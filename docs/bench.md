@@ -53,3 +53,31 @@ built with fat LTO.
 
 At J3.4a (its tree against this baseline, the same run) no line moved by
 more than 10%.
+
+## Parse and compile (2026-11-26)
+
+Page start-up parses multi-MB bundles, so the lexer, the parser and
+the code generator are timed apart from the interpreter: eight real
+pages' largest scripts (24 MB, the workspace's corpus), each compiled
+as a script five times, median taken, by the parse-only harness built
+at the anchor (J3 complete, 2974712) and at the step, run in five
+alternating rounds. Any step that changes the lexer, the parser or the
+code generator runs it; more than 15% over the anchor needs a named
+cause. Once (the lead's request), QuickJS-ng's compile-only eval
+(`JS_Eval` with `JS_EVAL_FLAG_COMPILE_ONLY`, parse and bytecode
+together, its C at `/O2`) ran beside them.
+
+| Build | Total of the medians |
+|---|---|
+| anchor 2974712 | 4,042 ms |
+| 8bcbe9d (J4.6b) | 4,138 ms (+2.4%) |
+| QuickJS-ng | 3,480 ms |
+
+SilverJS over QuickJS-ng is 1.19 on the total, but 1.34 to 1.72 on
+seven files of the eight (typically about 1.4); the eighth, adb99bbb,
+takes QuickJS-ng 962 ms against SilverJS's 542 and pulls the total
+down. The target (the lead's, 2026-11-26), for the speed phase before
+Silver Browser switches from QuickJS-ng: lexing, parsing and code
+generation at or below 1.0 of QuickJS-ng's compile on each file, with
+9351ac9f (601 ms against 348, the widest gap) as the reference file.
+No work on it before then.

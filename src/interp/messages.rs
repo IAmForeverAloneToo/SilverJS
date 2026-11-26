@@ -87,6 +87,12 @@ pub(crate) fn read_properties(of: &str, key: &str) -> String {
     format!("Cannot read properties of {of} (reading '{key}')")
 }
 
+/// `Cannot read properties of null`, with no key: one not yet
+/// converted, read (`verb` "read") or written ("set").
+pub(crate) fn properties_of(verb: &str, of: &str) -> String {
+    format!("Cannot {verb} properties of {of}")
+}
+
 /// `Cannot set properties of undefined (setting 'x')`.
 pub(crate) fn set_properties(of: &str, key: &str) -> String {
     format!("Cannot set properties of {of} (setting '{key}')")

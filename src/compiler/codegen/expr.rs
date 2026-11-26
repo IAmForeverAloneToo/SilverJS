@@ -366,6 +366,31 @@ impl Gen<'_, '_> {
         Ok(())
     }
 
+    /// For a chain whose base `e` is the callee of its lowest link
+    /// `low`, a call, and a name looked up at run time (not `eval`): the
+    /// name's constant, a register for its `this`, and its span.
+    fn dynamic_callee(&mut self, e: ExprId, low: Option<ExprId>) -> Option<(i64, u32, Span)> {
+        let low = low?;
+        let Expr::Call { callee, .. } = &self.ast.expr(low).kind else {
+            return None;
+        };
+        let base = self.unparen(e);
+        if self.unparen(*callee) != base {
+            return None;
+        }
+        let node = self.ast.expr(base);
+        let span = node.span;
+        let Expr::Ident(i) = &node.kind else {
+            return None;
+        };
+        if &*i.name == "eval" || !matches!(self.resolve(&i.name).place, Place::Dynamic) {
+            return None;
+        }
+        let name = i.name.clone();
+        let n = self.name(&name);
+        Some((n, self.alloc(), span))
+    }
+
     /// A member's key into the accumulator.
     fn member_key(&mut self, prop: &MemberProp) -> R {
         match prop {
@@ -532,7 +557,17 @@ impl Gen<'_, '_> {
         let delete_at = links
             .iter()
             .position(|l| !matches!(self.ast.expr(*l).kind, Expr::OptionalChain(_)));
-        self.expr(e)?;
+        // A call of a name looked up at run time (in a `with`, or beside
+        // a sloppy direct eval) is called with the `with` object it is
+        // found in as its `this` (section 13.3.6.1, step 6.a.ii).
+        let dynamic_this = self.dynamic_callee(e, links.last().copied());
+        match dynamic_this {
+            Some((n, recv, span)) => {
+                self.pos(span);
+                self.emit(Op::LdaDynamicCallee, &[n, i64::from(recv)]);
+            }
+            None => self.expr(e)?,
+        }
         let mut i = links.len();
         while i > 0 {
             i -= 1;
@@ -639,7 +674,12 @@ impl Gen<'_, '_> {
                     let Args::Regs(first, n) = list else {
                         let Args::Array(a) = list else { break };
                         let u = self.alloc();
-                        self.op(Op::LdaUndefined);
+                        match dynamic_this {
+                            Some((_, recv, _)) if i + 1 == links.len() => {
+                                self.reg_op(Op::Ldar, recv);
+                            }
+                            _ => self.op(Op::LdaUndefined),
+                        }
                         self.reg_op(Op::Star, u);
                         self.pos_at(callee_node.span, at);
                         self.emit(
@@ -662,6 +702,20 @@ impl Gen<'_, '_> {
                             Op::CallEval,
                             &[i64::from(f), i64::from(first), i64::from(n)],
                         );
+                    } else if let Some((_, recv, _)) = dynamic_this
+                        && i + 1 == links.len()
+                    {
+                        let ic = self.ic();
+                        self.emit(
+                            Op::Call,
+                            &[
+                                i64::from(f),
+                                i64::from(recv),
+                                i64::from(first),
+                                i64::from(n),
+                                ic,
+                            ],
+                        );
                     } else {
                         let ic = self.ic();
                         self.emit(
@@ -674,6 +728,9 @@ impl Gen<'_, '_> {
                 }
                 _ => {}
             }
+        }
+        if let Some((_, recv, _)) = dynamic_this {
+            self.free(recv);
         }
         if mode == ChainMode::Delete && delete_at.is_none() {
             self.op(Op::LdaTrue);
@@ -696,15 +753,19 @@ impl Gen<'_, '_> {
                 return Ok(());
             }
         };
+        // A parenthesized name gives a function no name: `(fn) =` is
+        // not an IdentifierRef (section 13.15.2, step 1.c).
+        let covered = self.unparen(t) != t;
         let t = self.unparen(t);
         let tnode = self.ast.expr(t);
         match &tnode.kind {
             Expr::Ident(i) => {
                 let name = &i.name;
                 let inferred = units(name);
+                let inferred = (!covered).then_some(&inferred[..]);
                 match op {
                     AssignOp::Assign => {
-                        self.expr_named(value, Some(&inferred))?;
+                        self.expr_named(value, inferred)?;
                         self.store_name(name, tnode.span, false)?;
                     }
                     AssignOp::Binary(b) => {
@@ -722,7 +783,7 @@ impl Gen<'_, '_> {
                         let end = self.new_label();
                         self.load_name(name, tnode.span, false)?;
                         self.jump(logical_jump(l), end);
-                        self.expr_named(value, Some(&inferred))?;
+                        self.expr_named(value, inferred)?;
                         self.store_name(name, tnode.span, false)?;
                         self.bind(end);
                     }
