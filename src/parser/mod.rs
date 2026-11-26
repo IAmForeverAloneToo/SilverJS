@@ -694,16 +694,43 @@ const NAME_SLOTS: usize = 4096;
 /// there is shared rather than made again (minified code repeats a few
 /// names many times). A slot holds one name, so a lookup is one hash and
 /// one comparison whatever the source, and a name pushed out is only
-/// made again.
+/// made again. A name is immutable and found by its text, so a cache
+/// left by an earlier parse serves the next as well: a finished parser
+/// leaves its cache to the next one on its thread, and the slots are
+/// made at the first name, not for every parse (a parse's fixed cost,
+/// which each script, eval and `Function` pays: the J4.6 eval profile).
 pub(crate) struct NameCache {
     slots: Vec<Option<Name>>,
 }
 
+thread_local! {
+    /// The cache the last finished parser on this thread left.
+    static SPARE_NAMES: std::cell::RefCell<Option<NameCache>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 impl NameCache {
+    /// The cache left on this thread, or an empty one.
     fn new() -> NameCache {
-        NameCache {
-            slots: vec![None; NAME_SLOTS],
+        SPARE_NAMES
+            .try_with(|s| s.borrow_mut().take())
+            .ok()
+            .flatten()
+            .unwrap_or(NameCache { slots: Vec::new() })
+    }
+
+    /// Leaves this cache to the next parser on this thread.
+    fn leave(self) {
+        if !self.slots.is_empty() {
+            let _ = SPARE_NAMES.try_with(|s| *s.borrow_mut() = Some(self));
         }
+    }
+}
+
+impl Drop for Parser<'_> {
+    fn drop(&mut self) {
+        let names = std::mem::replace(&mut self.names, NameCache { slots: Vec::new() });
+        names.leave();
     }
 }
 
@@ -716,6 +743,9 @@ pub(crate) fn intern(names: &mut NameCache, text: &str) -> Name {
         h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
     }
     let slot = (h ^ (h >> 16)) as usize & (NAME_SLOTS - 1);
+    if names.slots.is_empty() {
+        names.slots = vec![None; NAME_SLOTS];
+    }
     match names.slots.get_mut(slot) {
         Some(Some(name)) if **name == *text => Name::clone(name),
         Some(entry) => {

@@ -92,3 +92,34 @@ and build): SilverJS 1,348 ms, QuickJS-ng 261 ms, 5.18 (spread 4.66 to
 (the lead's, 2026-11-26), with no work on it before then. The regexp
 is one character, so the cost is most likely a direct eval's setup
 (its source, its context, its compiled unit); not yet profiled.
+
+Profiled (2026-11-26, a sampling profiler kept outside the crate, in the
+workspace's scratch: it suspends the thread and names addresses with
+dbghelp, which SilverJS's safe Rust has no business doing), most of it
+was not eval's own but every compile's: the same tiny source (`/a/`
+and its like, 65,536 of them) through each path, microseconds an item,
+five alternating rounds, SilverJS against QuickJS-ng:
+
+| Path | Before J4.6x | After J4.6x |
+|---|---|---|
+| compile only | 6.50 / 3.95 = 1.65 | 2.47 / 3.39 = 0.73 |
+| a script (`run_script`, `JS_Eval`) | 13.47 / 4.77 = 2.82 | 6.64 / 3.89 = 1.71 |
+| `new Function` | 38.47 / 7.38 = 5.21 | 17.72 / 6.67 = 2.66 |
+| indirect eval | 14.46 / 4.17 = 3.47 | 8.39 / 3.72 = 2.25 |
+| direct eval, global code | 15.36 / 3.93 = 3.90 | 9.02 / 3.21 = 2.81 |
+| direct eval, in a function | 17.41 / 3.89 = 4.48 | 10.45 / 3.36 = 3.11 |
+
+J4.6x took out a parse's fixed cost: each parser made, zeroed and
+walked a 4,096-slot name cache (64 KB), 28% of a tiny script's run,
+and the AST's vectors grew a node at a time for a short source. What
+is left of the script path is the regexp's own making (about 30%,
+which QuickJS-ng pays as well) and each compiled unit's install, kept
+for the agent's life (the next step drops units nothing refers to).
+
+## Global names' hash (2026-11-26)
+
+A speed-phase item (the lead's): a global binding is looked up by its
+name through the standard library's SipHash, about 9% of the eval
+loop above (whose loop alone is 4.75 of QuickJS-ng's). Pages choose
+these names, so whatever replaces it stays a keyed hash, resistant to
+flooding (HashDoS).

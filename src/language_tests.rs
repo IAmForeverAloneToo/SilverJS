@@ -75,6 +75,21 @@ out.join(' | ')"#
     );
 }
 
+/// J4.6x: a parser's name cache is left to the next parse on the thread;
+/// a name from it is shared only when its text is the same. `vacg` and
+/// `vaeb` fall in one slot, so the second parse meets the first's name
+/// there and must make its own (the global's own key, a string, says
+/// which name the second declared).
+#[test]
+fn a_name_cache_left_by_one_parse_gives_the_next_its_own_names() {
+    assert_eq!(
+        run(
+            "eval('var vacg = 1;'); eval('var vaeb = 2;'); [vacg, vaeb, 'vaeb' in globalThis].join()"
+        ),
+        "1,2,true"
+    );
+}
+
 /// J4.6a (the lead's check): a source with a lone surrogate and a
 /// character in each of the 32 stand-in windows is refused with a
 /// SyntaxError, never read with a real character in the surrogate's

@@ -128,11 +128,14 @@ impl Ast {
     /// expression per 30 bytes) leaves room it does not use, reserved
     /// and never touched.
     pub fn for_source(len: usize) -> Ast {
+        // At least a short script's worth each, so that a tiny source
+        // (an eval's, an attribute handler's) is not grown a node at a
+        // time (the J4.6 eval profile).
         Ast {
-            exprs: Vec::with_capacity(len / 5),
-            stmts: Vec::with_capacity(len / 64),
-            pats: Vec::with_capacity(len / 96),
-            funcs: Vec::with_capacity(len / 256),
+            exprs: Vec::with_capacity((len / 5).max(16)),
+            stmts: Vec::with_capacity((len / 64).max(8)),
+            pats: Vec::with_capacity((len / 96).max(4)),
+            funcs: Vec::with_capacity((len / 256).max(2)),
             classes: Vec::new(),
         }
     }
